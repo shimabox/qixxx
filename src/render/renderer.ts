@@ -10,6 +10,8 @@ import {
   COLOR_GRID_LINE,
   COLOR_LINE,
   COLOR_MARKER,
+  COLOR_WISP_HEAD,
+  COLOR_WISP_TRAIL,
 } from '../config';
 
 export class Renderer {
@@ -63,10 +65,13 @@ export class Renderer {
     return layer;
   }
 
-  render(field: Field, markerPosition?: Point): void {
+  render(field: Field, markerPosition?: Point, wispTrail?: Point[]): void {
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
     this.drawField(field);
+    if (wispTrail && wispTrail.length > 0) {
+      this.drawWisp(wispTrail);
+    }
     if (markerPosition) {
       this.drawMarker(markerPosition);
     }
@@ -103,6 +108,20 @@ export class Renderer {
         this.ctx.fillRect(x * RENDER_SCALE, py, RENDER_SCALE, RENDER_SCALE);
       }
     }
+  }
+
+  // Draws the Wisp's afterimage trail (older history first, faded) followed
+  // by a brighter head, so the head is always painted on top.
+  private drawWisp(trail: Point[]): void {
+    this.ctx.fillStyle = COLOR_WISP_TRAIL;
+    for (let i = trail.length - 1; i >= 1; i--) {
+      const p = trail[i];
+      this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+    }
+
+    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    const head = trail[0];
+    this.ctx.fillRect(head.x * RENDER_SCALE, head.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
   }
 
   private drawMarker(position: Point): void {

@@ -61,6 +61,28 @@ export class Marker {
   }
 
   /**
+   * Cancels the in-progress line (M2 miss handling, docs/plan.md §3.5): every
+   * drawn LINE cell reverts to UNCLAIMED and the marker snaps back to the
+   * border point where the line began. No-op (and returns the current
+   * position unchanged) if the marker isn't currently drawing.
+   */
+  cancelLine(field: Field): Point {
+    if (!this.drawing || !this.lineStart) {
+      return this.getPosition();
+    }
+
+    for (const p of this.line) {
+      field.set(p, UNCLAIMED);
+    }
+
+    this.position = { ...this.lineStart };
+    this.line = [];
+    this.drawing = false;
+    this.lineStart = null;
+    return this.getPosition();
+  }
+
+  /**
    * Attempts to move the marker one grid cell in direction (dx, dy).
    * (dx, dy) must be a single-axis unit step (e.g. {1,0}, {0,-1}); anything
    * else (including {0,0} or a diagonal) is rejected.
