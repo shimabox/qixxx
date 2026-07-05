@@ -1,0 +1,89 @@
+// Keyboard input handling. DOM-dependent by design — this is the only layer
+// (besides render/ and main.ts) allowed to touch the DOM (docs/plan.md §4.4).
+import { GameInput } from '../core/game';
+
+const MOVE_KEYS = {
+  up: ['ArrowUp', 'KeyW'],
+  down: ['ArrowDown', 'KeyS'],
+  left: ['ArrowLeft', 'KeyA'],
+  right: ['ArrowRight', 'KeyD'],
+} as const;
+
+// §5.1: X or Space draws a fast line. (Z/Shift for slow lines arrives in M3.)
+const DRAW_FAST_KEYS = ['Space', 'KeyX'];
+
+function isTrackedKey(code: string): boolean {
+  return (
+    Object.values(MOVE_KEYS).some((keys) => (keys as readonly string[]).includes(code)) ||
+    DRAW_FAST_KEYS.includes(code)
+  );
+}
+
+export class KeyboardInput {
+  private pressed = new Set<string>();
+  private pressOrder: string[] = [];
+  private target: EventTarget;
+
+  constructor(target: EventTarget = window) {
+    this.target = target;
+    target.addEventListener('keydown', this.onKeyDown);
+    target.addEventListener('keyup', this.onKeyUp);
+  }
+
+  private onKeyDown = (event: Event): void => {
+    const code = (event as KeyboardEvent).code;
+    if (!this.pressed.has(code)) {
+      this.pressed.add(code);
+      this.pressOrder.push(code);
+    }
+    // Prevent the page from scrolling on arrow keys / space while playing.
+    if (isTrackedKey(code)) {
+      event.preventDefault();
+    }
+  };
+
+  private onKeyUp = (event: Event): void => {
+    const code = (event as KeyboardEvent).code;
+    this.pressed.delete(code);
+    this.pressOrder = this.pressOrder.filter((c) => c !== code);
+  };
+
+  /**
+   * Resolves the current key state into a single 4-directional move (the
+   * most recently pressed direction key wins if multiple are held) plus
+   * whether a fast-line button is held.
+   */
+  getInput(): GameInput {
+    let dx: GameInput['dx'] = 0;
+    let dy: GameInput['dy'] = 0;
+
+    for (let i = this.pressOrder.length - 1; i >= 0; i--) {
+      const code = this.pressOrder[i];
+      if ((MOVE_KEYS.up as readonly string[]).includes(code)) {
+        dy = -1;
+        break;
+      }
+      if ((MOVE_KEYS.down as readonly string[]).includes(code)) {
+        dy = 1;
+        break;
+      }
+      if ((MOVE_KEYS.left as readonly string[]).includes(code)) {
+        dx = -1;
+        break;
+      }
+      if ((MOVE_KEYS.right as readonly string[]).includes(code)) {
+        dx = 1;
+        break;
+      }
+    }
+
+    const drawHeld = DRAW_FAST_KEYS.some((code) => this.pressed.has(code));
+
+    return { dx, dy, drawHeld };
+  }
+
+  dispose(): void {
+    this.target.removeEventListener('keydown', this.onKeyDown);
+    this.target.removeEventListener('keyup', this.onKeyUp);
+  }
+}

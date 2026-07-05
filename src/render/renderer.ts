@@ -1,4 +1,4 @@
-import { Field, BORDER, CLAIMED_FAST, CLAIMED_SLOW, UNCLAIMED, CellState } from '../core/field';
+import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -8,6 +8,8 @@ import {
   COLOR_CLAIMED_FAST,
   COLOR_CLAIMED_SLOW,
   COLOR_GRID_LINE,
+  COLOR_LINE,
+  COLOR_MARKER,
 } from '../config';
 
 export class Renderer {
@@ -61,10 +63,13 @@ export class Renderer {
     return layer;
   }
 
-  render(field: Field): void {
+  render(field: Field, markerPosition?: Point): void {
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
     this.drawField(field);
+    if (markerPosition) {
+      this.drawMarker(markerPosition);
+    }
   }
 
   private drawField(field: Field): void {
@@ -89,12 +94,20 @@ export class Renderer {
           case CLAIMED_SLOW:
             this.ctx.fillStyle = COLOR_CLAIMED_SLOW;
             break;
+          case LINE:
+            this.ctx.fillStyle = COLOR_LINE;
+            break;
           default:
             continue;
         }
         this.ctx.fillRect(x * RENDER_SCALE, py, RENDER_SCALE, RENDER_SCALE);
       }
     }
+  }
+
+  private drawMarker(position: Point): void {
+    this.ctx.fillStyle = COLOR_MARKER;
+    this.ctx.fillRect(position.x * RENDER_SCALE, position.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
   }
 
   getCanvas(): HTMLCanvasElement {

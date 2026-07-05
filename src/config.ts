@@ -17,9 +17,21 @@ export const MAX_FRAME_DELTA = 0.25;
 // Stage progression
 export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // 65% for stage 1-2, increases to 75% in stage 3+
 
+// Marker movement rate: number of ticks required to advance one grid cell.
+// Fast = 1 tick/cell (only speed implemented in M1).
+// Slow (M3) will use this to halve the effective speed (2 ticks/cell).
+export const MARKER_MOVE_TICKS_FAST = 1;
+export const MARKER_MOVE_TICKS_SLOW = 2;
+
 // Colors (neon-like, not copying original)
 export const COLOR_BACKGROUND = '#0a0e27'; // Dark blue-black
 export const COLOR_BORDER = '#00ff41'; // Neon green
 export const COLOR_CLAIMED_FAST = '#4a7fff'; // Neon blue
 export const COLOR_CLAIMED_SLOW = '#ff1555'; // Neon red/pink
 export const COLOR_GRID_LINE = 'rgba(255, 255, 255, 0.1)'; // Subtle grid
+export const COLOR_LINE = '#ffe066'; // Neon yellow - in-progress line
+export const COLOR_MARKER = '#ffffff'; // Marker (player) - bright white
+
+// HUD
+export const HUD_FONT = '16px monospace';
+export const HUD_TEXT_COLOR = '#ffffff';

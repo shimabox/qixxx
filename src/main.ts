@@ -1,6 +1,7 @@
-import { Field } from './core/field';
+import { Game } from './core/game';
 import { Renderer } from './render/renderer';
-import { TICK_DURATION, MAX_FRAME_DELTA } from './config';
+import { KeyboardInput } from './input/keyboard';
+import { TICK_DURATION, MAX_FRAME_DELTA, HUD_FONT, HUD_TEXT_COLOR } from './config';
 
 // Get or create canvas element
 function getCanvasElement(): HTMLCanvasElement {
@@ -13,22 +14,51 @@ function getCanvasElement(): HTMLCanvasElement {
   return canvas;
 }
 
+// Get or create the HUD overlay element (occupancy display, §3.3 / §6 M1).
+function getHudElement(): HTMLDivElement {
+  let hud = document.getElementById('hud') as HTMLDivElement | null;
+  if (!hud) {
+    hud = document.createElement('div');
+    hud.id = 'hud';
+    hud.style.position = 'fixed';
+    hud.style.top = '8px';
+    hud.style.left = '8px';
+    hud.style.color = HUD_TEXT_COLOR;
+    hud.style.font = HUD_FONT;
+    hud.style.pointerEvents = 'none';
+    hud.style.userSelect = 'none';
+    document.body.appendChild(hud);
+  }
+  return hud;
+}
+
 // Game state
-let field: Field;
+let game: Game;
 let renderer: Renderer;
+let keyboard: KeyboardInput;
+let hud: HTMLDivElement;
 let accumulator = 0;
 let lastTime = performance.now();
 
 // Initialize game
 function init(): void {
-  field = new Field();
+  game = new Game();
   renderer = new Renderer(getCanvasElement());
-  renderer.render(field);
+  keyboard = new KeyboardInput();
+  hud = getHudElement();
+  renderer.render(game.getField(), game.getMarker().getPosition());
 }
 
 // Update logic (fixed timestep)
 function update(): void {
-  // For M0, update is empty - placeholder for future game logic
+  game.update(keyboard.getInput());
+}
+
+// Render the current game state, including the HUD.
+function renderFrame(): void {
+  renderer.render(game.getField(), game.getMarker().getPosition());
+  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
+  hud.textContent = `OCCUPANCY: ${occupancyPercent}%`;
 }
 
 // Game loop with fixed timestep (accumulator pattern)
@@ -46,7 +76,7 @@ function gameLoop(currentTime: number): void {
   }
 
   // Render
-  renderer.render(field);
+  renderFrame();
 
   // Continue loop
   requestAnimationFrame(gameLoop);
