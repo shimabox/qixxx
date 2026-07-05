@@ -14,6 +14,7 @@ import { Ember, Heading } from './patrol';
 import { Igniter, shouldSpawnIgniter } from './fuse';
 import { checkCollision } from './collision';
 import { scoreAreaClaim, scoreStageClearBonus, DEFAULT_SCORE_MULTIPLIER } from './scoring';
+import { EventQueue, GameEvent } from './events';
 import {
   MARKER_MOVE_TICKS_FAST,
   MARKER_MOVE_TICKS_SLOW,
@@ -106,6 +107,11 @@ export class Game {
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
   private graceTicks = 0;
+  // Discrete occurrences this stage's simulation has produced but that
+  // nobody has drained yet (docs/plan.md §3.8/§9.9: this is the entire
+  // core -> audio bridge — Game never touches AudioContext itself). See
+  // core/events.ts for what belongs here vs. what's a plain getter instead.
+  private events = new EventQueue<GameEvent>();
 
   constructor(
     field: Field = new Field(),
@@ -200,6 +206,26 @@ export class Game {
   }
 
   /**
+   * Remaining post-miss grace ticks (0 when not in grace). Exposed purely as
+   * a render/feedback hook (docs/plan.md §6 M5 "ミス時の簡易フィードバック":
+   * the marker can blink while this is > 0) — nothing in Game itself reads
+   * it externally.
+   */
+  getGraceTicks(): number {
+    return this.graceTicks;
+  }
+
+  /**
+   * Drains (returns and clears) every GameEvent queued since the last call
+   * (docs/plan.md §3.8/§9.9). Pure data — see core/events.ts. Callers (e.g.
+   * GameSession, which forwards these up to main.ts's audio layer) should
+   * call this once per tick so nothing is lost across a stage transition.
+   */
+  drainEvents(): GameEvent[] {
+    return this.events.drain();
+  }
+
+  /**
    * Advances the game by one fixed tick given the current input state.
    * Returns the marker move result (or null if no move was attempted this
    * tick, e.g. no direction held, still on movement cooldown, or the game
@@ -239,6 +265,7 @@ export class Game {
         this.occupancy = claimResult.occupancy;
         this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
         this.despawnIgniter();
+        this.events.push('area-claimed');
         this.lastClearWasSplit = claimResult.split;
         if (claimResult.split) {
           // Splitting the Wisps apart clears the stage instantly, regardless
@@ -246,9 +273,11 @@ export class Game {
           // next stage is the session layer's responsibility (it owns the
           // split-success streak across stage boundaries).
           this.status = 'stageclear';
+          this.events.push('split-clear');
         } else if (this.occupancy >= this.requiredOccupancy) {
           this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
           this.status = 'stageclear';
+          this.events.push('stage-clear');
         }
       }
     }
@@ -301,6 +330,7 @@ export class Game {
     this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading));
     this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading));
     this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+    this.events.push('ember-spawned');
   }
 
   /**
@@ -322,12 +352,21 @@ export class Game {
       if (shouldSpawnIgniter(this.stillTicks)) {
         this.igniter = new Igniter();
         this.marker.setRetractEnabled(false);
+        this.events.push('igniter-spawned');
       }
       return false;
     }
 
     const maxIndex = this.marker.getLine().length - 1;
-    return this.igniter.update(!holdingDirection, maxIndex);
+    const indexBefore = this.igniter.getIndex();
+    const caughtUp = this.igniter.update(!holdingDirection, maxIndex);
+    // Each step the Igniter actually advances is treated as "getting closer"
+    // (docs/plan.md §3.8 "ヒューズ...接近"): emitted once per line-cell it
+    // climbs, not once per tick it merely sits still waiting to advance.
+    if (this.igniter.getIndex() > indexBefore) {
+      this.events.push('igniter-approaching');
+    }
+    return caughtUp;
   }
 
   private despawnIgniter(): void {
@@ -344,6 +383,7 @@ export class Game {
    * further miss can be triggered (so one sustained contact = one life).
    */
   private handleMiss(): void {
+    this.events.push('miss');
     this.marker.cancelLine(this.field);
     this.despawnIgniter();
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;

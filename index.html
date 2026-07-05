@@ -12,22 +12,32 @@
         box-sizing: border-box;
       }
 
+      html,
+      body {
+        height: 100%;
+      }
+
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         background: #0a0e27;
         display: flex;
-        justify-content: center;
-        align-items: center;
+        flex-direction: column;
         min-height: 100vh;
+        min-height: 100dvh;
         overflow: hidden;
       }
 
+      /* #game-root (created by main.ts) is the flex child that fills
+         whatever space is left above #touch-controls (docs/plan.md §5.3:
+         "縦持ちレイアウト: フィールド上部・コントロール下部"). The canvas
+         itself is letterboxed inside it by main.ts's fitCanvasToViewport(). */
       #game-canvas {
         display: block;
         border: 2px solid #00ff41;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
       }
+
     </style>
   </head>
   <body>

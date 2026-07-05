@@ -18,10 +18,13 @@ export default [
       globals: {
         document: 'readonly',
         window: 'readonly',
+        navigator: 'readonly',
         console: 'readonly',
         performance: 'readonly',
         requestAnimationFrame: 'readonly',
         localStorage: 'readonly',
+        KeyboardEvent: 'readonly',
+        AudioContext: 'readonly',
       },
     },
     plugins: {

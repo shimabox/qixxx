@@ -1,25 +1,7 @@
 // Keyboard input handling. DOM-dependent by design — this is the only layer
 // (besides render/ and main.ts) allowed to touch the DOM (docs/plan.md §4.4).
 import { SessionInput } from '../core/session';
-
-const MOVE_KEYS = {
-  up: ['ArrowUp', 'KeyW'],
-  down: ['ArrowDown', 'KeyS'],
-  left: ['ArrowLeft', 'KeyA'],
-  right: ['ArrowRight', 'KeyD'],
-} as const;
-
-// §5.1: X or Space draws a fast line; Z or Shift draws a slow line.
-const DRAW_FAST_KEYS = ['Space', 'KeyX'];
-const DRAW_SLOW_KEYS = ['KeyZ', 'ShiftLeft', 'ShiftRight'];
-
-function isTrackedKey(code: string): boolean {
-  return (
-    Object.values(MOVE_KEYS).some((keys) => (keys as readonly string[]).includes(code)) ||
-    DRAW_FAST_KEYS.includes(code) ||
-    DRAW_SLOW_KEYS.includes(code)
-  );
-}
+import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS, isTrackedKey } from './keys';
 
 export class KeyboardInput {
   private pressed = new Set<string>();

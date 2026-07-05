@@ -11,6 +11,7 @@ import { Field, Point } from './field';
 import { Game, GameInput } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
+import { EventQueue, GameEvent } from './events';
 import { INITIAL_LIVES, DEFAULT_SCORE_MULTIPLIER, SPLIT_MULTIPLIER_CAP, GRID_WIDTH, GRID_HEIGHT } from '../config';
 
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
@@ -69,6 +70,12 @@ export class GameSession {
   private splitSuccesses = 0;
   private highScore: number;
   private game!: Game; // assigned by resetToFreshRun() below, called from this constructor
+  // Forwards every currently-playing stage's Game.drainEvents() up to
+  // whoever drains *this* queue (docs/plan.md §3.8/§9.9: main.ts's audio
+  // layer). Buffering here — rather than reading straight off `this.game`
+  // — means events survive a stage transition even though `this.game` gets
+  // replaced by advanceStage() before the caller has had a chance to drain.
+  private eventQueue = new EventQueue<GameEvent>();
   private readonly rng?: Rng;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
@@ -176,9 +183,22 @@ export class GameSession {
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
   }
 
+  /**
+   * Drains (returns and clears) every GameEvent queued by the currently- and
+   * previously-playing stages since the last call (docs/plan.md §3.8/§9.9).
+   * Intended to be called once per rendered frame by main.ts, which forwards
+   * the result to the audio layer.
+   */
+  drainEvents(): GameEvent[] {
+    return this.eventQueue.drain();
+  }
+
   private updatePlaying(input: SessionInput): void {
     const livesBefore = this.game.getLives();
     this.game.update(input);
+    for (const event of this.game.drainEvents()) {
+      this.eventQueue.push(event);
+    }
 
     // Mirror the stage's own multiplier (it only ever moves to
     // DEFAULT_SCORE_MULTIPLIER, via Game.handleMiss on a miss — docs/plan.md

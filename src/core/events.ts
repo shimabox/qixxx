@@ -1,0 +1,53 @@
+// Discrete "something just happened" occurrences that Game/GameSession can
+// produce during a tick. This is the entire core -> audio bridge (docs/plan.md
+// §3.8 / §9.9): core only ever appends event names to a queue here — it never
+// imports or references AudioContext, `window`, or any other DOM/Web Audio
+// API. main.ts drains the queue once per rendered frame and hands the result
+// to src/audio/sfx.ts, which decides what (if anything) to actually play.
+//
+// Continuous *states* — e.g. "currently drawing a line, at fast/slow speed" —
+// are deliberately NOT modeled as events: callers can already read that
+// directly off Marker.isDrawing()/the current input each tick, and turning a
+// steady state into a repeated per-tick event would just be queue busywork.
+// Only edge-triggered occurrences (a claim just closed, a life was just
+// lost, ...) belong here.
+export type GameEvent =
+  | 'area-claimed'
+  | 'stage-clear'
+  | 'split-clear'
+  | 'miss'
+  | 'igniter-spawned'
+  | 'igniter-approaching'
+  | 'ember-spawned';
+
+/**
+ * A minimal FIFO queue of items queued since the last drain. Pure data
+ * structure — no DOM/timing assumptions — so it's equally usable by Game
+ * (per-stage events) and GameSession (which forwards each stage's Game's
+ * events up to whatever drains GameSession.drainEvents(), e.g. main.ts).
+ */
+export class EventQueue<T> {
+  private items: T[] = [];
+
+  push(item: T): void {
+    this.items.push(item);
+  }
+
+  /**
+   * Returns every item queued since the last drain, in the order they were
+   * pushed, and clears the queue. Returns a fresh empty array (rather than
+   * the internal buffer) so a caller mutating the result can never corrupt
+   * queue state.
+   */
+  drain(): T[] {
+    if (this.items.length === 0) return [];
+    const drained = this.items;
+    this.items = [];
+    return drained;
+  }
+
+  /** True if nothing is queued. Mostly useful for tests/assertions. */
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+}

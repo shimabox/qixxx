@@ -111,10 +111,60 @@ export const COLOR_GRID_LINE = 'rgba(255, 255, 255, 0.1)'; // Subtle grid
 export const COLOR_LINE = '#ffe066'; // Neon yellow - in-progress line
 export const COLOR_MARKER = '#ffffff'; // Marker (player) - bright white
 export const COLOR_WISP_HEAD = '#b967ff'; // Neon purple - Wisp head
-export const COLOR_WISP_TRAIL = 'rgba(185, 103, 255, 0.35)'; // Faded Wisp afterimage
 export const COLOR_EMBER = '#ff8c1a'; // Neon orange - Ember (border patrol)
 export const COLOR_IGNITER = '#ff3b3b'; // Neon red - Igniter (line chaser)
 
 // HUD
 export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
+export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
+
+// Neon glow (docs/plan.md §1/§6 M5). Applied only to a handful of
+// small/bounded-count draw calls per frame (marker, Wisp head, Igniter,
+// Embers, the in-progress line) — never to the bulk BORDER/CLAIMED field
+// fill (tens of thousands of cells), to keep the per-frame cost of
+// ctx.shadowBlur negligible and 60fps intact (docs/plan.md §7.3).
+export const GLOW_BLUR_ENTITY = 6; // px, for marker/Wisp head/Igniter/Embers
+export const GLOW_BLUR_LINE = 4; // px, for in-progress LINE cells
+export const GLOW_BLUR_FIELD_EDGE = 10; // px, for the single cached outer-border glow pass
+
+// Wisp trail afterimage fade (docs/plan.md §6 M5 "Wispの残像表現の強化"):
+// each successively older trail cell is drawn more transparent, from
+// WISP_TRAIL_ALPHA_NEAR (just behind the head) down to WISP_TRAIL_ALPHA_FAR
+// (oldest cell), interpolated linearly across the trail's length.
+export const WISP_TRAIL_ALPHA_NEAR = 0.55;
+export const WISP_TRAIL_ALPHA_FAR = 0.05;
+
+// Miss feedback (docs/plan.md §6 M5 "ミス時の簡易フィードバック"): the
+// marker blinks (alternates hidden/visible) every MISS_BLINK_INTERVAL_TICKS
+// ticks for as long as the post-miss grace period (MISS_GRACE_TICKS) lasts.
+export const MISS_BLINK_INTERVAL_TICKS = 6;
+
+// Effects (docs/plan.md §3.8): Web Audio SE generated at runtime — no audio
+// asset files. Frequencies in Hz, durations in seconds, gains as linear
+// [0,1] envelope peaks (kept low since several can overlap the same frame).
+export const SFX_MASTER_GAIN = 0.25;
+export const SFX_DRAW_GAIN = 0.05;
+export const SFX_DRAW_FREQ_FAST = 220;
+export const SFX_DRAW_FREQ_SLOW = 130;
+export const SFX_AREA_CLAIMED_FREQ = 660;
+export const SFX_AREA_CLAIMED_DURATION = 0.12;
+export const SFX_MISS_FREQ = 90;
+export const SFX_MISS_DURATION = 0.35;
+export const SFX_STAGE_CLEAR_NOTES = [523, 659, 784, 1047]; // C5 E5 G5 C6 arpeggio
+export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.14;
+export const SFX_SPLIT_CLEAR_NOTES = [784, 988, 1175, 1568, 1976]; // brighter/longer — a "special" clear
+export const SFX_SPLIT_CLEAR_NOTE_DURATION = 0.11;
+export const SFX_IGNITER_SPAWN_FREQ = 340;
+export const SFX_IGNITER_SPAWN_DURATION = 0.1;
+export const SFX_IGNITER_APPROACH_FREQ = 500;
+export const SFX_IGNITER_APPROACH_DURATION = 0.05;
+export const SFX_EMBER_SPAWN_FREQ = 260;
+export const SFX_EMBER_SPAWN_DURATION = 0.08;
+
+// Touch controls (docs/plan.md §5.2): screen-bottom virtual d-pad (left) +
+// FAST/SLOW buttons (right). Pure layout tuning — sizes in CSS pixels.
+export const TOUCH_CONTROLS_HEIGHT = 168;
+export const TOUCH_BUTTON_SIZE = 64;
+export const TOUCH_DPAD_GAP = 4;
+export const TOUCH_CONTROLS_OPACITY = 0.55;

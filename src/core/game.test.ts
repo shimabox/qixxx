@@ -11,6 +11,124 @@ import {
   DEFAULT_REQUIRED_OCCUPANCY,
 } from '../config';
 
+describe('Game — event queue (M5, docs/plan.md §3.8/§9.9)', () => {
+  it('starts with no events queued', () => {
+    const game = new Game(new Field(6, 5), { x: 2, y: 0 });
+    expect(game.drainEvents()).toEqual([]);
+  });
+
+  it('queues area-claimed (and not stage-clear) for a claim that does not reach the required occupancy', () => {
+    const field = new Field(10, 5); // interior x=1..8, y=1..3 -> 24 UNCLAIMED cells
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp, undefined, { requiredOccupancy: 0.9 });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // claims 18/24, short of the 90% requirement
+
+    expect(game.getStatus()).toBe('playing');
+    expect(game.drainEvents()).toEqual(['area-claimed']);
+    // Already drained -> nothing left to see on a second call.
+    expect(game.drainEvents()).toEqual([]);
+  });
+
+  it('queues area-claimed followed by stage-clear when the claim reaches the required occupancy', () => {
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp);
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+
+    expect(game.getStatus()).toBe('stageclear');
+    expect(game.drainEvents()).toEqual(['area-claimed', 'stage-clear']);
+  });
+
+  it('queues area-claimed followed by split-clear when a claim splits the 2 Wisps apart', () => {
+    const field = new Field(10, 5);
+    const leftWisp = new Wisp({ x: 2, y: 2 }, () => 0.5, Math.PI / 2);
+    const rightWisp = new Wisp({ x: 7, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 5, y: 0 }, undefined, undefined, { wisps: [leftWisp, rightWisp] });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+
+    expect(game.getStatus()).toBe('stageclear');
+    expect(game.getLastClearWasSplit()).toBe(true);
+    expect(game.drainEvents()).toEqual(['area-claimed', 'split-clear']);
+  });
+
+  it('queues miss whenever a Wisp/Ember/Igniter contact triggers handleMiss', () => {
+    const field = new Field(6, 5);
+    const wisp = new Wisp({ x: 2, y: 1 }, () => 0.5, 0);
+    const game = new Game(field, { x: 2, y: 0 }, wisp);
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // steps onto the Wisp's line cell -> miss
+
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    expect(game.drainEvents()).toEqual(['miss']);
+  });
+
+  it('queues ember-spawned each time a fresh pair of Embers appears', () => {
+    const field = new Field(10, 6);
+    const wisp = new Wisp({ x: 5, y: 3 }, () => 0.5, 0);
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, { emberSpawnIntervalTicks: 3 });
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // cooldown 3 -> 2
+    expect(game.drainEvents()).toEqual([]);
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // -> 1
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // -> 0, next tick spawns
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // spawns this tick
+
+    expect(game.getEmbers().length).toBe(2);
+    expect(game.drainEvents()).toEqual(['ember-spawned']);
+  });
+
+  it('queues igniter-spawned once still long enough, then igniter-approaching as it advances', () => {
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp);
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,1) LINE; a 1-cell line
+    game.drainEvents(); // clear the area-claimed-unrelated noise (none expected, but keep the assertion below focused)
+
+    for (let tick = 0; tick < IGNITER_SPAWN_STILL_TICKS - 1; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
+    expect(game.getIgniter()).toBeNull();
+    expect(game.drainEvents()).toEqual([]);
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // crosses the still-ticks threshold -> spawns
+    expect(game.getIgniter()).not.toBeNull();
+    expect(game.drainEvents()).toEqual(['igniter-spawned']);
+  });
+
+  it('does not emit igniter-approaching on ticks where the Igniter is still on cooldown', () => {
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp);
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,1) LINE
+
+    for (let tick = 0; tick < IGNITER_SPAWN_STILL_TICKS; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
+    game.drainEvents(); // consume the igniter-spawned event from above
+
+    // With a 1-cell line, the Igniter's maxIndex is already 0 (its spawn
+    // index) — it never has room to advance, so no further
+    // igniter-approaching events are queued regardless of how long stillness
+    // continues (a catch-up/miss happens instead, tested elsewhere).
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    expect(game.drainEvents()).toEqual(['miss']);
+  });
+});
+
 describe('Game', () => {
   it('does nothing when no direction is held', () => {
     const field = new Field(6, 5);

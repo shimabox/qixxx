@@ -215,6 +215,56 @@ describe('GameSession — Title/Playing/StageClear/GameOver state machine (M4, d
   });
 });
 
+describe('GameSession — event forwarding (M5, docs/plan.md §3.8/§9.9)', () => {
+  it('forwards the current stage Game\'s events, draining them once', () => {
+    const session = new GameSession({ gameFactory: stageClearGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    expect(session.drainEvents()).toEqual([]);
+
+    clearStageClearGame(session);
+    expect(session.getStatus()).toBe('stageclear');
+
+    expect(session.drainEvents()).toEqual(['area-claimed', 'stage-clear']);
+    // Already drained -> nothing left, even though the Game itself is still
+    // sitting in 'stageclear'.
+    expect(session.drainEvents()).toEqual([]);
+  });
+
+  it('forwards split-clear events distinctly from ordinary stage-clear events', () => {
+    const session = new GameSession({ gameFactory: splitGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearSplitGame(session);
+    expect(session.getStatus()).toBe('stageclear');
+    expect(session.drainEvents()).toEqual(['area-claimed', 'split-clear']);
+  });
+
+  it('does not lose events across a stage transition that replaces the underlying Game', () => {
+    const session = new GameSession({ gameFactory: stageClearGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearStageClearGame(session);
+    session.drainEvents(); // consume stage 1's clear events
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance -> stage 2, a fresh Game instance
+    expect(session.getStage()).toBe(2);
+
+    clearStageClearGame(session);
+    // Stage 2's own claim/clear events are still forwarded correctly even
+    // though `this.game` was swapped out from under the queue in between.
+    expect(session.drainEvents()).toEqual(['area-claimed', 'stage-clear']);
+  });
+
+  it('forwards a miss event the instant it happens', () => {
+    const session = new GameSession({ gameFactory: missGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // steps onto the Wisp's line cell -> miss
+
+    expect(session.drainEvents()).toEqual(['miss']);
+  });
+});
+
 describe('GameSession — real stage progression difficulty (M4, docs/plan.md §3.7)', () => {
   const FIELD_WIDTH = 100;
   const FIELD_HEIGHT = 6;
