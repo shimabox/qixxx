@@ -9,13 +9,15 @@ const MOVE_KEYS = {
   right: ['ArrowRight', 'KeyD'],
 } as const;
 
-// §5.1: X or Space draws a fast line. (Z/Shift for slow lines arrives in M3.)
+// §5.1: X or Space draws a fast line; Z or Shift draws a slow line.
 const DRAW_FAST_KEYS = ['Space', 'KeyX'];
+const DRAW_SLOW_KEYS = ['KeyZ', 'ShiftLeft', 'ShiftRight'];
 
 function isTrackedKey(code: string): boolean {
   return (
     Object.values(MOVE_KEYS).some((keys) => (keys as readonly string[]).includes(code)) ||
-    DRAW_FAST_KEYS.includes(code)
+    DRAW_FAST_KEYS.includes(code) ||
+    DRAW_SLOW_KEYS.includes(code)
   );
 }
 
@@ -77,9 +79,13 @@ export class KeyboardInput {
       }
     }
 
-    const drawHeld = DRAW_FAST_KEYS.some((code) => this.pressed.has(code));
+    const fastHeld = DRAW_FAST_KEYS.some((code) => this.pressed.has(code));
+    const slowHeld = DRAW_SLOW_KEYS.some((code) => this.pressed.has(code));
+    // Both held at once (rare) resolves to fast, matching the "X/Space wins" tie-break.
+    const drawHeld = fastHeld || slowHeld;
+    const slow = slowHeld && !fastHeld;
 
-    return { dx, dy, drawHeld };
+    return { dx, dy, drawHeld, slow };
   }
 
   dispose(): void {

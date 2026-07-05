@@ -1,6 +1,7 @@
 // Marker (player) movement and line-drawing logic. Pure logic — no DOM/Canvas dependencies.
 // See docs/plan.md §3.1 / §3.2 for the specification this module implements.
 import { Field, Point, UNCLAIMED, BORDER, LINE, CLAIMED_FAST, CLAIMED_SLOW } from './field';
+import { LineSpeed } from './claim';
 
 export type Axis = -1 | 0 | 1;
 
@@ -25,15 +26,32 @@ export interface MarkerMoveResult {
    * Null unless `lineClosed` is true.
    */
   closedLine: Point[] | null;
+  /**
+   * The speed to score/claim this line at once closed (docs/plan.md §3.2):
+   * 'fast' if *any* cell of the line was drawn at fast speed, 'slow' only if
+   * every cell was drawn slow. Null unless `lineClosed` is true.
+   */
+  lineSpeed: LineSpeed | null;
   /** True when this move retracted (undid) the last drawn line cell. */
   retracted: boolean;
 }
 
-const NO_MOVE: MarkerMoveResult = { moved: false, lineClosed: false, closedLine: null, retracted: false };
+const NO_MOVE: MarkerMoveResult = {
+  moved: false,
+  lineClosed: false,
+  closedLine: null,
+  lineSpeed: null,
+  retracted: false,
+};
 
 export class Marker {
   private position: Point;
   private line: Point[] = [];
+  // Parallel to `line`: the speed used to draw each corresponding cell
+  // (docs/plan.md §3.2 "速度を切り替えた場合、最終的に高速で囲んだ扱い").
+  // Kept in lockstep with `line` (same push on draw, same pop on retract) so
+  // a retracted fast cell no longer counts once undone.
+  private lineSpeeds: LineSpeed[] = [];
   private lineStart: Point | null = null;
   private drawing = false;
   private retractEnabled: boolean;
@@ -77,6 +95,7 @@ export class Marker {
 
     this.position = { ...this.lineStart };
     this.line = [];
+    this.lineSpeeds = [];
     this.drawing = false;
     this.lineStart = null;
     return this.getPosition();
@@ -97,9 +116,14 @@ export class Marker {
    *   self-intersection, *unless* it is the immediately preceding cell
    *   (retract), in which case the trailing LINE cell is undone.
    * - Reaching a BORDER cell while drawing closes the line and returns the
-   *   drawn cells via `closedLine` for the caller to hand to `claimArea`.
+   *   drawn cells via `closedLine` for the caller to hand to `claimArea`,
+   *   along with the overall `lineSpeed` to score/claim it at.
+   *
+   * `speed` (docs/plan.md §3.2/§5.1) only matters while actually drawing
+   * into an UNCLAIMED cell; it's ignored for BORDER movement and retracts.
+   * Defaults to 'fast' (the only speed that existed before M3).
    */
-  tryMove(field: Field, dx: Axis, dy: Axis, drawHeld: boolean): MarkerMoveResult {
+  tryMove(field: Field, dx: Axis, dy: Axis, drawHeld: boolean, speed: LineSpeed = 'fast'): MarkerMoveResult {
     if ((dx === 0 && dy === 0) || (dx !== 0 && dy !== 0)) {
       return NO_MOVE;
     }
@@ -109,9 +133,20 @@ export class Marker {
       return NO_MOVE;
     }
 
-    if (this.drawing && this.retractEnabled) {
-      const retracted = this.tryRetract(field, next);
-      if (retracted) return retracted;
+    if (this.drawing) {
+      // The retract target is the cell immediately behind the marker: the
+      // second-to-last drawn cell, or the line's border start point if only
+      // one cell has been drawn so far. Note this can be a BORDER cell (the
+      // 1-cell-line case) — it must still be treated as "stepping backward",
+      // not as "reaching a border point" (which would incorrectly close the
+      // line as a zero-length loop) when retract is disabled.
+      const retractTarget = this.line.length >= 2 ? this.line[this.line.length - 2] : this.lineStart;
+      if (retractTarget && retractTarget.x === next.x && retractTarget.y === next.y) {
+        if (!this.retractEnabled) {
+          return NO_MOVE;
+        }
+        return this.performRetract(field, retractTarget);
+      }
     }
 
     const nextState = field.get(next);
@@ -128,14 +163,18 @@ export class Marker {
     if (nextState === BORDER) {
       if (this.drawing) {
         const closedLine = this.getLine();
+        // Mixed-speed line closes as 'fast' if any cell was drawn fast
+        // (docs/plan.md §3.2), 'slow' only if every cell was drawn slow.
+        const lineSpeed: LineSpeed = this.lineSpeeds.some((s) => s === 'fast') ? 'fast' : 'slow';
         this.position = next;
         this.drawing = false;
         this.line = [];
+        this.lineSpeeds = [];
         this.lineStart = null;
-        return { moved: true, lineClosed: true, closedLine, retracted: false };
+        return { moved: true, lineClosed: true, closedLine, lineSpeed, retracted: false };
       }
       this.position = next;
-      return { moved: true, lineClosed: false, closedLine: null, retracted: false };
+      return { moved: true, lineClosed: false, closedLine: null, lineSpeed: null, retracted: false };
     }
 
     // nextState === UNCLAIMED
@@ -146,20 +185,19 @@ export class Marker {
       this.drawing = true;
       this.lineStart = { ...this.position };
       this.line = [];
+      this.lineSpeeds = [];
     }
     this.line.push(next);
+    this.lineSpeeds.push(speed);
     field.set(next, LINE);
     this.position = next;
-    return { moved: true, lineClosed: false, closedLine: null, retracted: false };
+    return { moved: true, lineClosed: false, closedLine: null, lineSpeed: null, retracted: false };
   }
 
-  private tryRetract(field: Field, next: Point): MarkerMoveResult | null {
-    const retractTarget = this.line.length >= 2 ? this.line[this.line.length - 2] : this.lineStart;
-    if (!retractTarget || next.x !== retractTarget.x || next.y !== retractTarget.y) {
-      return null;
-    }
-
+  /** Undoes the trailing drawn cell, moving the marker back to `retractTarget`. */
+  private performRetract(field: Field, retractTarget: Point): MarkerMoveResult {
     const removed = this.line.pop();
+    this.lineSpeeds.pop();
     if (removed) {
       field.set(removed, UNCLAIMED);
     }
@@ -169,6 +207,6 @@ export class Marker {
       this.drawing = false;
       this.lineStart = null;
     }
-    return { moved: true, lineClosed: false, closedLine: null, retracted: true };
+    return { moved: true, lineClosed: false, closedLine: null, lineSpeed: null, retracted: true };
   }
 }

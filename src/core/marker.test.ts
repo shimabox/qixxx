@@ -151,4 +151,96 @@ describe('Marker', () => {
     expect(marker.tryMove(field, 0, 0, false).moved).toBe(false);
     expect(marker.tryMove(field, 1, 1, false).moved).toBe(false);
   });
+
+  it('re-enables retract after being disabled and re-enabled (design hook: Igniter despawn, docs/plan.md §3.2)', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 3, y: 0 }, { retractEnabled: false });
+
+    marker.tryMove(field, 0, 1, true); // -> (3,1)
+    marker.tryMove(field, 0, 1, true); // -> (3,2)
+    const blocked = marker.tryMove(field, 0, -1, true); // retract attempt while disabled
+    expect(blocked.retracted).toBe(false);
+
+    marker.setRetractEnabled(true);
+    const retract = marker.tryMove(field, 0, -1, false); // -> back to (3,1)
+
+    expect(retract.moved).toBe(true);
+    expect(retract.retracted).toBe(true);
+    expect(marker.getPosition()).toEqual({ x: 3, y: 1 });
+  });
+
+  it('rejects backing onto the line-start BORDER point when retract is disabled, instead of closing a zero-length loop', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 3, y: 0 }, { retractEnabled: false });
+
+    marker.tryMove(field, 0, 1, true); // -> (3,1); a single-cell line, so the
+    // retract target (the cell "behind" the marker) is the line's BORDER
+    // start point itself, not another LINE cell — this must still be
+    // rejected outright, not misread as "reached a border point, close the
+    // line" (which would let the player escape the Igniter for free).
+    const result = marker.tryMove(field, 0, -1, true);
+
+    expect(result.moved).toBe(false);
+    expect(result.lineClosed).toBe(false);
+    expect(marker.isDrawing()).toBe(true);
+    expect(marker.getPosition()).toEqual({ x: 3, y: 1 });
+    expect(marker.getLine()).toEqual([{ x: 3, y: 1 }]);
+  });
+});
+
+describe('Marker — line speed tracking (M3, docs/plan.md §3.2/§5.1)', () => {
+  it('closes an all-slow line as slow', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,1)
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,2)
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,3)
+    const closing = marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,4) BORDER: closes
+
+    expect(closing.lineClosed).toBe(true);
+    expect(closing.lineSpeed).toBe('slow');
+  });
+
+  it('closes as fast when every cell was drawn fast (default speed)', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+
+    marker.tryMove(field, 0, 1, true); // default speed = 'fast'
+    marker.tryMove(field, 0, 1, true);
+    marker.tryMove(field, 0, 1, true);
+    const closing = marker.tryMove(field, 0, 1, true);
+
+    expect(closing.lineClosed).toBe(true);
+    expect(closing.lineSpeed).toBe('fast');
+  });
+
+  it('closes a mixed-speed line as fast even if only one cell was drawn fast (docs/plan.md §3.2)', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,1) slow
+    marker.tryMove(field, 0, 1, true, 'fast'); // -> (2,2) fast
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,3) slow
+    const closing = marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,4) BORDER: closes
+
+    expect(closing.lineClosed).toBe(true);
+    expect(closing.lineSpeed).toBe('fast');
+  });
+
+  it('forgets a retracted fast cell: a fully-slow line after retracting away the only fast cell closes as slow', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+
+    marker.tryMove(field, 0, 1, true, 'fast'); // -> (2,1) fast
+    marker.tryMove(field, 0, -1, false); // retract back to (2,0); fast cell undone
+
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,1) slow
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,2) slow
+    marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,3) slow
+    const closing = marker.tryMove(field, 0, 1, true, 'slow'); // -> (2,4) BORDER: closes
+
+    expect(closing.lineClosed).toBe(true);
+    expect(closing.lineSpeed).toBe('slow');
+  });
 });

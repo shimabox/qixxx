@@ -12,6 +12,8 @@ import {
   COLOR_MARKER,
   COLOR_WISP_HEAD,
   COLOR_WISP_TRAIL,
+  COLOR_EMBER,
+  COLOR_IGNITER,
 } from '../config';
 
 export class Renderer {
@@ -65,12 +67,24 @@ export class Renderer {
     return layer;
   }
 
-  render(field: Field, markerPosition?: Point, wispTrail?: Point[]): void {
+  render(
+    field: Field,
+    markerPosition?: Point,
+    wispTrail?: Point[],
+    emberPositions?: Point[],
+    igniterPosition?: Point | null
+  ): void {
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
     this.drawField(field);
     if (wispTrail && wispTrail.length > 0) {
       this.drawWisp(wispTrail);
+    }
+    if (emberPositions && emberPositions.length > 0) {
+      this.drawEmbers(emberPositions);
+    }
+    if (igniterPosition) {
+      this.drawIgniter(igniterPosition);
     }
     if (markerPosition) {
       this.drawMarker(markerPosition);
@@ -122,6 +136,20 @@ export class Renderer {
     this.ctx.fillStyle = COLOR_WISP_HEAD;
     const head = trail[0];
     this.ctx.fillRect(head.x * RENDER_SCALE, head.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+  }
+
+  // Draws each Ember (border-patrol enemy) as a solid cell.
+  private drawEmbers(positions: Point[]): void {
+    this.ctx.fillStyle = COLOR_EMBER;
+    for (const p of positions) {
+      this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+    }
+  }
+
+  // Draws the Igniter (line-chasing enemy) as a solid cell along the line it's climbing.
+  private drawIgniter(position: Point): void {
+    this.ctx.fillStyle = COLOR_IGNITER;
+    this.ctx.fillRect(position.x * RENDER_SCALE, position.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
   }
 
   private drawMarker(position: Point): void {

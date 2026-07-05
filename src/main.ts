@@ -46,7 +46,13 @@ function init(): void {
   renderer = new Renderer(getCanvasElement());
   keyboard = new KeyboardInput();
   hud = getHudElement();
-  renderer.render(game.getField(), game.getMarker().getPosition(), game.getWisp().getTrail());
+  renderer.render(
+    game.getField(),
+    game.getMarker().getPosition(),
+    game.getWisp().getTrail(),
+    game.getEmberPositions(),
+    game.getIgniterPosition()
+  );
 }
 
 // Update logic (fixed timestep)
@@ -56,7 +62,13 @@ function update(): void {
 
 // Render the current game state, including the HUD.
 function renderFrame(): void {
-  renderer.render(game.getField(), game.getMarker().getPosition(), game.getWisp().getTrail());
+  renderer.render(
+    game.getField(),
+    game.getMarker().getPosition(),
+    game.getWisp().getTrail(),
+    game.getEmberPositions(),
+    game.getIgniterPosition()
+  );
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
   const status = game.getStatus();
   let statusText = '';
@@ -65,7 +77,7 @@ function renderFrame(): void {
   } else if (status === 'gameover') {
     statusText = ' — GAME OVER';
   }
-  hud.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${game.getLives()}${statusText}`;
+  hud.textContent = `SCORE: ${game.getScore()}  OCCUPANCY: ${occupancyPercent}%  LIVES: ${game.getLives()}${statusText}`;
 }
 
 // Game loop with fixed timestep (accumulator pattern)

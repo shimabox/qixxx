@@ -14,6 +14,10 @@ export interface Point {
   y: number;
 }
 
+export function pointsEqual(a: Point, b: Point): boolean {
+  return a.x === b.x && a.y === b.y;
+}
+
 export class Field {
   private grid: Uint8Array;
   private width: number;
