@@ -1,8 +1,11 @@
-// Game state coordinator. Pure logic — no DOM/Canvas dependencies.
-// Owns the field + marker + enemies, drives movement, triggers claimArea when
-// a line closes, and resolves collisions into misses/lives/stage-clear. A
-// full Title/StageClear/GameOver state machine arrives in M4 (docs/plan.md
-// §6) — this is the minimal subset needed for the M3 acceptance criteria.
+// Game state coordinator for a single stage. Pure logic — no DOM/Canvas
+// dependencies. Owns the field + marker + enemies, drives movement, triggers
+// claimArea when a line closes (including the M4 split-clear path for 2-Wisp
+// stages, docs/plan.md §4.2), and resolves collisions into misses/lives/
+// stage-clear. The full Title/Playing/StageClear/GameOver state machine that
+// strings stages together across a run (docs/plan.md §4.4 / §6 M4) lives one
+// level up, in core/session.ts's GameSession — this class only ever knows
+// about 'playing' | 'stageclear' | 'gameover' for the stage it's running.
 import { Field, Point, pointsEqual } from './field';
 import { Marker, MarkerMoveResult, Axis } from './marker';
 import { claimArea, ClaimResult, LineSpeed } from './claim';
@@ -33,10 +36,10 @@ export interface GameInput {
 }
 
 /**
- * Minimal game status for M2/M3. The full Title/Playing/StageClear/GameOver
- * state machine (with transitions back to Playing / Title) is M4 scope
- * (docs/plan.md §4.4 / §6) — for now, once the game leaves 'playing' it
- * simply stops advancing.
+ * Status of a single stage's simulation. Once it leaves 'playing' this class
+ * stops advancing — 'stageclear' -> next stage's Playing and 'gameover' ->
+ * Title are decided and driven by GameSession (core/session.ts, docs/plan.md
+ * §4.4 / §6 M4), which replaces this Game instance entirely to move on.
  */
 export type GameStatus = 'playing' | 'gameover' | 'stageclear';
 
@@ -50,12 +53,38 @@ export interface GameOptions {
   emberSpawnIntervalTicks?: number;
   /** Initial score multiplier (test hook for exercising the miss-reset path; docs/plan.md §3.5/§3.6). */
   multiplier?: number;
+  /**
+   * Starting score (docs/plan.md §6 M4: score carries across a stage-clear
+   * into the next stage). Defaults to 0 — the M1-M3 behavior for a
+   * standalone Game.
+   */
+  score?: number;
+  /**
+   * Starting lives (docs/plan.md §6 M4: lives carry across a stage-clear
+   * into the next stage). Defaults to INITIAL_LIVES — the M2-M3 behavior for
+   * a standalone Game.
+   */
+  lives?: number;
+  /**
+   * Wisps present this stage (docs/plan.md §3.7: 1 for stage 1-2, 2 for
+   * stage 3+ — see core/stage.ts). Takes precedence over the single `wisp`
+   * constructor parameter when provided. Defaults to a single Wisp (the
+   * `wisp` param, or a freshly-constructed one) so single-Wisp callers/tests
+   * are unaffected.
+   */
+  wisps?: Wisp[];
+  /**
+   * Required occupancy to clear this stage (docs/plan.md §3.7): 65% for
+   * stage 1-2, escalating to 75% by stage 3+. Defaults to
+   * DEFAULT_REQUIRED_OCCUPANCY.
+   */
+  requiredOccupancy?: number;
 }
 
 export class Game {
   private field: Field;
   private marker: Marker;
-  private wisp: Wisp;
+  private wisps: Wisp[];
   private embers: Ember[];
   private emberSpawnIntervalTicks: number;
   private emberSpawnCooldownTicks: number;
@@ -67,6 +96,12 @@ export class Game {
   private status: GameStatus = 'playing';
   private score = 0;
   private multiplier: number;
+  private requiredOccupancy: number;
+  // True when the most recent area claim cleared the stage by splitting the
+  // Wisps apart rather than by reaching requiredOccupancy (docs/plan.md
+  // §4.2/§3.6 "2匹 QIX への拡張"). Consumed by the session/stage layer to
+  // decide whether to bump the next stage's score multiplier.
+  private lastClearWasSplit = false;
   // Remaining post-miss grace ticks (docs/plan.md §3.5): while > 0, all miss
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
@@ -87,12 +122,15 @@ export class Game {
       x: Math.floor(field.getWidth() / 2),
       y: Math.floor(field.getHeight() / 2),
     };
-    this.wisp = wisp ?? new Wisp(wispStart, rng);
+    this.wisps = options.wisps ? [...options.wisps] : [wisp ?? new Wisp(wispStart, rng)];
 
     this.embers = options.embers ? [...options.embers] : [];
     this.emberSpawnIntervalTicks = options.emberSpawnIntervalTicks ?? EMBER_SPAWN_INTERVAL_TICKS;
     this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
     this.multiplier = options.multiplier ?? DEFAULT_SCORE_MULTIPLIER;
+    this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
+    this.score = options.score ?? 0;
+    this.lives = options.lives ?? INITIAL_LIVES;
   }
 
   getField(): Field {
@@ -103,8 +141,23 @@ export class Game {
     return this.marker;
   }
 
+  /** The first (or only) Wisp — kept for the single-Wisp (stage 1-2) call sites/tests. */
   getWisp(): Wisp {
-    return this.wisp;
+    return this.wisps[0];
+  }
+
+  /** All Wisps present this stage (docs/plan.md §3.7: 1 for stage 1-2, 2 for stage 3+). */
+  getWisps(): Wisp[] {
+    return this.wisps;
+  }
+
+  getRequiredOccupancy(): number {
+    return this.requiredOccupancy;
+  }
+
+  /** See `lastClearWasSplit` — true iff the stage most recently cleared via a split, not occupancy. */
+  getLastClearWasSplit(): boolean {
+    return this.lastClearWasSplit;
   }
 
   getEmbers(): Ember[] {
@@ -159,7 +212,9 @@ export class Game {
     }
 
     const markerPositionBeforeMove = this.marker.getPosition();
-    this.wisp.update(this.field);
+    for (const wisp of this.wisps) {
+      wisp.update(this.field);
+    }
     for (const ember of this.embers) {
       ember.update(this.field, markerPositionBeforeMove);
     }
@@ -179,12 +234,20 @@ export class Game {
 
       if (result.lineClosed && result.closedLine) {
         const lineSpeed: LineSpeed = result.lineSpeed ?? 'fast';
-        const claimResult: ClaimResult = claimArea(this.field, result.closedLine, this.wisp.getPosition(), lineSpeed);
+        const wispPositions = this.wisps.map((w) => w.getPosition());
+        const claimResult: ClaimResult = claimArea(this.field, result.closedLine, wispPositions, lineSpeed);
         this.occupancy = claimResult.occupancy;
         this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
         this.despawnIgniter();
-        if (this.occupancy >= DEFAULT_REQUIRED_OCCUPANCY) {
-          this.score += scoreStageClearBonus(this.occupancy, DEFAULT_REQUIRED_OCCUPANCY);
+        this.lastClearWasSplit = claimResult.split;
+        if (claimResult.split) {
+          // Splitting the Wisps apart clears the stage instantly, regardless
+          // of occupancy (docs/plan.md §4.2/§3.6). The multiplier bump for
+          // next stage is the session layer's responsibility (it owns the
+          // split-success streak across stage boundaries).
+          this.status = 'stageclear';
+        } else if (this.occupancy >= this.requiredOccupancy) {
+          this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
           this.status = 'stageclear';
         }
       }
@@ -213,7 +276,7 @@ export class Game {
       !inGrace &&
       !missedThisTick &&
       this.status === 'playing' &&
-      (checkCollision(this.field, this.wisp.getTrail(), this.marker.getPosition()) ||
+      (this.wisps.some((w) => checkCollision(this.field, w.getTrail(), this.marker.getPosition())) ||
         this.embers.some((e) => pointsEqual(e.getPosition(), this.marker.getPosition())))
     ) {
       this.handleMiss();

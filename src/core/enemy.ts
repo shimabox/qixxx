@@ -25,6 +25,7 @@ export class Wisp {
   private angle: number;
   private history: Point[];
   private readonly rng: Rng;
+  private readonly speedMultiplier: number;
 
   /**
    * @param start Initial head position (must be an UNCLAIMED cell).
@@ -33,12 +34,16 @@ export class Wisp {
    *   should inject a deterministic function.
    * @param initialAngle Optional fixed starting heading in radians. Useful
    *   for deterministic tests that also want a deterministic first move.
+   * @param speedMultiplier Scales WISP_SPEED (docs/plan.md §3.7 stage
+   *   progression: stage 2 is x1.15, stage 3+ escalates further up to x2).
+   *   Defaults to 1 (the M1-M3 baseline speed).
    */
-  constructor(start: Point, rng: Rng = Math.random, initialAngle?: number) {
+  constructor(start: Point, rng: Rng = Math.random, initialAngle?: number, speedMultiplier = 1) {
     this.pos = { x: start.x, y: start.y };
     this.rng = rng;
     this.angle = initialAngle ?? rng() * Math.PI * 2;
     this.history = [this.getPosition()];
+    this.speedMultiplier = speedMultiplier;
   }
 
   /** Current head position, snapped to the grid. */
@@ -71,8 +76,8 @@ export class Wisp {
   update(field: Field): void {
     this.angle += (this.rng() * 2 - 1) * WISP_TURN_JITTER;
 
-    const dx = Math.cos(this.angle) * WISP_SPEED;
-    const dy = Math.sin(this.angle) * WISP_SPEED;
+    const dx = Math.cos(this.angle) * WISP_SPEED * this.speedMultiplier;
+    const dy = Math.sin(this.angle) * WISP_SPEED * this.speedMultiplier;
 
     const step =
       this.tryStep(field, dx, dy) ??

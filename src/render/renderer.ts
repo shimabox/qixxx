@@ -70,15 +70,21 @@ export class Renderer {
   render(
     field: Field,
     markerPosition?: Point,
-    wispTrail?: Point[],
+    wispTrails?: Point[][],
     emberPositions?: Point[],
     igniterPosition?: Point | null
   ): void {
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
     this.drawField(field);
-    if (wispTrail && wispTrail.length > 0) {
-      this.drawWisp(wispTrail);
+    if (wispTrails) {
+      // docs/plan.md §3.7/§4.2: stage 3+ has 2 Wisps; each gets its own
+      // afterimage trail + head, drawn independently.
+      for (const trail of wispTrails) {
+        if (trail.length > 0) {
+          this.drawWisp(trail);
+        }
+      }
     }
     if (emberPositions && emberPositions.length > 0) {
       this.drawEmbers(emberPositions);

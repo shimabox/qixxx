@@ -1,6 +1,7 @@
-import { Game } from './core/game';
+import { GameSession } from './core/session';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
+import { loadHighScore, saveHighScore } from './storage/highscore';
 import { TICK_DURATION, MAX_FRAME_DELTA, HUD_FONT, HUD_TEXT_COLOR } from './config';
 
 // Get or create canvas element
@@ -14,7 +15,7 @@ function getCanvasElement(): HTMLCanvasElement {
   return canvas;
 }
 
-// Get or create the HUD overlay element (occupancy display, §3.3 / §6 M1).
+// Get or create the HUD overlay element (stage/score/occupancy/lives/multiplier, §3.3/§6 M1/M4).
 function getHudElement(): HTMLDivElement {
   let hud = document.getElementById('hud') as HTMLDivElement | null;
   if (!hud) {
@@ -32,52 +33,97 @@ function getHudElement(): HTMLDivElement {
   return hud;
 }
 
+// Get or create the centered screen overlay (Title / StageClear / GameOver, §4.4/§6 M4).
+// Visuals here are intentionally plain text — glow/polish is M5 scope.
+function getScreenElement(): HTMLDivElement {
+  let screen = document.getElementById('screen') as HTMLDivElement | null;
+  if (!screen) {
+    screen = document.createElement('div');
+    screen.id = 'screen';
+    screen.style.position = 'fixed';
+    screen.style.top = '50%';
+    screen.style.left = '50%';
+    screen.style.transform = 'translate(-50%, -50%)';
+    screen.style.color = HUD_TEXT_COLOR;
+    screen.style.font = HUD_FONT;
+    screen.style.textAlign = 'center';
+    screen.style.whiteSpace = 'pre-line';
+    screen.style.pointerEvents = 'none';
+    screen.style.userSelect = 'none';
+    document.body.appendChild(screen);
+  }
+  return screen;
+}
+
 // Game state
-let game: Game;
+let session: GameSession;
 let renderer: Renderer;
 let keyboard: KeyboardInput;
 let hud: HTMLDivElement;
+let screen: HTMLDivElement;
 let accumulator = 0;
 let lastTime = performance.now();
+// Tracks the highest value already written to storage, so we only touch
+// localStorage when the high score actually changes (docs/plan.md's "core
+// never touches localStorage" invariant lives in src/storage/highscore.ts;
+// this is just the write-on-change guard, kept here in the DOM-facing layer).
+let lastSavedHighScore = 0;
 
 // Initialize game
 function init(): void {
-  game = new Game();
+  const highScore = loadHighScore();
+  lastSavedHighScore = highScore;
+  session = new GameSession({ highScore });
   renderer = new Renderer(getCanvasElement());
   keyboard = new KeyboardInput();
   hud = getHudElement();
-  renderer.render(
-    game.getField(),
-    game.getMarker().getPosition(),
-    game.getWisp().getTrail(),
-    game.getEmberPositions(),
-    game.getIgniterPosition()
-  );
+  screen = getScreenElement();
+  renderFrame();
 }
 
 // Update logic (fixed timestep)
 function update(): void {
-  game.update(keyboard.getInput());
+  session.update(keyboard.getInput());
+
+  const currentHighScore = session.getHighScore();
+  if (currentHighScore > lastSavedHighScore) {
+    lastSavedHighScore = currentHighScore;
+    saveHighScore(currentHighScore);
+  }
 }
 
-// Render the current game state, including the HUD.
+// Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
+  const game = session.getGame();
   renderer.render(
     game.getField(),
     game.getMarker().getPosition(),
-    game.getWisp().getTrail(),
+    game.getWisps().map((wisp) => wisp.getTrail()),
     game.getEmberPositions(),
     game.getIgniterPosition()
   );
+
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
-  const status = game.getStatus();
-  let statusText = '';
-  if (status === 'stageclear') {
-    statusText = ' — STAGE CLEAR!';
-  } else if (status === 'gameover') {
-    statusText = ' — GAME OVER';
+  hud.textContent =
+    `STAGE ${session.getStage()}  SCORE: ${session.getScore()}  HI: ${session.getHighScore()}  ` +
+    `OCCUPANCY: ${occupancyPercent}%  LIVES: ${session.getLives()}  x${session.getMultiplier()}`;
+
+  screen.textContent = screenText(session.getStatus());
+}
+
+function screenText(status: ReturnType<GameSession['getStatus']>): string {
+  switch (status) {
+    case 'title':
+      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY TO START`;
+    case 'stageclear': {
+      const splitNote = session.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
+      return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY FOR NEXT STAGE`;
+    }
+    case 'gameover':
+      return `GAME OVER\n\nSCORE: ${session.getScore()}\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY FOR TITLE`;
+    case 'playing':
+      return '';
   }
-  hud.textContent = `SCORE: ${game.getScore()}  OCCUPANCY: ${occupancyPercent}%  LIVES: ${game.getLives()}${statusText}`;
 }
 
 // Game loop with fixed timestep (accumulator pattern)

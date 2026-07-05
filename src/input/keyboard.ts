@@ -1,6 +1,6 @@
 // Keyboard input handling. DOM-dependent by design — this is the only layer
 // (besides render/ and main.ts) allowed to touch the DOM (docs/plan.md §4.4).
-import { GameInput } from '../core/game';
+import { SessionInput } from '../core/session';
 
 const MOVE_KEYS = {
   up: ['ArrowUp', 'KeyW'],
@@ -24,6 +24,11 @@ function isTrackedKey(code: string): boolean {
 export class KeyboardInput {
   private pressed = new Set<string>();
   private pressOrder: string[] = [];
+  // Edge-triggered "any key" pulse (docs/plan.md §4.4): set on any key that
+  // transitions from up to down, consumed (and cleared) the next time
+  // getInput() is called, so holding a key down doesn't fire more than one
+  // Title/StageClear/GameOver transition (see SessionInput.confirm).
+  private confirmPending = false;
   private target: EventTarget;
 
   constructor(target: EventTarget = window) {
@@ -37,6 +42,7 @@ export class KeyboardInput {
     if (!this.pressed.has(code)) {
       this.pressed.add(code);
       this.pressOrder.push(code);
+      this.confirmPending = true;
     }
     // Prevent the page from scrolling on arrow keys / space while playing.
     if (isTrackedKey(code)) {
@@ -53,11 +59,12 @@ export class KeyboardInput {
   /**
    * Resolves the current key state into a single 4-directional move (the
    * most recently pressed direction key wins if multiple are held) plus
-   * whether a fast-line button is held.
+   * whether a fast-line button is held, plus the edge-triggered `confirm`
+   * signal (docs/plan.md §4.4) for the Title/StageClear/GameOver screens.
    */
-  getInput(): GameInput {
-    let dx: GameInput['dx'] = 0;
-    let dy: GameInput['dy'] = 0;
+  getInput(): SessionInput {
+    let dx: SessionInput['dx'] = 0;
+    let dy: SessionInput['dy'] = 0;
 
     for (let i = this.pressOrder.length - 1; i >= 0; i--) {
       const code = this.pressOrder[i];
@@ -85,7 +92,10 @@ export class KeyboardInput {
     const drawHeld = fastHeld || slowHeld;
     const slow = slowHeld && !fastHeld;
 
-    return { dx, dy, drawHeld, slow };
+    const confirm = this.confirmPending;
+    this.confirmPending = false;
+
+    return { dx, dy, drawHeld, slow, confirm };
   }
 
   dispose(): void {

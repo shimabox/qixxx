@@ -193,6 +193,106 @@ describe('claimArea', () => {
   });
 });
 
+describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
+  it('claims only the region unreachable by either Wisp when both remain on the same side (normal confirm)', () => {
+    // Same field/line as the "L-shaped (bent) line" single-Wisp test above,
+    // but with a second Wisp added on the same open side: the pocket carved
+    // by the L is the only thing that should get claimed either way.
+    const parsed = parseField(`
+      ############
+      #..........#
+      #..........#
+      #..........#
+      #..........#
+      #..........#
+      #..........#
+      ############
+    `);
+    const q = { x: 2, y: 2 };
+    const r = { x: 8, y: 5 };
+    const line = pathFrom('(6,0) D D D R R R R R');
+
+    const result = claimArea(parsed.field, line, [q, r], 'fast');
+
+    expect(result.split).toBe(false);
+    expect(parsed.field.get({ x: 7, y: 1 })).toBe(CLAIMED_FAST);
+    expect(parsed.field.get({ x: 10, y: 2 })).toBe(CLAIMED_FAST);
+    // Both Wisps' shared open side (including each Wisp's own cell) stays open.
+    expect(parsed.field.get(q)).toBe(UNCLAIMED);
+    expect(parsed.field.get(r)).toBe(UNCLAIMED);
+    expect(result.claimedCells).toBe(8);
+  });
+
+  it('detects a split when the line separates the two Wisps into different UNCLAIMED components', () => {
+    // Same field/line as the first single-Wisp test above (a plain vertical
+    // divide), but this time a second Wisp sits on the *other* side of it.
+    const parsed = parseField(`
+      ##########
+      #..Q.....#
+      #........#
+      #........#
+      #........#
+      ##########
+    `);
+    const q = markerAt(parsed, 'Q'); // left side
+    const r = { x: 7, y: 2 }; // right side
+    const line = pathFrom('(5,0) D D D D');
+
+    const result = claimArea(parsed.field, line, [q, r], 'fast');
+
+    expect(result.split).toBe(true);
+    // The split-off Wisp's entire side is claimed (anchored on q, the first
+    // position); the anchor Wisp's own side stays open.
+    expect(result.claimedCells).toBe(12);
+    expect(parsed.field.get(r)).toBe(CLAIMED_FAST);
+    expect(parsed.field.get(q)).toBe(UNCLAIMED);
+  });
+
+  it('does not report a split when a Wisp position lands on the just-closed line itself (docs/plan.md §7.1 boundary case)', () => {
+    // R sits exactly where the line will run, i.e. this state could only
+    // arise from a bug elsewhere (a Wisp touching the line is normally a
+    // miss caught before claimArea ever runs) — claimArea should still
+    // degrade gracefully rather than reporting a false-positive split.
+    const parsed = parseField(`
+      ##########
+      #..Q..R..#
+      #........#
+      #........#
+      ##########
+    `);
+    const q = markerAt(parsed, 'Q');
+    const r = markerAt(parsed, 'R');
+    const line = pathFrom('(6,0) D D D D');
+    expect(line[0]).toEqual(r); // sanity: the line's first cell is exactly R's position
+
+    const result = claimArea(parsed.field, line, [q, r], 'fast');
+
+    expect(result.split).toBe(false);
+    // R's former cell is now part of the (former-line) border, not claimed
+    // or reachable — it simply isn't counted either way.
+    expect(parsed.field.get(r)).toBe(BORDER);
+    expect(parsed.field.get(q)).toBe(UNCLAIMED);
+  });
+
+  it('remains backward compatible with a single (non-array) enemy position, always reporting split: false', () => {
+    const parsed = parseField(`
+      ##########
+      #..Q.....#
+      #........#
+      #........#
+      #........#
+      ##########
+    `);
+    const q = markerAt(parsed, 'Q');
+    const line = pathFrom('(5,0) D D D D');
+
+    const result = claimArea(parsed.field, line, q, 'fast');
+
+    expect(result.split).toBe(false);
+    expect(result.claimedCells).toBe(12);
+  });
+});
+
 describe('pruneDeadBorders', () => {
   it('converts a fully-enclosed interior border segment (a dead former line) into claimed cells', () => {
     // An interior wall at x=3 with claimed area on both sides, all inside

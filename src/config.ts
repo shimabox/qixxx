@@ -14,7 +14,13 @@ export const TICK_DURATION = 1 / TICK_RATE; // seconds per update
 // running thousands of catch-up ticks after the tab was inactive (spiral of death).
 export const MAX_FRAME_DELTA = 0.25;
 
-// Stage progression
+// Stage progression (docs/plan.md §3.7): stage 1 and 2 use the explicit
+// values below; stage 3+ (2-Wisp stages, see WISP/EMBER/OCCUPANCY *_STAGE3*
+// and *_STEP constants further down) escalate difficulty per stage, each
+// capped at its documented bound. The exact per-stage curve (how fast each
+// value escalates) is an original tuning choice — the plan only pins down
+// the stage 1/2 values and the stage 3+ asymptotic bounds (speed x2 cap,
+// Ember interval 10s floor, occupancy 75% cap).
 export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // 65% for stage 1-2, increases to 75% in stage 3+
 
 // Lives (M2, docs/plan.md §3.5)
@@ -51,6 +57,31 @@ export const MARKER_MOVE_TICKS_SLOW = 2;
 export const EMBER_SPAWN_INTERVAL_SEC = 30;
 export const EMBER_SPAWN_INTERVAL_TICKS = EMBER_SPAWN_INTERVAL_SEC * TICK_RATE;
 export const EMBER_MOVE_TICKS = 3;
+
+// Stage 2 tuning (docs/plan.md §3.7): 1 Wisp, x1.15 speed, 25s Ember interval,
+// same 65% required occupancy as stage 1.
+export const STAGE2_WISP_SPEED_MULTIPLIER = 1.15;
+export const STAGE2_EMBER_SPAWN_INTERVAL_SEC = 25;
+
+// Stage 3+ tuning (docs/plan.md §3.7 / §4.2): two Wisps (split-clearable),
+// with speed/Ember-interval/required-occupancy escalating one step per stage
+// beyond 3, each capped at its documented bound.
+export const STAGE3_WISP_COUNT = 2;
+export const STAGE3_WISP_SPEED_MULTIPLIER_BASE = 1.3;
+export const WISP_SPEED_MULTIPLIER_STEP = 0.1; // + per stage beyond 3
+export const WISP_SPEED_MULTIPLIER_MAX = 2.0; // hard cap (docs/plan.md §3.7: "上限×2")
+
+export const STAGE3_EMBER_SPAWN_INTERVAL_SEC = 20;
+export const EMBER_SPAWN_INTERVAL_STEP_SEC = 2; // - per stage beyond 3
+export const EMBER_SPAWN_INTERVAL_MIN_SEC = 10; // floor (docs/plan.md §3.7: "下限10秒")
+
+export const REQUIRED_OCCUPANCY_STEP = 0.02; // + per stage from stage 3 onward
+export const REQUIRED_OCCUPANCY_MAX = 0.75; // cap (docs/plan.md §3.3/§3.7)
+
+// Split multiplier (docs/plan.md §3.6): the score multiplier for a stage is
+// `split successes + 1`, capped at 9x, and resets to 1x (0 successes) the
+// instant any life is lost.
+export const SPLIT_MULTIPLIER_CAP = 9;
 
 // Igniter: the enemy that chases up the player's in-progress line from its
 // root (docs/plan.md §3.4 (3) describes this as "Fuse"; per §1 the original

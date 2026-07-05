@@ -8,6 +8,7 @@ import {
   MISS_GRACE_TICKS,
   MARKER_MOVE_TICKS_SLOW,
   IGNITER_SPAWN_STILL_TICKS,
+  DEFAULT_REQUIRED_OCCUPANCY,
 } from '../config';
 
 describe('Game', () => {
@@ -389,5 +390,65 @@ describe('Game — Igniter lifecycle (M3, docs/plan.md §3.2/§3.4 (3)/§3.5)', 
     expect(game.getStatus()).toBe('stageclear');
     expect(game.getIgniter()).toBeNull();
     expect(game.getLives()).toBe(INITIAL_LIVES);
+  });
+});
+
+describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4.2/§3.6/§3.7)', () => {
+  it('clears the stage instantly via a split, even when occupancy is well under the required threshold', () => {
+    const field = new Field(10, 5); // interior x=1..8, y=1..3 -> 24 UNCLAIMED cells
+    const leftWisp = new Wisp({ x: 2, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 2
+    const rightWisp = new Wisp({ x: 7, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 7
+    const game = new Game(field, { x: 5, y: 0 }, undefined, undefined, { wisps: [leftWisp, rightWisp] });
+
+    expect(game.getWisps()).toHaveLength(2);
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (5,1) LINE
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (5,2) LINE
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (5,3) LINE
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (5,4) BORDER: closes, splitting the two Wisps apart
+
+    expect(game.getStatus()).toBe('stageclear');
+    expect(game.getLastClearWasSplit()).toBe(true);
+    // Well under DEFAULT_REQUIRED_OCCUPANCY (0.65) — the split alone cleared it.
+    expect(game.getOccupancy()).toBeLessThan(DEFAULT_REQUIRED_OCCUPANCY);
+  });
+
+  it('does not report a split-clear for an ordinary (non-split) 2-Wisp area confirmation', () => {
+    const field = new Field(10, 5); // interior x=1..8, y=1..3 -> 24 UNCLAIMED cells
+    const wispA = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 8
+    const wispB = new Wisp({ x: 8, y: 3 }, () => 0.5, Math.PI / 2); // same (right) side as wispA
+    const game = new Game(field, { x: 7, y: 0 }, undefined, undefined, { wisps: [wispA, wispB] });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,1)
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,2)
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,3)
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,4) BORDER: closes, claiming the 18-cell left side
+
+    expect(game.getOccupancy()).toBeCloseTo(18 / 24);
+    expect(game.getLastClearWasSplit()).toBe(false);
+    expect(game.getStatus()).toBe('stageclear'); // cleared via occupancy, not a split
+  });
+
+  it('honors a custom requiredOccupancy (docs/plan.md §3.7 stage 3+ escalates toward 75%)', () => {
+    const field = new Field(10, 5); // 24 UNCLAIMED cells
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp, undefined, { requiredOccupancy: 0.9 });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // claims 18/24 = 75%, short of the 90% requirement
+
+    expect(game.getOccupancy()).toBeCloseTo(18 / 24);
+    expect(game.getStatus()).toBe('playing'); // not cleared — requirement wasn't met
+  });
+
+  it('carries a starting score and lives via GameOptions (docs/plan.md §6 M4 stage-to-stage carryover)', () => {
+    const field = new Field(6, 5);
+    const wisp = new Wisp({ x: 3, y: 2 }, () => 0.5, 0);
+    const game = new Game(field, { x: 2, y: 0 }, wisp, undefined, { score: 1234, lives: 2 });
+
+    expect(game.getScore()).toBe(1234);
+    expect(game.getLives()).toBe(2);
   });
 });

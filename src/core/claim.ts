@@ -7,6 +7,14 @@ export type LineSpeed = 'fast' | 'slow';
 export interface ClaimResult {
   claimedCells: number;
   occupancy: number;
+  /**
+   * True when at least 2 enemy positions were passed to `claimArea` and, once
+   * the line closed, one of them ended up outside the connected UNCLAIMED
+   * component containing the first (docs/plan.md §4.2 "2匹 QIX への拡張":
+   * splitting the enemies apart is an instant stage-clear, tracked one level
+   * up by whoever calls `claimArea`). Always false for 0 or 1 enemies.
+   */
+  split: boolean;
 }
 
 const FOUR_NEIGHBOR_DELTAS: ReadonlyArray<{ dx: number; dy: number }> = [
@@ -116,21 +124,58 @@ export function pruneDeadBorders(field: Field): void {
  * Closes a line and claims the resulting area.
  *
  * 1. All `line` cells become BORDER.
- * 2. UNCLAIMED cells reachable (4-connected) from `enemyPos` stay UNCLAIMED.
+ * 2. UNCLAIMED cells reachable (4-connected) from the first enemy position
+ *    stay UNCLAIMED.
  * 3. All other UNCLAIMED cells become CLAIMED_FAST/CLAIMED_SLOW (per `speed`).
  * 4. Dead borders (fully surrounded by claimed area) are pruned.
  *
  * `line` should contain only the interior cells drawn while off the border
  * (the start/end border points are already BORDER and don't need to be
  * included, though including them is harmless).
+ *
+ * `enemyPos` accepts either a single position (the M1-M3 single-Wisp shape,
+ * kept for backward compatibility) or an array of positions (docs/plan.md
+ * §4.2 "2匹 QIX への拡張"). When 2+ positions are given:
+ *
+ * - If every position lands in the same connected UNCLAIMED component
+ *   (the common case), that single component is exactly "reachable from any
+ *   enemy" per §4.2 — UNCLAIMED connectivity is symmetric, so there's no
+ *   separate union to compute — and claiming proceeds exactly as the
+ *   single-enemy case, anchored on the first position.
+ * - If a later position ends up in a *different* component than the first,
+ *   that's a split (`result.split = true`): the caller (docs/plan.md's
+ *   session/game layer) is expected to treat this as an instant stage clear.
+ *   The claim itself still anchors on the first position (its side stays
+ *   UNCLAIMED; every other component, including the split-off enemy's, is
+ *   claimed) so a split still yields a well-defined, scorable area.
+ *
+ * A boundary case (docs/plan.md §7.1) is deliberately excluded from split
+ * detection: an enemy position that is no longer UNCLAIMED once the line
+ * cells above are set (e.g. the line ran directly through it) can't be a
+ * legitimate half of a split — the field state doesn't actually contain that
+ * enemy in either resulting region — so it's ignored rather than reported as
+ * a (false-positive) split.
  */
-export function claimArea(field: Field, line: Point[], enemyPos: Point, speed: LineSpeed): ClaimResult {
+export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[], speed: LineSpeed): ClaimResult {
   for (const p of line) {
     field.set(p, BORDER);
   }
 
-  const reachable = floodFillUnclaimed(field, enemyPos);
+  const positions = Array.isArray(enemyPos) ? enemyPos : [enemyPos];
   const width = field.getWidth();
+
+  const reachable = floodFillUnclaimed(field, positions[0]);
+
+  let split = false;
+  for (let i = 1; i < positions.length; i++) {
+    const other = positions[i];
+    if (field.get(other) !== UNCLAIMED) continue; // boundary case: not a real half of a split (§7.1)
+    const idx = other.y * width + other.x;
+    if (!reachable.has(idx)) {
+      split = true;
+    }
+  }
+
   const claimState = speed === 'slow' ? CLAIMED_SLOW : CLAIMED_FAST;
 
   let claimedCells = 0;
@@ -144,5 +189,5 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point, speed: L
 
   pruneDeadBorders(field);
 
-  return { claimedCells, occupancy: field.getOccupancy() };
+  return { claimedCells, occupancy: field.getOccupancy(), split };
 }

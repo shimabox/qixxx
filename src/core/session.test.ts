@@ -1,0 +1,267 @@
+import { describe, it, expect } from 'vitest';
+import { GameSession } from './session';
+import { Game } from './game';
+import { Field } from './field';
+import { Wisp } from './enemy';
+import { INITIAL_LIVES, MISS_GRACE_TICKS } from '../config';
+
+type Carry = { score: number; lives: number; multiplier: number };
+
+/**
+ * A tiny, deterministic stage that clears via ordinary occupancy (not a
+ * split) — a straight vertical line at x=7 in a 10x5 field (interior
+ * x=1..8, y=1..3 -> 24 UNCLAIMED cells), claiming the 18-cell left region
+ * with a single Wisp pinned at x=8 (mirrors game.test.ts's own "reaches
+ * stageclear" fixture, docs/plan.md §3.3/§3.7).
+ */
+function stageClearGame(_stage: number, carry: Carry): Game {
+  const field = new Field(10, 5);
+  const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading pins x at 8
+  return new Game(field, { x: 7, y: 0 }, wisp, undefined, {
+    score: carry.score,
+    lives: carry.lives,
+    multiplier: carry.multiplier,
+  });
+}
+
+/** Draws the straight vertical line that closes/clears `stageClearGame` (4 ticks). */
+function clearStageClearGame(session: GameSession): void {
+  for (let tick = 0; tick < 4; tick++) {
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+  }
+}
+
+/**
+ * A tiny, deterministic 2-Wisp stage that clears via a split — a straight
+ * vertical line at x=5 in a 10x5 field, with one Wisp pinned on each side
+ * (mirrors claim.test.ts's own split fixture, docs/plan.md §4.2).
+ */
+function splitGame(_stage: number, carry: Carry): Game {
+  const field = new Field(10, 5);
+  const leftWisp = new Wisp({ x: 2, y: 2 }, () => 0.5, Math.PI / 2);
+  const rightWisp = new Wisp({ x: 7, y: 2 }, () => 0.5, Math.PI / 2);
+  return new Game(field, { x: 5, y: 0 }, undefined, undefined, {
+    wisps: [leftWisp, rightWisp],
+    score: carry.score,
+    lives: carry.lives,
+    multiplier: carry.multiplier,
+  });
+}
+
+/** Draws the straight vertical line that closes/splits `splitGame` (4 ticks). */
+function clearSplitGame(session: GameSession): void {
+  for (let tick = 0; tick < 4; tick++) {
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+  }
+}
+
+/**
+ * A tiny, deterministic stage where the marker's very first step off the
+ * border lands on the Wisp's own position — an immediate miss (mirrors
+ * game.test.ts's own miss fixture, docs/plan.md §3.5).
+ */
+function missGame(_stage: number, carry: Carry): Game {
+  const field = new Field(6, 5);
+  const wisp = new Wisp({ x: 2, y: 1 }, () => 0.5, 0);
+  return new Game(field, { x: 2, y: 0 }, wisp, undefined, {
+    score: carry.score,
+    lives: carry.lives,
+    multiplier: carry.multiplier,
+  });
+}
+
+/**
+ * Drives `missGame` to gameover by deliberately missing over and over,
+ * burning off the post-miss grace period between attempts (docs/plan.md
+ * §3.5) so every deliberate miss actually costs a life — mirrors
+ * game.test.ts's own "goes to gameover once lives reach zero" pattern.
+ * Works regardless of how many lives the stage started with (respects
+ * whatever `carry.lives` was actually passed in, unlike a factory that
+ * hardcodes a life count).
+ */
+function driveToGameOver(session: GameSession): void {
+  while (session.getStatus() === 'playing') {
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // steps onto the Wisp's line cell -> miss
+    for (let tick = 0; tick < MISS_GRACE_TICKS && session.getStatus() === 'playing'; tick++) {
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+    }
+  }
+}
+
+describe('GameSession — Title/Playing/StageClear/GameOver state machine (M4, docs/plan.md §4.4/§6)', () => {
+  it('starts on the Title screen and only starts Playing once confirm is pressed', () => {
+    const session = new GameSession();
+    expect(session.getStatus()).toBe('title');
+
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: false });
+    expect(session.getStatus()).toBe('title'); // movement alone doesn't start the game
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('playing');
+    expect(session.getStage()).toBe(1);
+  });
+
+  it('carries score/lives/multiplier across a normal (non-split) stage clear, resetting occupancy for the new stage', () => {
+    const session = new GameSession({ gameFactory: stageClearGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearStageClearGame(session);
+    expect(session.getStatus()).toBe('stageclear');
+    expect(session.getGame().getLastClearWasSplit()).toBe(false);
+    const scoreAfterStage1 = session.getScore();
+    expect(scoreAfterStage1).toBeGreaterThan(0);
+    expect(session.getLives()).toBe(INITIAL_LIVES);
+    expect(session.getMultiplier()).toBe(1); // no split -> unchanged
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance
+    expect(session.getStatus()).toBe('playing');
+    expect(session.getStage()).toBe(2);
+    expect(session.getScore()).toBe(scoreAfterStage1); // carried over verbatim
+    expect(session.getGame().getOccupancy()).toBe(0); // fresh field
+
+    clearStageClearGame(session);
+    expect(session.getStatus()).toBe('stageclear');
+    expect(session.getScore()).toBeGreaterThan(scoreAfterStage1); // kept accumulating
+    expect(session.getLives()).toBe(INITIAL_LIVES); // never missed
+  });
+
+  it('bumps the score multiplier by split-successes + 1 on each split-stage-clear', () => {
+    const session = new GameSession({ gameFactory: splitGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    for (let expectedMultiplierAfter = 2; expectedMultiplierAfter <= 5; expectedMultiplierAfter++) {
+      clearSplitGame(session);
+      expect(session.getStatus()).toBe('stageclear');
+      expect(session.getGame().getLastClearWasSplit()).toBe(true);
+
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance
+      expect(session.getMultiplier()).toBe(expectedMultiplierAfter);
+    }
+  });
+
+  it('caps the split multiplier at 9x even after many consecutive splits', () => {
+    const session = new GameSession({ gameFactory: splitGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    for (let i = 0; i < 12; i++) {
+      clearSplitGame(session);
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    }
+
+    expect(session.getMultiplier()).toBe(9);
+  });
+
+  it('resets the multiplier to 1x on any miss, even after a split streak had raised it', () => {
+    const session = new GameSession({
+      gameFactory: (stage, carry) => (stage === 1 ? splitGame(stage, carry) : missGame(stage, carry)),
+    });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // stage 1, playing
+
+    clearSplitGame(session); // splits -> multiplier becomes 2
+    expect(session.getMultiplier()).toBe(2);
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance to stage 2 (missGame), carrying multiplier 2
+
+    const livesBefore = session.getLives();
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // steps onto the Wisp's line cell -> miss
+
+    expect(session.getLives()).toBe(livesBefore - 1);
+    expect(session.getMultiplier()).toBe(1);
+    expect(session.getStatus()).toBe('playing'); // still has lives left
+  });
+
+  it('goes to gameover once lives reach zero and tracks the high score', () => {
+    const session = new GameSession({ gameFactory: missGame, highScore: 500 });
+    expect(session.getHighScore()).toBe(500);
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getLives()).toBe(INITIAL_LIVES);
+
+    driveToGameOver(session);
+
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getLives()).toBe(0);
+    // This run scored 0, which never exceeded the seeded high score.
+    expect(session.getHighScore()).toBe(500);
+  });
+
+  it('fully resets stage/lives/score/multiplier on GameOver -> Title', () => {
+    const session = new GameSession({ gameFactory: missGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    driveToGameOver(session);
+    expect(session.getStatus()).toBe('gameover');
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Title
+
+    expect(session.getStatus()).toBe('title');
+    expect(session.getStage()).toBe(1);
+    expect(session.getLives()).toBe(INITIAL_LIVES);
+    expect(session.getScore()).toBe(0);
+    expect(session.getMultiplier()).toBe(1);
+
+    // And Title -> Playing afterward starts a genuinely fresh run.
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('playing');
+    expect(session.getLives()).toBe(INITIAL_LIVES);
+  });
+
+  it("raises the high score once this run's score exceeds the seeded value", () => {
+    const session = new GameSession({ gameFactory: stageClearGame, highScore: 5 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearStageClearGame(session);
+
+    expect(session.getScore()).toBeGreaterThan(5);
+    expect(session.getHighScore()).toBe(session.getScore());
+  });
+});
+
+describe('GameSession — real stage progression difficulty (M4, docs/plan.md §3.7)', () => {
+  const FIELD_WIDTH = 100;
+  const FIELD_HEIGHT = 6;
+
+  /**
+   * Lets the stage's single Wisp drift toward the left interior wall
+   * (deterministic: rng=()=>0.5 gives a fixed, purely-leftward heading with
+   * zero jitter — see enemy.ts), then walls off everything to its right
+   * with a generous margin (comfortably beyond the up-to-WISP_HISTORY_LENGTH
+   * -cell trail it's dragging along, docs/plan.md §3.4 — the trail itself is
+   * a hazard, so the drawn line must clear it entirely, not just the head)
+   * so the large remainder (>= 65% of the field) can be claimed with one
+   * straight vertical line.
+   */
+  function clearByWallingOffTheWisp(session: GameSession): void {
+    for (let tick = 0; tick < 400 && session.getGame().getWisps()[0].getPosition().x > 2; tick++) {
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+    }
+    const cornered = session.getGame().getWisps()[0].getPosition().x;
+    expect(cornered).toBeLessThanOrEqual(2);
+
+    const wallColumn = cornered + 30;
+    const marker = session.getGame().getMarker();
+    while (marker.getPosition().x > wallColumn) {
+      session.update({ dx: -1, dy: 0, drawHeld: false, confirm: false });
+    }
+    for (let tick = 0; tick < FIELD_HEIGHT - 1; tick++) {
+      session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+    }
+  }
+
+  it('spawns 2 Wisps starting at stage 3, via the real (non-test-hook) per-stage builder', () => {
+    const session = new GameSession({ fieldWidth: FIELD_WIDTH, fieldHeight: FIELD_HEIGHT, rng: () => 0.5 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 1, playing
+    expect(session.getStage()).toBe(1);
+    expect(session.getGame().getWisps().length).toBe(1);
+
+    clearByWallingOffTheWisp(session);
+    expect(session.getStatus()).toBe('stageclear');
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 2
+    expect(session.getStage()).toBe(2);
+    expect(session.getGame().getWisps().length).toBe(1);
+
+    clearByWallingOffTheWisp(session);
+    expect(session.getStatus()).toBe('stageclear');
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 3
+    expect(session.getStage()).toBe(3);
+    expect(session.getGame().getWisps().length).toBe(2);
+  });
+});

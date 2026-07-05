@@ -21,6 +21,7 @@ export default [
         console: 'readonly',
         performance: 'readonly',
         requestAnimationFrame: 'readonly',
+        localStorage: 'readonly',
       },
     },
     plugins: {
