@@ -6,7 +6,7 @@
 // strings stages together across a run (docs/plan.md §4.4 / §6 M4) lives one
 // level up, in core/session.ts's GameSession — this class only ever knows
 // about 'playing' | 'stageclear' | 'gameover' for the stage it's running.
-import { Field, Point, pointsEqual } from './field';
+import { Field, Point, pointsEqual, UNCLAIMED } from './field';
 import { Marker, MarkerMoveResult, Axis } from './marker';
 import { claimArea, ClaimResult, LineSpeed } from './claim';
 import { Wisp, Rng } from './enemy';
@@ -22,7 +22,50 @@ import {
   MISS_GRACE_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
   EMBER_SPAWN_INTERVAL_TICKS,
+  EMBER_MOVE_TICKS,
+  EMBER_BRANCH_CHASE_PROBABILITY,
+  TICK_RATE,
 } from '../config';
+
+/**
+ * Runtime tuning overrides for the dev-only debug panel (docs/plan.md §6
+ * M10 / §12.4). Every field is optional: `undefined` means "no override,
+ * use this stage's own default". Plain data — this type has no DOM
+ * dependency, so `src/core/` stays DOM-free even though `src/debug/panel.ts`
+ * is the only thing that ever constructs one of these outside tests.
+ */
+export interface DebugOverrides {
+  /** Number of Wisps present (0-4 per the panel's slider range). */
+  wispCount?: number;
+  /** Multiplies WISP_SPEED for every Wisp (0.25-3.0 per the panel). */
+  wispSpeedMultiplier?: number;
+  /** Number of Embers present (0-6 per the panel's slider range). */
+  emberCount?: number;
+  /** Ticks per BORDER-cell step for every Ember (1-10 per the panel). */
+  emberMoveTicks?: number;
+  /** Seconds between fresh Ember-pair spawns. */
+  emberSpawnIntervalSec?: number;
+  /** Branch-chase probability [0,1] for every Ember (see patrol.ts). */
+  emberBranchChaseProbability?: number;
+  /** Required occupancy fraction [0.10, 0.90] to clear the stage. */
+  requiredOccupancy?: number;
+}
+
+/**
+ * The actually-in-effect value of every debug-tunable parameter right now —
+ * whichever is active between an override and the stage's own default
+ * (docs/plan.md §6 M10). Read by the debug panel both to seed its sliders
+ * on mount and to build the EXPORT JSON blob.
+ */
+export interface EffectiveDebugParams {
+  wispCount: number;
+  wispSpeedMultiplier: number;
+  emberCount: number;
+  emberMoveTicks: number;
+  emberSpawnIntervalSec: number;
+  emberBranchChaseProbability: number;
+  requiredOccupancy: number;
+}
 
 export interface GameInput {
   dx: Axis;
@@ -119,6 +162,19 @@ export class Game {
   // core/events.ts for what belongs here vs. what's a plain getter instead.
   private events = new EventQueue<GameEvent>();
 
+  // Debug-panel overrides (docs/plan.md §6 M10 / §12.4). `debugOverrides`
+  // holds only the fields the panel has actually touched; everything else
+  // falls back to this stage's own "base" value, captured once at
+  // construction time below and restored verbatim by resetDebugOverrides().
+  private debugOverrides: DebugOverrides = {};
+  private readonly baseWispCount: number;
+  private readonly baseWispSpeedMultiplier: number;
+  private readonly baseEmberCount: number;
+  private readonly baseEmberMoveTicks: number;
+  private readonly baseEmberSpawnIntervalTicks: number;
+  private readonly baseEmberBranchChaseProbability: number;
+  private readonly baseRequiredOccupancy: number;
+
   constructor(
     field: Field = new Field(),
     markerStart?: Point,
@@ -144,6 +200,16 @@ export class Game {
     this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
     this.score = options.score ?? 0;
     this.lives = options.lives ?? INITIAL_LIVES;
+
+    // Snapshot this stage's own defaults (docs/plan.md §6 M10 "RESET は
+    // ステージ既定値に戻す") before any debug override can touch them.
+    this.baseWispCount = this.wisps.length;
+    this.baseWispSpeedMultiplier = this.wisps[0]?.getSpeedMultiplier() ?? 1;
+    this.baseEmberCount = this.embers.length;
+    this.baseEmberMoveTicks = EMBER_MOVE_TICKS;
+    this.baseEmberSpawnIntervalTicks = this.emberSpawnIntervalTicks;
+    this.baseEmberBranchChaseProbability = EMBER_BRANCH_CHASE_PROBABILITY;
+    this.baseRequiredOccupancy = this.requiredOccupancy;
   }
 
   getField(): Field {
@@ -230,6 +296,154 @@ export class Game {
    */
   drainEvents(): GameEvent[] {
     return this.events.drain();
+  }
+
+  /**
+   * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4):
+   * merges `overrides` into whatever's already active, then immediately
+   * reconciles the running stage to match (spawning/despawning Wisps and
+   * Embers on the spot, retuning speed/timing/probability knobs on every
+   * existing entity). Fields omitted from `overrides` are left as they
+   * currently are — pass an explicit value to change one, call
+   * `resetDebugOverrides()` to drop them all back to this stage's defaults.
+   */
+  applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
+    this.debugOverrides = { ...this.debugOverrides, ...overrides };
+    this.reconcileDebugOverrides();
+  }
+
+  /**
+   * Drops every active debug override, restoring this stage's own defaults
+   * (docs/plan.md §6 M10 "RESET ボタン"): Wisp/Ember counts and every
+   * speed/timing/probability knob revert to what this stage was
+   * constructed with.
+   */
+  resetDebugOverrides(): void {
+    this.debugOverrides = {};
+    this.reconcileDebugOverrides();
+  }
+
+  /** The debug overrides currently active (only the fields the panel has touched). */
+  getDebugOverrides(): DebugOverrides {
+    return { ...this.debugOverrides };
+  }
+
+  /**
+   * True while at least one debug override is active. Used to gate high
+   * -score persistence (docs/plan.md §6 M10: "デバッグパネル使用中はハイス
+   * コアを保存しない") — main.ts checks this (via GameSession) before
+   * writing to localStorage.
+   */
+  hasActiveDebugOverrides(): boolean {
+    return Object.keys(this.debugOverrides).length > 0;
+  }
+
+  /**
+   * The actually-in-effect value of every debug-tunable parameter right
+   * now (docs/plan.md §6 M10): read directly off the live entities/state
+   * rather than just echoing `debugOverrides`, so it stays correct even
+   * when, say, `emberCount` has never been overridden (falls back to
+   * however many Embers have naturally spawned so far). Used by the debug
+   * panel both to seed its sliders on mount and to build the EXPORT JSON.
+   */
+  getEffectiveDebugParams(): EffectiveDebugParams {
+    return {
+      wispCount: this.wisps.length,
+      wispSpeedMultiplier: this.wisps[0]?.getSpeedMultiplier() ?? this.debugOverrides.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier,
+      emberCount: this.embers.length,
+      emberMoveTicks: this.embers[0]?.getMoveTicks() ?? this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks,
+      emberSpawnIntervalSec: this.emberSpawnIntervalTicks / TICK_RATE,
+      emberBranchChaseProbability:
+        this.embers[0]?.getBranchChaseProbability() ??
+        this.debugOverrides.emberBranchChaseProbability ??
+        this.baseEmberBranchChaseProbability,
+      requiredOccupancy: this.requiredOccupancy,
+    };
+  }
+
+  /**
+   * Reconciles every debug-overridable knob to its currently-effective
+   * value (override, if set, else this stage's base) — called after any
+   * change to `debugOverrides` (docs/plan.md §6 M10's "即時反映").
+   */
+  private reconcileDebugOverrides(): void {
+    const o = this.debugOverrides;
+
+    const targetWispSpeed = o.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier;
+    this.setWispCount(o.wispCount ?? this.baseWispCount, targetWispSpeed);
+    for (const wisp of this.wisps) {
+      wisp.setSpeedMultiplier(targetWispSpeed);
+    }
+
+    const targetMoveTicks = o.emberMoveTicks ?? this.baseEmberMoveTicks;
+    const targetBranchProbability = o.emberBranchChaseProbability ?? this.baseEmberBranchChaseProbability;
+    this.setEmberCount(o.emberCount ?? this.baseEmberCount, targetMoveTicks, targetBranchProbability);
+    for (const ember of this.embers) {
+      ember.setMoveTicks(targetMoveTicks);
+      ember.setBranchChaseProbability(targetBranchProbability);
+    }
+
+    this.emberSpawnIntervalTicks =
+      o.emberSpawnIntervalSec !== undefined
+        ? Math.round(o.emberSpawnIntervalSec * TICK_RATE)
+        : this.baseEmberSpawnIntervalTicks;
+
+    this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
+  }
+
+  /** Spawns/despawns Wisps until exactly `target` remain (docs/plan.md §6 M10). */
+  private setWispCount(target: number, speedMultiplier: number): void {
+    const clamped = Math.max(0, Math.floor(target));
+    while (this.wisps.length > clamped) {
+      this.wisps.pop();
+    }
+    while (this.wisps.length < clamped) {
+      this.wisps.push(new Wisp(this.findUnclaimedSpawnCell(), this.rng, undefined, speedMultiplier));
+    }
+  }
+
+  /** Spawns/despawns Embers until exactly `target` remain (docs/plan.md §6 M10). */
+  private setEmberCount(target: number, moveTicks: number, branchChaseProbability: number): void {
+    const clamped = Math.max(0, Math.floor(target));
+    while (this.embers.length > clamped) {
+      this.embers.pop();
+    }
+    while (this.embers.length < clamped) {
+      const width = this.field.getWidth();
+      const spawnOnRight = this.embers.length % 2 === 1;
+      const start: Point = spawnOnRight ? { x: width - 1, y: 0 } : { x: 0, y: 0 };
+      const heading: Heading = spawnOnRight ? { dx: -1, dy: 0 } : { dx: 1, dy: 0 };
+      this.embers.push(new Ember(start, heading, this.rng, moveTicks, branchChaseProbability));
+    }
+  }
+
+  /**
+   * Finds a reasonable UNCLAIMED cell to drop a debug-spawned Wisp on: the
+   * field's center if it's still UNCLAIMED (the common case, matching where
+   * every stage's own Wisps start), otherwise the UNCLAIMED cell closest to
+   * it (mid-game, most of the field may already be claimed/BORDER/LINE).
+   */
+  private findUnclaimedSpawnCell(): Point {
+    const center: Point = { x: Math.floor(this.field.getWidth() / 2), y: Math.floor(this.field.getHeight() / 2) };
+    if (this.field.get(center) === UNCLAIMED) {
+      return center;
+    }
+
+    const unclaimedCells = this.field.getCellsOfState(UNCLAIMED);
+    if (unclaimedCells.length === 0) {
+      return center; // No UNCLAIMED cell left at all — shouldn't happen while still 'playing'.
+    }
+
+    let closest = unclaimedCells[0];
+    let closestDistSq = distanceSquared(closest, center);
+    for (const cell of unclaimedCells) {
+      const d = distanceSquared(cell, center);
+      if (d < closestDistSq) {
+        closest = cell;
+        closestDistSq = d;
+      }
+    }
+    return closest;
   }
 
   /**
@@ -334,8 +548,14 @@ export class Game {
     const width = this.field.getWidth();
     const rightHeading: Heading = { dx: 1, dy: 0 };
     const leftHeading: Heading = { dx: -1, dy: 0 };
-    this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading, this.rng));
-    this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng));
+    // Newly, naturally-spawned Embers pick up whatever moveTicks/branch-chase
+    // override is currently active (docs/plan.md §6 M10), same as every
+    // existing Ember — otherwise an Ember spawned mid-debug-session would
+    // silently ignore the panel's settings until the next slider change.
+    const moveTicks = this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks;
+    const branchChaseProbability = this.debugOverrides.emberBranchChaseProbability ?? this.baseEmberBranchChaseProbability;
+    this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading, this.rng, moveTicks, branchChaseProbability));
+    this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng, moveTicks, branchChaseProbability));
     this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
     this.events.push('ember-spawned');
   }
@@ -400,4 +620,11 @@ export class Game {
       this.status = 'gameover';
     }
   }
+}
+
+/** Squared Euclidean distance between two grid points (avoids a sqrt call for pure comparisons). */
+function distanceSquared(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
 }

@@ -55,6 +55,8 @@ export class Ember {
   private cameFrom: Point;
   private cooldownTicks = 0;
   private readonly rng: Rng;
+  private moveTicks: number;
+  private branchChaseProbability: number;
 
   /**
    * @param start Initial position, must be a BORDER cell.
@@ -64,14 +66,28 @@ export class Ember {
    *   should inject a deterministic function. Optional and defaulted so
    *   pre-M8 call sites/tests that only pass (start, initialHeading) keep
    *   compiling and behaving as before.
+   * @param moveTicks Overrides EMBER_MOVE_TICKS (docs/plan.md §6 M10 / §12.4:
+   *   the debug panel's "Ember 移動間隔 tick" slider). Defaults to the
+   *   config constant so pre-M10 call sites are unaffected.
+   * @param branchChaseProbability Overrides EMBER_BRANCH_CHASE_PROBABILITY
+   *   (docs/plan.md §6 M10 / §12.4: the debug panel's "分岐追跡確率" slider).
+   *   Defaults to the config constant so pre-M10 call sites are unaffected.
    */
-  constructor(start: Point, initialHeading: Heading, rng: Rng = Math.random) {
+  constructor(
+    start: Point,
+    initialHeading: Heading,
+    rng: Rng = Math.random,
+    moveTicks: number = EMBER_MOVE_TICKS,
+    branchChaseProbability: number = EMBER_BRANCH_CHASE_PROBABILITY
+  ) {
     this.pos = { ...start };
     this.heading = initialHeading;
     // No real "previous cell" yet; using the start position itself means the
     // came-from exclusion below never accidentally rules out a real neighbor.
     this.cameFrom = { ...start };
     this.rng = rng;
+    this.moveTicks = moveTicks;
+    this.branchChaseProbability = branchChaseProbability;
   }
 
   getPosition(): Point {
@@ -80,6 +96,31 @@ export class Ember {
 
   getHeading(): Heading {
     return { ...this.heading };
+  }
+
+  /** Current per-cell move throttle in ticks (docs/plan.md §6 M10 debug panel export). */
+  getMoveTicks(): number {
+    return this.moveTicks;
+  }
+
+  /**
+   * Overrides the per-cell move throttle at runtime (docs/plan.md §6 M10 /
+   * §12.4). Takes effect the next time the current cooldown elapses and a
+   * new one is started — never lengthens/shortens a cooldown already in
+   * progress mid-count.
+   */
+  setMoveTicks(ticks: number): void {
+    this.moveTicks = ticks;
+  }
+
+  /** Current branch-chase probability (docs/plan.md §6 M10 debug panel export). */
+  getBranchChaseProbability(): number {
+    return this.branchChaseProbability;
+  }
+
+  /** Overrides the branch-chase probability at runtime (docs/plan.md §6 M10 / §12.4). */
+  setBranchChaseProbability(probability: number): void {
+    this.branchChaseProbability = probability;
   }
 
   /**
@@ -93,7 +134,7 @@ export class Ember {
       this.cooldownTicks--;
       return;
     }
-    this.cooldownTicks = EMBER_MOVE_TICKS - 1;
+    this.cooldownTicks = this.moveTicks - 1;
 
     const candidates: Candidate[] = DIRECTIONS.map((dir) => ({
       dir,
@@ -115,7 +156,7 @@ export class Ember {
     // applies here; a corridor (0 or 1 non-reversing candidates) always
     // keeps the pre-M8 "maintain heading, else chase" behavior.
     const isBranchPoint = nonReversing.length >= 2;
-    const rollsChase = isBranchPoint && this.rng() < EMBER_BRANCH_CHASE_PROBABILITY;
+    const rollsChase = isBranchPoint && this.rng() < this.branchChaseProbability;
 
     let chosen: Candidate;
     if (rollsChase) {

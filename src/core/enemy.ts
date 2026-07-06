@@ -25,7 +25,7 @@ export class Wisp {
   private angle: number;
   private history: Point[];
   private readonly rng: Rng;
-  private readonly speedMultiplier: number;
+  private speedMultiplier: number;
 
   /**
    * @param start Initial head position (must be an UNCLAIMED cell).
@@ -62,6 +62,20 @@ export class Wisp {
    */
   getTrail(): Point[] {
     return this.history.map((p) => ({ ...p }));
+  }
+
+  /** Current speed multiplier (docs/plan.md §6 M10 debug panel reads this for the effective-params export). */
+  getSpeedMultiplier(): number {
+    return this.speedMultiplier;
+  }
+
+  /**
+   * Overrides the speed multiplier at runtime (docs/plan.md §6 M10 / §12.4:
+   * the debug panel's "Wisp 速度倍率" slider). Applies from the next
+   * `update()` call onward — purely a tuning knob, no other state changes.
+   */
+  setSpeedMultiplier(multiplier: number): void {
+    this.speedMultiplier = multiplier;
   }
 
   /**

@@ -315,3 +315,53 @@ describe('GameSession — real stage progression difficulty (M4, docs/plan.md §
     expect(session.getGame().getWisps().length).toBe(2);
   });
 });
+
+describe('GameSession — debug overrides persist across stage transitions (docs/plan.md §6 M10 / §12.4)', () => {
+  it('carries an applied override into the next stage, and RESET clears it there too', () => {
+    const session = new GameSession({ gameFactory: stageClearGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // stage 1, playing
+
+    session.applyDebugOverrides({ wispCount: 3 });
+    expect(session.getGame().getWisps().length).toBe(3);
+    expect(session.hasActiveDebugOverrides()).toBe(true);
+
+    clearStageClearGame(session);
+    expect(session.getStatus()).toBe('stageclear');
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance -> stage 2, a fresh Game
+
+    // The fresh stage-2 Game picks up the same override immediately, without
+    // a fresh applyDebugOverrides() call.
+    expect(session.getGame().getWisps().length).toBe(3);
+    expect(session.hasActiveDebugOverrides()).toBe(true);
+
+    session.resetDebugOverrides();
+    expect(session.hasActiveDebugOverrides()).toBe(false);
+    expect(session.getGame().getWisps().length).toBe(1); // stage 2's own default (stageClearGame's single Wisp)
+
+    clearStageClearGame(session);
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // advance -> stage 3
+
+    // RESET's effect also persists forward: a brand-new stage doesn't
+    // resurrect the override that was already cleared.
+    expect(session.getGame().getWisps().length).toBe(1);
+  });
+
+  it("hasActiveDebugOverrides gates whether a run's score should be eligible for high-score persistence", () => {
+    // main.ts checks GameSession.hasActiveDebugOverrides() before writing to
+    // localStorage (docs/plan.md §6 M10: "デバッグパネル使用中はハイスコア
+    // を保存しない") — this test asserts the API this decision is based on,
+    // since main.ts itself is DOM-facing and out of core's unit-test scope.
+    const session = new GameSession({ gameFactory: stageClearGame, highScore: 5 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearStageClearGame(session);
+    expect(session.getScore()).toBeGreaterThan(5);
+    expect(session.hasActiveDebugOverrides()).toBe(false); // no override touched -> a real run's score is eligible
+
+    session.applyDebugOverrides({ requiredOccupancy: 0.5 });
+    expect(session.hasActiveDebugOverrides()).toBe(true); // now tainted -> should not be persisted while active
+
+    session.resetDebugOverrides();
+    expect(session.hasActiveDebugOverrides()).toBe(false); // back to eligible once every override is cleared
+  });
+});

@@ -8,7 +8,7 @@
 // persisting it to localStorage is main.ts's job (docs/plan.md's "core never
 // touches localStorage" invariant; see src/storage/highscore.ts).
 import { Field, Point } from './field';
-import { Game, GameInput } from './game';
+import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
@@ -80,6 +80,11 @@ export class GameSession {
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
+  // Debug-panel overrides (docs/plan.md §6 M10 / §12.4), kept here — not just
+  // on `this.game` — so they survive advanceStage() replacing `this.game`
+  // with a fresh per-stage instance ("オーバーライドはステージをまたいで
+  // 維持"): buildStageGame() re-applies this to every newly-built Game.
+  private debugOverrides: DebugOverrides = {};
 
   constructor(options: SessionOptions = {}) {
     this.rng = options.rng;
@@ -193,6 +198,42 @@ export class GameSession {
     return this.eventQueue.drain();
   }
 
+  /**
+   * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4) to
+   * the current stage's Game, and remembers them so every subsequent stage
+   * (via advanceStage() -> buildStageGame()) starts with the same overrides
+   * already applied ("オーバーライドはステージをまたいで維持").
+   */
+  applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
+    this.debugOverrides = { ...this.debugOverrides, ...overrides };
+    this.game.applyDebugOverrides(this.debugOverrides);
+  }
+
+  /** Drops every active debug override, in the current stage and every future one, restoring stage defaults. */
+  resetDebugOverrides(): void {
+    this.debugOverrides = {};
+    this.game.resetDebugOverrides();
+  }
+
+  /** The debug overrides currently active (only the fields the panel has touched). */
+  getDebugOverrides(): DebugOverrides {
+    return { ...this.debugOverrides };
+  }
+
+  /**
+   * True while at least one debug override is active — gates high-score
+   * persistence (docs/plan.md §6 M10: main.ts skips `saveHighScore` while
+   * this is true, so a debug-tuned run never taints the stored high score).
+   */
+  hasActiveDebugOverrides(): boolean {
+    return this.game.hasActiveDebugOverrides();
+  }
+
+  /** The actually-in-effect value of every debug-tunable parameter right now (docs/plan.md §6 M10). */
+  getEffectiveDebugParams(): EffectiveDebugParams {
+    return this.game.getEffectiveDebugParams();
+  }
+
   private updatePlaying(input: SessionInput): void {
     const livesBefore = this.game.getLives();
     this.game.update(input);
@@ -237,10 +278,18 @@ export class GameSession {
   }
 
   private buildStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
-    if (this.gameFactory) {
-      return this.gameFactory(stage, carry);
-    }
+    const game = this.gameFactory ? this.gameFactory(stage, carry) : this.buildDefaultStageGame(stage, carry);
 
+    // Debug overrides persist across stages (docs/plan.md §6 M10): a fresh
+    // Game (whether from the real per-stage builder or a test's gameFactory)
+    // immediately picks up whatever overrides the panel has already set.
+    if (Object.keys(this.debugOverrides).length > 0) {
+      game.applyDebugOverrides(this.debugOverrides);
+    }
+    return game;
+  }
+
+  private buildDefaultStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
     const config = getStageConfig(stage);
     const field = new Field(this.fieldWidth, this.fieldHeight);
     const markerStart: Point = { x: Math.floor(field.getWidth() / 2), y: 0 };

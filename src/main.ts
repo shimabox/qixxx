@@ -258,6 +258,16 @@ function init(): void {
 
   window.__game__ = { session, sfx };
 
+  // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
+  // shipped to players. The `import.meta.env.DEV` check is a compile-time
+  // constant Vite inlines as `false` in a production build, which turns
+  // this whole branch (including the dynamic import call) into unreachable
+  // dead code that Vite's build strips entirely — see the module comment in
+  // src/debug/panel.ts and the "no debug code in dist/" build check.
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
+    void import('./debug/panel').then(({ initDebugPanel }) => initDebugPanel(session, hudRow));
+  }
+
   renderFrame();
 }
 
@@ -311,7 +321,11 @@ function update(): void {
   sfx.handleEvents(session.drainEvents());
 
   const currentHighScore = session.getHighScore();
-  if (currentHighScore > lastSavedHighScore) {
+  // Skip persistence entirely while any debug override is active (docs/plan.md
+  // §6 M10: "デバッグパネル使用中はハイスコアを保存しない") — reading/
+  // displaying the existing high score (via getHighScore() above and in
+  // renderFrame()) is still fine, only the write is suppressed.
+  if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
     lastSavedHighScore = currentHighScore;
     saveHighScore(currentHighScore);
   }

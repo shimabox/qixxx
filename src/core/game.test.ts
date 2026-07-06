@@ -9,6 +9,9 @@ import {
   MARKER_MOVE_TICKS_SLOW,
   IGNITER_SPAWN_STILL_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
+  EMBER_MOVE_TICKS,
+  EMBER_BRANCH_CHASE_PROBABILITY,
+  EMBER_SPAWN_INTERVAL_SEC,
 } from '../config';
 
 describe('Game — event queue (M5, docs/plan.md §3.8/§9.9)', () => {
@@ -568,5 +571,118 @@ describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4
 
     expect(game.getScore()).toBe(1234);
     expect(game.getLives()).toBe(2);
+  });
+});
+
+describe('Game — debug overrides (docs/plan.md §6 M10 / §12.4)', () => {
+  function freshGame(): Game {
+    return new Game(new Field(20, 20), { x: 10, y: 0 });
+  }
+
+  it('spawns/despawns Wisps immediately to match an overridden wispCount', () => {
+    const game = freshGame();
+    expect(game.getWisps().length).toBe(1); // stage default: a single Wisp
+
+    game.applyDebugOverrides({ wispCount: 4 });
+    expect(game.getWisps().length).toBe(4);
+
+    game.applyDebugOverrides({ wispCount: 0 });
+    expect(game.getWisps().length).toBe(0);
+  });
+
+  it('spawns/despawns Embers immediately to match an overridden emberCount', () => {
+    const game = freshGame();
+    expect(game.getEmbers().length).toBe(0); // none yet — the spawn timer hasn't elapsed
+
+    game.applyDebugOverrides({ emberCount: 3 });
+    expect(game.getEmbers().length).toBe(3);
+
+    game.applyDebugOverrides({ emberCount: 6 });
+    expect(game.getEmbers().length).toBe(6);
+
+    game.applyDebugOverrides({ emberCount: 1 });
+    expect(game.getEmbers().length).toBe(1);
+  });
+
+  it('applies wispSpeedMultiplier to every current Wisp, and to Wisps spawned afterward', () => {
+    const game = freshGame();
+    game.applyDebugOverrides({ wispCount: 2, wispSpeedMultiplier: 2.5 });
+
+    for (const wisp of game.getWisps()) {
+      expect(wisp.getSpeedMultiplier()).toBe(2.5);
+    }
+    expect(game.getEffectiveDebugParams().wispSpeedMultiplier).toBe(2.5);
+
+    game.applyDebugOverrides({ wispCount: 3 }); // a 3rd Wisp, added after the speed override
+    expect(game.getWisps()[2].getSpeedMultiplier()).toBe(2.5);
+  });
+
+  it('applies emberMoveTicks and emberBranchChaseProbability to every current Ember, and to Embers spawned afterward', () => {
+    const game = freshGame();
+    game.applyDebugOverrides({ emberCount: 2, emberMoveTicks: 7, emberBranchChaseProbability: 0.15 });
+
+    for (const ember of game.getEmbers()) {
+      expect(ember.getMoveTicks()).toBe(7);
+      expect(ember.getBranchChaseProbability()).toBe(0.15);
+    }
+
+    game.applyDebugOverrides({ emberCount: 3 }); // a 3rd Ember, added after the tuning override
+    expect(game.getEmbers()[2].getMoveTicks()).toBe(7);
+    expect(game.getEmbers()[2].getBranchChaseProbability()).toBe(0.15);
+  });
+
+  it('reflects an emberSpawnIntervalSec override in the effective params', () => {
+    const game = freshGame();
+    game.applyDebugOverrides({ emberSpawnIntervalSec: 5 });
+    expect(game.getEffectiveDebugParams().emberSpawnIntervalSec).toBe(5);
+  });
+
+  it('applies a requiredOccupancy override immediately', () => {
+    const game = freshGame();
+    expect(game.getRequiredOccupancy()).toBe(DEFAULT_REQUIRED_OCCUPANCY);
+
+    game.applyDebugOverrides({ requiredOccupancy: 0.2 });
+    expect(game.getRequiredOccupancy()).toBe(0.2);
+    expect(game.getEffectiveDebugParams().requiredOccupancy).toBe(0.2);
+  });
+
+  it('reports hasActiveDebugOverrides only while at least one override is active', () => {
+    const game = freshGame();
+    expect(game.hasActiveDebugOverrides()).toBe(false);
+
+    game.applyDebugOverrides({ wispCount: 2 });
+    expect(game.hasActiveDebugOverrides()).toBe(true);
+
+    game.resetDebugOverrides();
+    expect(game.hasActiveDebugOverrides()).toBe(false);
+  });
+
+  it("resetDebugOverrides restores every knob to this stage's own defaults", () => {
+    const field = new Field(20, 20);
+    const wisp = new Wisp({ x: 10, y: 10 }, () => 0.5, 0, 1.3); // this stage's own (non-default) speed multiplier
+    const game = new Game(field, { x: 10, y: 0 }, wisp, undefined, { requiredOccupancy: 0.7 });
+
+    game.applyDebugOverrides({
+      wispCount: 3,
+      wispSpeedMultiplier: 2.9,
+      emberCount: 4,
+      emberMoveTicks: 9,
+      emberSpawnIntervalSec: 3,
+      emberBranchChaseProbability: 0.9,
+      requiredOccupancy: 0.15,
+    });
+    expect(game.getWisps().length).toBe(3);
+    expect(game.getEmbers().length).toBe(4);
+
+    game.resetDebugOverrides();
+
+    expect(game.getWisps().length).toBe(1);
+    expect(game.getWisps()[0].getSpeedMultiplier()).toBe(1.3);
+    expect(game.getEmbers().length).toBe(0);
+    expect(game.getRequiredOccupancy()).toBe(0.7);
+    expect(game.getEffectiveDebugParams().emberMoveTicks).toBe(EMBER_MOVE_TICKS);
+    expect(game.getEffectiveDebugParams().emberBranchChaseProbability).toBe(EMBER_BRANCH_CHASE_PROBABILITY);
+    expect(game.getEffectiveDebugParams().emberSpawnIntervalSec).toBeCloseTo(EMBER_SPAWN_INTERVAL_SEC);
+    expect(game.hasActiveDebugOverrides()).toBe(false);
   });
 });
