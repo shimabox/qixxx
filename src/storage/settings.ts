@@ -12,12 +12,19 @@
 // no-op, exactly like highscore.ts.
 const MUTED_STORAGE_KEY = 'qixxx.muted';
 
-/** Reads the persisted mute setting, or false if none is stored / storage is unavailable. */
+/**
+ * Reads the persisted mute setting, or true if none is stored / storage is unavailable.
+ * Defaults to muted (opt-in model): audio only plays if user explicitly saves 'false'.
+ */
 export function loadMuted(): boolean {
   try {
-    return localStorage.getItem(MUTED_STORAGE_KEY) === 'true';
+    const stored = localStorage.getItem(MUTED_STORAGE_KEY);
+    // If explicitly stored as 'false' (user opted in for sound), respect that.
+    // Otherwise (null or 'true'), default to true (muted).
+    return stored !== 'false';
   } catch {
-    return false;
+    // Storage unavailable — default to muted (safe side)
+    return true;
   }
 }
 
