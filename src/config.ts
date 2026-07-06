@@ -58,6 +58,17 @@ export const EMBER_SPAWN_INTERVAL_SEC = 30;
 export const EMBER_SPAWN_INTERVAL_TICKS = EMBER_SPAWN_INTERVAL_SEC * TICK_RATE;
 export const EMBER_MOVE_TICKS = 3;
 
+// Branch-chase probability (docs/plan.md §6 M8 / §12.2): at a BORDER-graph
+// branch (2+ non-reversing candidate cells), Ember picks the candidate
+// pointing most toward the marker with this probability, instead of always
+// preferring to keep going straight. Without this, an Ember on the outer
+// ring can maintain its heading forever and never turn onto the branch
+// lines created by claimed area, making it a non-threat (real-playtest
+// feedback). 0.7 was chosen so Embers reliably threaten the marker along
+// inner borders while still occasionally patrolling straight through a
+// junction (avoids feeling perfectly omniscient).
+export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
+
 // Stage 2 tuning (docs/plan.md §3.7): 1 Wisp, x1.15 speed, 25s Ember interval,
 // same 65% required occupancy as stage 1.
 export const STAGE2_WISP_SPEED_MULTIPLIER = 1.15;

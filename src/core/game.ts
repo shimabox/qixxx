@@ -98,6 +98,12 @@ export class Game {
   private score = 0;
   private multiplier: number;
   private requiredOccupancy: number;
+  // Shared rng, also handed to every Wisp (constructor param) and every
+  // Ember spawned by maybeSpawnEmbers (docs/plan.md §6 M8: Ember's branch-
+  // chase roll). Keeping one rng per Game (rather than a fresh Math.random
+  // per enemy) is what makes a whole stage's simulation reproducible when a
+  // deterministic rng is injected (debugging/tests).
+  private readonly rng: Rng;
   // True when the most recent area claim cleared the stage by splitting the
   // Wisps apart rather than by reaching requiredOccupancy (docs/plan.md
   // §4.2/§3.6 "2匹 QIX への拡張"). Consumed by the session/stage layer to
@@ -129,6 +135,7 @@ export class Game {
       y: Math.floor(field.getHeight() / 2),
     };
     this.wisps = options.wisps ? [...options.wisps] : [wisp ?? new Wisp(wispStart, rng)];
+    this.rng = rng ?? Math.random;
 
     this.embers = options.embers ? [...options.embers] : [];
     this.emberSpawnIntervalTicks = options.emberSpawnIntervalTicks ?? EMBER_SPAWN_INTERVAL_TICKS;
@@ -327,8 +334,8 @@ export class Game {
     const width = this.field.getWidth();
     const rightHeading: Heading = { dx: 1, dy: 0 };
     const leftHeading: Heading = { dx: -1, dy: 0 };
-    this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading));
-    this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading));
+    this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading, this.rng));
+    this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng));
     this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
     this.events.push('ember-spawned');
   }
