@@ -29,8 +29,13 @@
 
       /* #game-root (created by main.ts) is the flex child that fills
          whatever space is left above #touch-controls (docs/plan.md §5.3:
-         "縦持ちレイアウト: フィールド上部・コントロール下部"). The canvas
-         itself is letterboxed inside it by main.ts's fitCanvasToViewport(). */
+         "縦持ちレイアウト: フィールド上部・コントロール下部"). It stacks
+         #hud-row directly above #canvas-wrap (docs/plan.md §12.1: "HUDを
+         フィールド直上に"), and the canvas itself is letterboxed inside
+         #canvas-wrap by main.ts's fitCanvasToViewport(), which also keeps
+         #hud-row's width in sync with the canvas's on-screen width. The
+         Title/StageClear/GameOver overlay (#screen) is centered over the
+         canvas by being absolutely positioned inside #canvas-wrap. */
       #game-canvas {
         display: block;
         border: 2px solid #00ff41;

@@ -1,6 +1,16 @@
-// Virtual touch controls (docs/plan.md §5.2): a d-pad (bottom-left) plus
-// FAST/SLOW buttons (bottom-right), built as plain DOM elements. DOM-
-// dependent by design, exactly like input/keyboard.ts.
+// Virtual touch controls (docs/plan.md §5.2/§12.1): a d-pad pinned to the
+// screen's left edge plus FAST/SLOW buttons pinned to the right edge, built
+// as plain DOM elements. DOM-dependent by design, exactly like
+// input/keyboard.ts.
+//
+// GB-style left/right split (docs/plan.md §12.1 "タッチパッドのGB風左右
+// 分離"): the d-pad and the FAST/SLOW cluster are two independent groups
+// inside a single flex row with `justify-content: space-between`, so they
+// hug the screen's left/right edges with open space between them (rather
+// than sitting side-by-side near the center, which is what invited
+// mis-taps). Within the action cluster, FAST/SLOW are placed on the
+// diagonal (FAST upper-right, SLOW lower-left) like a Game Boy's A/B, via
+// absolute positioning inside a small relative box — see buildActionCluster.
 //
 // Design choice: rather than maintaining a second, parallel input-state
 // object that main.ts would have to merge with KeyboardInput's every tick,
@@ -20,8 +30,11 @@
 // different buttons fire on two different elements/pointerIds entirely
 // independently — there is no shared "currently touched" state to race on,
 // so simultaneous cross-key + FAST/SLOW presses work without any pointerId
-// bookkeeping in this module.
+// bookkeeping in this module. The left/right split (this file) and the
+// diagonal FAST/SLOW placement keep the two groups from ever overlapping,
+// so that still holds true here.
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS } from './keys';
+import { TOUCH_BUTTON_SIZE, TOUCH_DPAD_GAP } from '../config';
 
 interface ButtonSpec {
   code: string;
@@ -40,6 +53,12 @@ const ACTION_BUTTONS: ButtonSpec[] = [
   { code: DRAW_SLOW_KEYS[0], label: 'SLOW', gridArea: 'slow' },
   { code: DRAW_FAST_KEYS[0], label: 'FAST', gridArea: 'fast' },
 ];
+
+// Side length (CSS px) of the square box the FAST/SLOW buttons are
+// diagonally positioned inside (see buildActionCluster): two buttons plus a
+// gap between them along the diagonal, with no overlap so a finger on one
+// can never accidentally capture the other's pointer events.
+const ACTION_CLUSTER_SIZE = TOUCH_BUTTON_SIZE * 2 + TOUCH_DPAD_GAP * 2;
 
 /** True on devices where a touch-style pointer is the primary input (docs/plan.md §5.2). */
 export function isTouchCapableDevice(): boolean {
@@ -64,12 +83,11 @@ export class TouchControls {
   constructor(dispatchTarget: EventTarget = window, parent: HTMLElement = document.body) {
     this.dispatchTarget = dispatchTarget;
     this.container = this.buildContainer();
-    for (const spec of DPAD_BUTTONS) {
-      this.container.appendChild(this.buildButton(spec));
-    }
-    for (const spec of ACTION_BUTTONS) {
-      this.container.appendChild(this.buildButton(spec));
-    }
+    // Two independent groups (docs/plan.md §12.1): the d-pad hugs the left
+    // edge, the FAST/SLOW cluster hugs the right edge, with the container's
+    // `justify-content: space-between` opening up the space between them.
+    this.container.appendChild(this.buildDpad());
+    this.container.appendChild(this.buildActionCluster());
     parent.appendChild(this.container);
   }
 
@@ -86,15 +104,15 @@ export class TouchControls {
   private buildContainer(): HTMLDivElement {
     const el = document.createElement('div');
     el.id = 'touch-controls';
-    el.style.display = 'grid';
-    el.style.gridTemplateAreas = "'left up right fast' 'left down right slow'";
-    el.style.gridTemplateColumns = 'repeat(3, 56px) 1fr';
-    el.style.gridTemplateRows = 'repeat(2, 56px)';
-    el.style.columnGap = '4px';
-    el.style.rowGap = '4px';
+    // A plain flex row with `space-between` is what pushes the d-pad group
+    // and the FAST/SLOW cluster to the screen's left/right edges
+    // (docs/plan.md §12.1) — each group lays itself out independently (see
+    // buildDpad/buildActionCluster), so this container only needs to place
+    // the two groups apart from each other.
+    el.style.display = 'flex';
     el.style.justifyContent = 'space-between';
     el.style.alignItems = 'center';
-    el.style.padding = '8px 16px';
+    el.style.padding = '10px 8px';
     el.style.touchAction = 'none';
     el.style.userSelect = 'none';
     el.style.width = '100%';
@@ -105,7 +123,51 @@ export class TouchControls {
     // JS re-check backs up the CSS media query for environments (like some
     // automated test harnesses) where `(pointer: coarse)` isn't reported but
     // touch is still emulated.
-    el.style.display = isTouchCapableDevice() ? 'grid' : 'none';
+    el.style.display = isTouchCapableDevice() ? 'flex' : 'none';
+    return el;
+  }
+
+  // The d-pad: a 3x3 grid with the corners left empty, giving a compact
+  // "+"-shaped cluster pinned to the container's left edge.
+  private buildDpad(): HTMLDivElement {
+    const el = document.createElement('div');
+    el.style.display = 'grid';
+    el.style.gridTemplateAreas = "'. up .' 'left . right' '. down .'";
+    el.style.gridTemplateColumns = `repeat(3, ${TOUCH_BUTTON_SIZE}px)`;
+    el.style.gridTemplateRows = `repeat(3, ${TOUCH_BUTTON_SIZE}px)`;
+    el.style.columnGap = `${TOUCH_DPAD_GAP}px`;
+    el.style.rowGap = `${TOUCH_DPAD_GAP}px`;
+    el.style.flex = '0 0 auto';
+    for (const spec of DPAD_BUTTONS) {
+      const button = this.buildButton(spec);
+      button.style.gridArea = spec.gridArea;
+      el.appendChild(button);
+    }
+    return el;
+  }
+
+  // The FAST/SLOW cluster: a small relative box, pinned to the container's
+  // right edge, with FAST absolutely positioned top-right and SLOW
+  // bottom-left — a Game Boy-style diagonal A/B layout (docs/plan.md §12.1)
+  // rather than the two buttons sitting side by side next to the d-pad.
+  private buildActionCluster(): HTMLDivElement {
+    const el = document.createElement('div');
+    el.style.position = 'relative';
+    el.style.width = `${ACTION_CLUSTER_SIZE}px`;
+    el.style.height = `${ACTION_CLUSTER_SIZE}px`;
+    el.style.flex = '0 0 auto';
+    for (const spec of ACTION_BUTTONS) {
+      const button = this.buildButton(spec);
+      button.style.position = 'absolute';
+      if (spec.gridArea === 'fast') {
+        button.style.top = '0';
+        button.style.right = '0';
+      } else {
+        button.style.bottom = '0';
+        button.style.left = '0';
+      }
+      el.appendChild(button);
+    }
     return el;
   }
 
@@ -114,9 +176,8 @@ export class TouchControls {
     button.type = 'button';
     button.dataset.code = spec.code;
     button.textContent = spec.label;
-    button.style.gridArea = spec.gridArea;
-    button.style.width = '56px';
-    button.style.height = '56px';
+    button.style.width = `${TOUCH_BUTTON_SIZE}px`;
+    button.style.height = `${TOUCH_BUTTON_SIZE}px`;
     button.style.borderRadius = '50%';
     button.style.border = '2px solid #00ff41';
     button.style.background = 'rgba(10, 14, 39, 0.7)';

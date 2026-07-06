@@ -28,10 +28,18 @@ declare global {
   }
 }
 
-// Get or create the responsive root that hosts the canvas (docs/plan.md
-// §5.3): a flex child that grows/shrinks to fill whatever space is left
-// above the touch controls, with the canvas letterboxed inside it at a
-// fixed 4:3 aspect ratio via fitCanvasToViewport() below.
+// Vertical gap (CSS px) between the HUD row and the canvas (docs/plan.md
+// §12.1). Kept as a single constant so fitCanvasToViewport()'s available-
+// height calculation stays in sync with the actual flex `gap` applied to
+// #game-root below.
+const HUD_GAP_PX = 6;
+
+// Get or create the responsive root that hosts the HUD row + canvas
+// (docs/plan.md §5.3/§12.1): a flex child that grows/shrinks to fill
+// whatever space is left above the touch controls. Stacked as a column so
+// the HUD row sits directly above the canvas; both are centered as a group
+// and the canvas is letterboxed inside its wrapper at a fixed 4:3 aspect
+// ratio via fitCanvasToViewport() below.
 function getGameRootElement(): HTMLDivElement {
   let root = document.getElementById('game-root') as HTMLDivElement | null;
   if (!root) {
@@ -40,58 +48,109 @@ function getGameRootElement(): HTMLDivElement {
     root.style.flex = '1 1 auto';
     root.style.minHeight = '0';
     root.style.display = 'flex';
+    root.style.flexDirection = 'column';
     root.style.alignItems = 'center';
     root.style.justifyContent = 'center';
+    root.style.gap = `${HUD_GAP_PX}px`;
+    root.style.width = '100%';
     root.style.overflow = 'hidden';
     document.body.appendChild(root);
   }
   return root;
 }
 
+// Get or create the HUD row (docs/plan.md §12.1 "HUDをフィールド直上に"):
+// a flex row holding the HUD text (left, grows) and the MUTE button (right,
+// fixed size). Its width is kept exactly in sync with the canvas's on-screen
+// (CSS) width by fitCanvasToViewport(), so it always reads as "the same
+// width as, and directly above, the field" regardless of viewport shape.
+function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
+  let row = document.getElementById('hud-row') as HTMLDivElement | null;
+  if (!row) {
+    row = document.createElement('div');
+    row.id = 'hud-row';
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'space-between';
+    row.style.gap = '8px';
+    row.style.boxSizing = 'border-box';
+    root.appendChild(row);
+  }
+  return row;
+}
+
+// Get or create the wrapper around the canvas (docs/plan.md §12.1
+// "オーバーレイをフィールド中央に"): a `position: relative` box sized
+// exactly to the canvas's own on-screen box (it has no other content and no
+// explicit size of its own, so as a flex item of #game-root — whose
+// align-items is "center", not "stretch" — it shrinks to fit the canvas).
+// This gives the #screen overlay a positioning ancestor that *is* the
+// field's on-screen box, so `top/left: 50%` on #screen centers over the
+// canvas itself rather than the viewport.
+function getCanvasWrapElement(root: HTMLDivElement): HTMLDivElement {
+  let wrap = document.getElementById('canvas-wrap') as HTMLDivElement | null;
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'canvas-wrap';
+    wrap.style.position = 'relative';
+    wrap.style.display = 'block';
+    wrap.style.lineHeight = '0'; // avoid the inline-canvas baseline gap nudging layout
+    root.appendChild(wrap);
+  }
+  return wrap;
+}
+
 // Get or create canvas element
-function getCanvasElement(root: HTMLDivElement): HTMLCanvasElement {
+function getCanvasElement(wrap: HTMLDivElement): HTMLCanvasElement {
   let canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
   if (!canvas) {
     canvas = document.createElement('canvas');
     canvas.id = 'game-canvas';
-    root.appendChild(canvas);
+    wrap.appendChild(canvas);
   }
   return canvas;
 }
 
 // Get or create the HUD overlay element (stage/score/occupancy/lives/multiplier, §3.3/§6 M1/M4).
-function getHudElement(): HTMLDivElement {
+function getHudElement(row: HTMLDivElement): HTMLDivElement {
   let hud = document.getElementById('hud') as HTMLDivElement | null;
   if (!hud) {
     hud = document.createElement('div');
     hud.id = 'hud';
-    hud.style.position = 'fixed';
-    hud.style.top = '8px';
-    hud.style.left = '8px';
-    // Leaves room for the fixed top-right mute button (docs/plan.md §5.3:
-    // resizing/narrow viewports must not break the layout) instead of
-    // wrapping text underneath/behind it.
-    hud.style.right = '90px';
     hud.style.color = HUD_TEXT_COLOR;
     hud.style.font = HUD_FONT;
     hud.style.fontSize = 'clamp(10px, 3.2vw, 16px)';
     hud.style.textShadow = `0 0 6px ${HUD_ACCENT_COLOR}`;
     hud.style.pointerEvents = 'none';
     hud.style.userSelect = 'none';
-    document.body.appendChild(hud);
+    // Never wraps to a second line (fitCanvasToViewport() below reads this
+    // row's *height* to reserve space for the canvas below it; keeping the
+    // height stable and independent of the row's width, rather than
+    // depending on how much text fits, avoids a circular width<->height
+    // layout dependency between the HUD row and the canvas).
+    hud.style.whiteSpace = 'nowrap';
+    hud.style.overflow = 'hidden';
+    hud.style.textOverflow = 'ellipsis';
+    hud.style.flex = '1 1 auto';
+    hud.style.minWidth = '0';
+    row.appendChild(hud);
   }
   return hud;
 }
 
-// Get or create the centered screen overlay (Title / StageClear / GameOver, §4.4/§6 M4).
+// Get or create the screen-overlay element (Title / StageClear / GameOver, §4.4/§6 M4),
+// centered over the *canvas* (docs/plan.md §12.1), not the viewport.
 // Neon text-shadow + a faint glowing box (docs/plan.md §6 M5 visual polish),
 // consistent with the canvas's own neon palette (config.ts colors).
-function getScreenElement(): HTMLDivElement {
+function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
   let screen = document.getElementById('screen') as HTMLDivElement | null;
   if (!screen) {
     screen = document.createElement('div');
     screen.id = 'screen';
-    screen.style.position = 'fixed';
+    // Positioned relative to #canvas-wrap (its nearest positioned ancestor),
+    // which is sized exactly to the canvas's own on-screen box — so this
+    // centers over the field itself and tracks it through resize/rotation.
+    screen.style.position = 'absolute';
     screen.style.top = '50%';
     screen.style.left = '50%';
     screen.style.transform = 'translate(-50%, -50%)';
@@ -102,23 +161,22 @@ function getScreenElement(): HTMLDivElement {
     screen.style.textShadow = `0 0 10px ${HUD_ACCENT_COLOR}, 0 0 20px ${HUD_ACCENT_COLOR}`;
     screen.style.pointerEvents = 'none';
     screen.style.userSelect = 'none';
-    document.body.appendChild(screen);
+    wrap.appendChild(screen);
   }
   return screen;
 }
 
 // Get or create the mute toggle button (docs/plan.md §3.8: "ミュートボタン
-// をHUDに置く"). Given its own element (rather than living inside #hud,
-// which is pointer-events:none) so it stays clickable/tappable.
-function getMuteButtonElement(onToggle: () => void): HTMLButtonElement {
+// をHUDに置く"). Lives inside the HUD row (docs/plan.md §12.1: "MUTEボタン
+// はHUD行の右端に統合") rather than #hud itself (which is pointer-events:
+// none), so it stays clickable/tappable while sitting flush with the HUD text.
+function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
   if (!button) {
     button = document.createElement('button');
     button.id = 'mute-button';
     button.type = 'button';
-    button.style.position = 'fixed';
-    button.style.top = '8px';
-    button.style.right = '8px';
+    button.style.flex = '0 0 auto';
     button.style.font = HUD_FONT;
     button.style.color = HUD_ACCENT_COLOR;
     button.style.background = 'rgba(10, 14, 39, 0.7)';
@@ -129,7 +187,7 @@ function getMuteButtonElement(onToggle: () => void): HTMLButtonElement {
     button.style.pointerEvents = 'auto';
     button.style.userSelect = 'none';
     button.addEventListener('click', onToggle);
-    document.body.appendChild(button);
+    row.appendChild(button);
   }
   return button;
 }
@@ -143,6 +201,7 @@ let hud: HTMLDivElement;
 let screen: HTMLDivElement;
 let muteButton: HTMLButtonElement;
 let gameRoot: HTMLDivElement;
+let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
 let accumulator = 0;
 let lastTime = performance.now();
@@ -164,7 +223,9 @@ function init(): void {
   session = new GameSession({ highScore });
 
   gameRoot = getGameRootElement();
-  canvas = getCanvasElement(gameRoot);
+  hudRow = getHudRowElement(gameRoot);
+  const canvasWrap = getCanvasWrapElement(gameRoot);
+  canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
   keyboard = new KeyboardInput();
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
@@ -174,8 +235,15 @@ function init(): void {
   new TouchControls(window, document.body);
   attachTapToConfirm(canvas);
 
+  // Appended to #hud-row in this order (hud, then muteButton) so the mute
+  // button lands at the row's right end (docs/plan.md §12.1: "MUTEボタンは
+  // HUD行の右端に統合") — plain flex layout keeps DOM order as visual
+  // order here, with no `order` CSS needed.
+  hud = getHudElement(hudRow);
+  screen = getScreenElement(canvasWrap);
+
   sfx = new SfxEngine(loadMuted());
-  muteButton = getMuteButtonElement(toggleMute);
+  muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
   // start/resume from within a user-gesture handler. Every keydown (real or
@@ -183,9 +251,6 @@ function init(): void {
   // gesture; resume() is a cheap no-op once the context is already running.
   window.addEventListener('keydown', () => sfx.resume());
   window.addEventListener('pointerdown', () => sfx.resume());
-
-  hud = getHudElement();
-  screen = getScreenElement();
 
   fitCanvasToViewport();
   window.addEventListener('resize', fitCanvasToViewport);
@@ -207,15 +272,24 @@ function updateMuteButtonLabel(): void {
 }
 
 // Keeps the canvas's CSS box letterboxed at the fixed 4:3 (CANVAS_WIDTH x
-// CANVAS_HEIGHT) aspect ratio inside whatever space #game-root currently has
-// (docs/plan.md §5.3) — the canvas's internal resolution never changes here,
-// only its on-screen size. Re-run on resize/orientation change; #game-root's
-// own flex-computed size already accounts for the touch controls' height
-// (docs/plan.md's "縦持ちレイアウト: フィールド上部・コントロール下部")
-// without this function needing to know whether they're visible.
+// CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
+// once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
+// canvas's internal resolution never changes here, only its on-screen size.
+// Re-run on resize/orientation change; #game-root's own flex-computed size
+// already accounts for the touch controls' height (docs/plan.md's "縦持ち
+// レイアウト: フィールド上部・コントロール下部") without this function
+// needing to know whether they're visible.
+//
+// The HUD row's height is measured directly (rather than assumed as a
+// constant) so it stays correct if its font-size clamp() resolves
+// differently at a given viewport width; since #hud never wraps (see
+// getHudElement()), that height doesn't depend on the row's *width* — which
+// this same function sets below — so a single measure-then-layout pass is
+// sufficient and there's no risk of it oscillating.
 function fitCanvasToViewport(): void {
   const availW = gameRoot.clientWidth;
-  const availH = gameRoot.clientHeight;
+  const hudRowHeight = hudRow.offsetHeight;
+  const availH = gameRoot.clientHeight - hudRowHeight - HUD_GAP_PX;
   if (availW <= 0 || availH <= 0) return;
 
   const scale = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
@@ -223,6 +297,10 @@ function fitCanvasToViewport(): void {
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+
+  // Keep the HUD row exactly as wide as the canvas's on-screen box
+  // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
+  hudRow.style.width = `${cssWidth}px`;
 }
 
 // Update logic (fixed timestep)
