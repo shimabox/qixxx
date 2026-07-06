@@ -14,6 +14,10 @@
 
 ## 遊ぶ
 
+**🎮 ブラウザですぐ遊べます: https://shimabox.github.io/qixxx/**
+
+ローカルで動かす場合:
+
 ```bash
 npm install
 npm run dev
