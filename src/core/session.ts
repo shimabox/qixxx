@@ -76,6 +76,13 @@ export class GameSession {
   // — means events survive a stage transition even though `this.game` gets
   // replaced by advanceStage() before the caller has had a chance to drain.
   private eventQueue = new EventQueue<GameEvent>();
+  // Forwards every currently-playing stage's Game.drainDespawnedEmberPositions()
+  // up to whoever drains *this* queue (docs/plan.md §6 M11 / §12.6: main.ts's
+  // render layer, for the Ember vanish effect) — mirrors `eventQueue` above
+  // for exactly the same reason (surviving a stage transition even though
+  // `this.game` gets replaced by advanceStage() before the caller has had a
+  // chance to drain).
+  private despawnedEmberPositions = new EventQueue<Point>();
   private readonly rng?: Rng;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
@@ -199,6 +206,17 @@ export class GameSession {
   }
 
   /**
+   * Drains (returns and clears) every Ember despawn position queued by the
+   * currently- and previously-playing stages since the last call
+   * (docs/plan.md §6 M11 / §12.6). Intended to be called once per tick by
+   * main.ts, alongside drainEvents() — the render layer uses the result to
+   * spawn a short vanish effect at each position.
+   */
+  drainDespawnedEmberPositions(): Point[] {
+    return this.despawnedEmberPositions.drain();
+  }
+
+  /**
    * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4) to
    * the current stage's Game, and remembers them so every subsequent stage
    * (via advanceStage() -> buildStageGame()) starts with the same overrides
@@ -239,6 +257,9 @@ export class GameSession {
     this.game.update(input);
     for (const event of this.game.drainEvents()) {
       this.eventQueue.push(event);
+    }
+    for (const pos of this.game.drainDespawnedEmberPositions()) {
+      this.despawnedEmberPositions.push(pos);
     }
 
     // Mirror the stage's own multiplier (it only ever moves to

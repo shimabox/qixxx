@@ -36,6 +36,8 @@ import {
   IGNITER_HALO_ALPHA_BASE,
   IGNITER_BLINK_SPEED,
   IGNITER_BLINK_MIN_ALPHA,
+  EMBER_DESPAWN_EFFECT_DURATION_FRAMES,
+  EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS,
 } from '../config';
 
 // Parsed once from COLOR_WISP_HEAD so the trail's per-segment fade (docs/plan.md
@@ -47,6 +49,15 @@ const WISP_TRAIL_RGB = hexToRgb(COLOR_WISP_HEAD);
 const EMBER_RGB = hexToRgb(COLOR_EMBER);
 const IGNITER_RGB = hexToRgb(COLOR_IGNITER);
 
+// A single queued Ember-despawn vanish effect (docs/plan.md §6 M11 / §12.6):
+// a position + the renderer's own `frameCount` value at the moment it was
+// queued. Entirely renderer-owned state — core never sees this, it only
+// ever hands up the position via Game.drainDespawnedEmberPositions().
+interface DespawnEffect {
+  position: Point;
+  startFrame: number;
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -55,6 +66,13 @@ export class Renderer {
   // flicker, Igniter blink) via deterministic sin()/cos() functions of this
   // counter — no state lives in src/core/, and no Math.random is involved.
   private frameCount = 0;
+  // Ember despawn vanish effects currently animating (docs/plan.md §6 M11 /
+  // §12.6), pruned in drawEmberDespawnEffects() as they age out. Queued via
+  // spawnEmberDespawnEffect() at tick granularity (main.ts, mirroring how
+  // GameSession's events reach SfxEngine) rather than only inside render()'s
+  // once-per-rendered-frame cadence, so an effect is never dropped even if
+  // several Embers despawn within the ticks between two rendered frames.
+  private emberDespawnEffects: DespawnEffect[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -109,6 +127,17 @@ export class Renderer {
     return layer;
   }
 
+  /**
+   * Queues a short expanding-and-fading ring "vanish" effect at `position`
+   * (docs/plan.md §6 M11 / §12.6): called once per Ember the core despawns
+   * (main.ts, draining Game/GameSession's despawn-position queue at tick
+   * granularity). Purely additive here — drawEmberDespawnEffects() is what
+   * actually ages/prunes/draws the queued effects, once per render() call.
+   */
+  spawnEmberDespawnEffect(position: Point): void {
+    this.emberDespawnEffects.push({ position: { ...position }, startFrame: this.frameCount });
+  }
+
   render(
     field: Field,
     markerPosition?: Point,
@@ -144,6 +173,7 @@ export class Renderer {
     if (igniterPosition) {
       this.drawIgniter(igniterPosition);
     }
+    this.drawEmberDespawnEffects();
     // Post-miss grace feedback (docs/plan.md §6 M5): the caller blinks the
     // marker by toggling `markerVisible` off every few ticks; omitting the
     // draw call entirely (rather than e.g. changing color) makes it a true
@@ -283,6 +313,37 @@ export class Renderer {
       this.ctx.beginPath();
       this.ctx.arc(cx, cy, EMBER_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
       this.ctx.fill();
+    });
+    this.ctx.restore();
+  }
+
+  // Draws every queued Ember-despawn vanish effect (docs/plan.md §6 M11 /
+  // §12.6) as a ring that expands from 0 to EMBER_DESPAWN_EFFECT_MAX_RADIUS_
+  // CELLS while fading from opaque to transparent over
+  // EMBER_DESPAWN_EFFECT_DURATION_FRAMES rendered frames, then prunes any
+  // effect that has aged out — the same deterministic frameCount-driven
+  // approach as the marker pulse/Ember flicker/Igniter blink above, just
+  // keyed off each effect's own start frame instead of frameCount directly.
+  private drawEmberDespawnEffects(): void {
+    if (this.emberDespawnEffects.length === 0) return;
+
+    this.ctx.save();
+    this.ctx.lineWidth = 2;
+    this.emberDespawnEffects = this.emberDespawnEffects.filter((effect) => {
+      const age = this.frameCount - effect.startFrame;
+      if (age >= EMBER_DESPAWN_EFFECT_DURATION_FRAMES) return false;
+
+      const t = age / EMBER_DESPAWN_EFFECT_DURATION_FRAMES; // 0 (just spawned) -> 1 (about to expire)
+      const radius = EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS * RENDER_SCALE * t;
+      const alpha = 1 - t;
+      const cx = (effect.position.x + 0.5) * RENDER_SCALE;
+      const cy = (effect.position.y + 0.5) * RENDER_SCALE;
+
+      this.ctx.strokeStyle = `rgba(${EMBER_RGB.r}, ${EMBER_RGB.g}, ${EMBER_RGB.b}, ${alpha})`;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      this.ctx.stroke();
+      return true;
     });
     this.ctx.restore();
   }

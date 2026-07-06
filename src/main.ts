@@ -319,6 +319,13 @@ function update(): void {
   lastInput = input;
   session.update(input);
   sfx.handleEvents(session.drainEvents());
+  // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
+  // tick granularity, same as the events above, so an effect is queued for
+  // every despawn even if several ticks elapse before the next rendered
+  // frame actually draws it.
+  for (const position of session.drainDespawnedEmberPositions()) {
+    renderer.spawnEmberDespawnEffect(position);
+  }
 
   const currentHighScore = session.getHighScore();
   // Skip persistence entirely while any debug override is active (docs/plan.md

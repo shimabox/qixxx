@@ -10,11 +10,18 @@
 import { GameSession } from '../core/session';
 import type { DebugOverrides, EffectiveDebugParams } from '../core/game';
 
-/** Slider ranges per docs/plan.md §12.4's "調整項目（初期セット）" list. */
+/**
+ * Slider ranges per docs/plan.md §12.4's "調整項目（初期セット）" list.
+ * wispCount/wispSpeedMultiplier/emberCount's upper bounds were widened
+ * (2026-07-07 feedback, docs/plan.md §6 M11 orchestration follow-up) so the
+ * panel can push well past normal per-stage values for stress-testing —
+ * core (Game.setWispCount/setEmberCount) only ever floors at 0, it has no
+ * upper clamp of its own, so these panel-side maxes are the only limit.
+ */
 const RANGES = {
-  wispCount: { min: 0, max: 4, step: 1 },
-  wispSpeedMultiplier: { min: 0.25, max: 3.0, step: 0.05 },
-  emberCount: { min: 0, max: 6, step: 1 },
+  wispCount: { min: 0, max: 10, step: 1 },
+  wispSpeedMultiplier: { min: 0.25, max: 5.0, step: 0.05 },
+  emberCount: { min: 0, max: 10, step: 1 },
   emberMoveTicks: { min: 1, max: 10, step: 1 },
   emberSpawnIntervalSec: { min: 1, max: 60, step: 1 },
   emberBranchChaseProbability: { min: 0, max: 1, step: 0.05 },
@@ -130,37 +137,63 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
 }
 
 /**
- * Mounts the debug panel into the page: a "DEBUG" badge in the HUD row
- * (docs/plan.md §6 M10: "パネル表示中は HUD などに「DEBUG」表示を出す") and
- * a floating control panel with one slider per tunable, plus RESET/EXPORT.
+ * Mounts the debug panel into the page: a "DEBUG" badge/toggle in the HUD
+ * row (docs/plan.md §6 M10: "パネル表示中は HUD などに「DEBUG」表示を出す")
+ * and a floating, collapsible control panel with one slider per tunable,
+ * plus RESET/EXPORT.
  */
 export function initDebugPanel(session: GameSession, hudRow: HTMLElement): void {
-  hudRow.appendChild(buildDebugBadge());
   // Positioned below the HUD row (rather than a fixed pixel guess) so the
   // floating panel never covers the "DEBUG" badge or the MUTE button that
   // also live in the HUD row, regardless of how tall it renders at a given
   // viewport width (docs/plan.md's HUD row height is itself responsive,
   // see main.ts's fitCanvasToViewport()).
   const panelTop = hudRow.getBoundingClientRect().bottom + 8;
-  document.body.appendChild(buildPanel(session, panelTop));
+
+  // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
+  // got in the way of actually playing). The badge itself doubles as the
+  // open/close toggle — one click re-opens a collapsed panel just as easily
+  // as it collapses an open one — and the panel also gets its own "x" for
+  // closing without reaching back up for the (smaller) badge. Purely a
+  // display toggle: collapsing never touches applyDebugOverrides/
+  // resetDebugOverrides, so whatever overrides are already active keep
+  // affecting the game while the panel is hidden. Open/closed state is
+  // in-memory only (no product need for it to survive a reload) and always
+  // starts open.
+  let isOpen = true;
+  const setOpen = (open: boolean): void => {
+    isOpen = open;
+    panel.style.display = isOpen ? 'block' : 'none';
+    badge.textContent = `DEBUG ${isOpen ? '▾' : '▸'}`; // open / closed caret
+  };
+
+  const badge = buildDebugBadge(() => setOpen(!isOpen));
+  const panel = buildPanel(session, panelTop, () => setOpen(false));
+  hudRow.appendChild(badge);
+  document.body.appendChild(panel);
+  setOpen(true);
 }
 
-function buildDebugBadge(): HTMLSpanElement {
-  const badge = document.createElement('span');
+function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
+  const badge = document.createElement('button');
   badge.id = 'debug-badge';
-  badge.textContent = 'DEBUG';
+  badge.type = 'button';
+  badge.title = 'Toggle the debug panel';
   badge.style.flex = '0 0 auto';
   badge.style.font = 'bold 11px monospace';
   badge.style.color = '#0a0e27';
   badge.style.background = '#ffe066';
+  badge.style.border = 'none';
   badge.style.padding = '2px 6px';
   badge.style.borderRadius = '3px';
-  badge.style.pointerEvents = 'none';
+  badge.style.pointerEvents = 'auto';
+  badge.style.cursor = 'pointer';
   badge.style.userSelect = 'none';
+  badge.addEventListener('click', onToggle);
   return badge;
 }
 
-function buildPanel(session: GameSession, top: number): HTMLDivElement {
+function buildPanel(session: GameSession, top: number, onClose: () => void): HTMLDivElement {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
@@ -179,12 +212,37 @@ function buildPanel(session: GameSession, top: number): HTMLDivElement {
   panel.style.pointerEvents = 'auto';
   panel.style.userSelect = 'none';
 
-  const title = document.createElement('div');
+  const titleRow = document.createElement('div');
+  titleRow.style.display = 'flex';
+  titleRow.style.alignItems = 'center';
+  titleRow.style.justifyContent = 'space-between';
+  titleRow.style.marginBottom = '8px';
+
+  const title = document.createElement('span');
   title.textContent = 'DEBUG PANEL (dev only)';
   title.style.fontWeight = 'bold';
-  title.style.marginBottom = '8px';
   title.style.color = '#ffe066';
-  panel.appendChild(title);
+  titleRow.appendChild(title);
+
+  // Closes the panel without touching any override (docs/plan.md §6 M11
+  // orchestration follow-up: "閉じてもオーバーライドの効果は維持される") —
+  // re-opening is one click on the HUD badge (see initDebugPanel).
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.textContent = '×';
+  closeButton.title = 'Close (overrides stay active)';
+  closeButton.style.flex = '0 0 auto';
+  closeButton.style.font = 'bold 13px monospace';
+  closeButton.style.color = '#ffe066';
+  closeButton.style.background = 'transparent';
+  closeButton.style.border = 'none';
+  closeButton.style.cursor = 'pointer';
+  closeButton.style.lineHeight = '1';
+  closeButton.style.padding = '0 2px';
+  closeButton.addEventListener('click', onClose);
+  titleRow.appendChild(closeButton);
+
+  panel.appendChild(titleRow);
 
   const rows = new Map<keyof EffectiveDebugParams, { input: HTMLInputElement; readout: HTMLSpanElement }>();
 

@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { GameSession } from './session';
 import { Game } from './game';
 import { Field } from './field';
+import { parseField } from './fieldFixture';
 import { Wisp } from './enemy';
+import { Ember } from './patrol';
 import { INITIAL_LIVES, MISS_GRACE_TICKS } from '../config';
 
 type Carry = { score: number; lives: number; multiplier: number };
@@ -215,6 +217,38 @@ describe('GameSession — Title/Playing/StageClear/GameOver state machine (M4, d
   });
 });
 
+/**
+ * A tiny, deterministic stage where a claim traps an Ember on a wall that
+ * loses its last UNCLAIMED neighbor (mirrors game.test.ts's own Ember-trap
+ * fixture, docs/plan.md §6 M11/§12.6): a pre-existing wall at x=3 (holding
+ * `trappedEmber`) sits between an already-claimed chamber and a small gap the
+ * marker's new vertical line at x=5 is about to close off.
+ */
+function emberTrapGame(_stage: number, carry: Carry): Game {
+  const field = parseField(`
+    ###########
+    #ff#..#...#
+    #ff#..#...#
+    #ff#..#...#
+    ###########
+  `).field;
+  const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, 0);
+  const trappedEmber = new Ember({ x: 3, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+  return new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+    embers: [trappedEmber],
+    score: carry.score,
+    lives: carry.lives,
+    multiplier: carry.multiplier,
+  });
+}
+
+/** Draws the straight vertical line that closes/traps `emberTrapGame` (4 ticks). */
+function clearEmberTrapGame(session: GameSession): void {
+  for (let tick = 0; tick < 4; tick++) {
+    session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+  }
+}
+
 describe('GameSession — event forwarding (M5, docs/plan.md §3.8/§9.9)', () => {
   it('forwards the current stage Game\'s events, draining them once', () => {
     const session = new GameSession({ gameFactory: stageClearGame });
@@ -262,6 +296,18 @@ describe('GameSession — event forwarding (M5, docs/plan.md §3.8/§9.9)', () =
     session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // steps onto the Wisp's line cell -> miss
 
     expect(session.drainEvents()).toEqual(['miss']);
+  });
+
+  it('forwards an ember-despawned event and its despawn position (docs/plan.md §6 M11/§12.6)', () => {
+    const session = new GameSession({ gameFactory: emberTrapGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+
+    clearEmberTrapGame(session);
+
+    expect(session.drainEvents()).toEqual(['ember-despawned', 'area-claimed']);
+    expect(session.drainDespawnedEmberPositions()).toEqual([{ x: 3, y: 1 }]);
+    // Already drained -> nothing left on a second call.
+    expect(session.drainDespawnedEmberPositions()).toEqual([]);
   });
 });
 

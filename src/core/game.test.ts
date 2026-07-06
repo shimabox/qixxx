@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Field, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED } from './field';
+import { parseField } from './fieldFixture';
 import { Game, GameInput } from './game';
 import { Wisp } from './enemy';
 import { Ember } from './patrol';
@@ -684,5 +685,117 @@ describe('Game — debug overrides (docs/plan.md §6 M10 / §12.4)', () => {
     expect(game.getEffectiveDebugParams().emberBranchChaseProbability).toBe(EMBER_BRANCH_CHASE_PROBABILITY);
     expect(game.getEffectiveDebugParams().emberSpawnIntervalSec).toBeCloseTo(EMBER_SPAWN_INTERVAL_SEC);
     expect(game.hasActiveDebugOverrides()).toBe(false);
+  });
+});
+
+describe('Game — Ember despawn on claim (docs/plan.md §6 M11 / §12.6)', () => {
+  // A pre-existing interior wall at x=3 (with an Ember on it, `trappedEmber`)
+  // sits between an already-claimed left chamber (x=1-2) and a small
+  // still-UNCLAIMED gap (x=4-5, no Wisp) that the marker's new vertical line
+  // at x=5 is about to close off. Once that gap is claimed, x=3's wall loses
+  // its last UNCLAIMED neighbor and gets pruned by claimArea's
+  // pruneDeadBorders — exactly the "footing vanishes out from under a
+  // stationary Ember" bug (docs/plan.md §12.6). A second wall at x=6 (with
+  // `survivingEmber`) keeps a genuine UNCLAIMED neighbor (x=7, where the
+  // Wisp lives) even after the same claim, so it must NOT be pruned/despawned
+  // — the control case for "still a valid/active border".
+  //
+  //   ###########
+  //   #ff#..#...#   <- y=1
+  //   #ff#..#...#   <- y=2 (trappedEmber@(3,2), survivingEmber@(6,2), Wisp@(8,2))
+  //   #ff#..#...#   <- y=3
+  //   ###########
+  //
+  // Marker starts at (5,0) and is walked straight down to (5,4) — 4 ticks,
+  // matching this file's other "close a straight vertical line" tests —
+  // closing a new line at x=5 that claims the x=4 gap and leaves x=6-9
+  // UNCLAIMED (the Wisp's side).
+  function buildEmberTrapGame(): Game {
+    const field = parseField(`
+      ###########
+      #ff#..#...#
+      #ff#..#...#
+      #ff#..#...#
+      ###########
+    `).field;
+
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, 0);
+    // rng () => 1 + branchChaseProbability 0 keeps both Embers' first (and
+    // only, given moveTicks=100) move fully deterministic: "maintain
+    // heading" always wins over the (never-rolled) chase branch. Each starts
+    // heading "up" so its one guaranteed move (cooldown starts at 0) stays
+    // on the same wall column, one cell up.
+    const trappedEmber = new Ember({ x: 3, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+    const survivingEmber = new Ember({ x: 6, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+
+    return new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      embers: [trappedEmber, survivingEmber],
+    });
+  }
+
+  it('despawns an Ember whose BORDER footing gets embedded in claimed area by the claim', () => {
+    const game = buildEmberTrapGame();
+
+    for (let tick = 0; tick < 4; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+
+    // trappedEmber (wall x=3, now fully surrounded by claimed cells) is gone...
+    expect(game.getEmberPositions()).not.toContainEqual({ x: 3, y: 1 });
+    expect(game.getEmbers().length).toBe(1);
+  });
+
+  it('keeps an Ember alive on a BORDER line that still borders UNCLAIMED play area after the claim', () => {
+    const game = buildEmberTrapGame();
+
+    for (let tick = 0; tick < 4; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+
+    // ...but survivingEmber (wall x=6, still adjacent to the Wisp's UNCLAIMED
+    // side at x=7) is still there, untouched.
+    expect(game.getEmberPositions()).toContainEqual({ x: 6, y: 1 });
+    expect(game.getEmbers().length).toBe(1);
+  });
+
+  it('queues an ember-despawned event and its despawn position, each independently drainable', () => {
+    const game = buildEmberTrapGame();
+
+    for (let tick = 0; tick < 4; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+
+    expect(game.drainEvents()).toContain('ember-despawned');
+    expect(game.drainDespawnedEmberPositions()).toEqual([{ x: 3, y: 1 }]);
+    // Already drained -> nothing left on a second call (docs/plan.md §3.8's
+    // drain-once contract, same as drainEvents()).
+    expect(game.drainDespawnedEmberPositions()).toEqual([]);
+  });
+
+  it('does not immediately respawn a naturally-despawned Ember even while a debug emberCount override is active', () => {
+    // docs/plan.md §6 M11 point 5 / §12.6 point 5: applyDebugOverrides() is
+    // only ever invoked by the debug panel when a slider actually changes —
+    // Game never re-reconciles emberCount on its own each tick — so a trapped
+    // Ember despawning mid-play should NOT be silently topped back up until
+    // the panel is touched again (or the periodic spawn naturally adds a
+    // fresh pair).
+    const game = buildEmberTrapGame();
+    // reconcileDebugOverrides() re-applies *every* knob (not just the one
+    // just touched) to its currently-effective value, falling back to this
+    // stage's base for anything not explicitly overridden (see
+    // Game.reconcileDebugOverrides) — so emberMoveTicks/branchChaseProbability
+    // must be pinned back to this fixture's deterministic values here too,
+    // or the override call itself would silently undo buildEmberTrapGame()'s
+    // moveTicks=100 setup and let both Embers wander mid-test.
+    game.applyDebugOverrides({ emberCount: 2, emberMoveTicks: 100, emberBranchChaseProbability: 0 });
+
+    for (let tick = 0; tick < 4; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+
+    // One Ember was trapped and despawned; nothing silently replaced it even
+    // though an emberCount override of 2 is still active.
+    expect(game.getEmbers().length).toBe(1);
+    expect(game.getEffectiveDebugParams().emberCount).toBe(1);
   });
 });

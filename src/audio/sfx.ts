@@ -26,6 +26,8 @@ import {
   SFX_IGNITER_APPROACH_DURATION,
   SFX_EMBER_SPAWN_FREQ,
   SFX_EMBER_SPAWN_DURATION,
+  SFX_EMBER_DESPAWN_FREQ,
+  SFX_EMBER_DESPAWN_DURATION,
 } from '../config';
 
 // Safari (incl. iOS) still only exposes `webkitAudioContext` in some
@@ -135,6 +137,9 @@ export class SfxEngine {
           break;
         case 'ember-spawned':
           this.playTone(SFX_EMBER_SPAWN_FREQ, SFX_EMBER_SPAWN_DURATION, 'triangle', 0.15);
+          break;
+        case 'ember-despawned':
+          this.playTone(SFX_EMBER_DESPAWN_FREQ, SFX_EMBER_DESPAWN_DURATION, 'sine', 0.15, /* descend */ true);
           break;
       }
     }

@@ -6,7 +6,7 @@
 // strings stages together across a run (docs/plan.md §4.4 / §6 M4) lives one
 // level up, in core/session.ts's GameSession — this class only ever knows
 // about 'playing' | 'stageclear' | 'gameover' for the stage it's running.
-import { Field, Point, pointsEqual, UNCLAIMED } from './field';
+import { Field, Point, pointsEqual, UNCLAIMED, BORDER } from './field';
 import { Marker, MarkerMoveResult, Axis } from './marker';
 import { claimArea, ClaimResult, LineSpeed } from './claim';
 import { Wisp, Rng } from './enemy';
@@ -35,11 +35,11 @@ import {
  * is the only thing that ever constructs one of these outside tests.
  */
 export interface DebugOverrides {
-  /** Number of Wisps present (0-4 per the panel's slider range). */
+  /** Number of Wisps present (0-10 per the panel's slider range). */
   wispCount?: number;
-  /** Multiplies WISP_SPEED for every Wisp (0.25-3.0 per the panel). */
+  /** Multiplies WISP_SPEED for every Wisp (0.25-5.0 per the panel). */
   wispSpeedMultiplier?: number;
-  /** Number of Embers present (0-6 per the panel's slider range). */
+  /** Number of Embers present (0-10 per the panel's slider range). */
   emberCount?: number;
   /** Ticks per BORDER-cell step for every Ember (1-10 per the panel). */
   emberMoveTicks?: number;
@@ -161,6 +161,15 @@ export class Game {
   // core -> audio bridge — Game never touches AudioContext itself). See
   // core/events.ts for what belongs here vs. what's a plain getter instead.
   private events = new EventQueue<GameEvent>();
+  // Positions where an Ember was just despawned (docs/plan.md §6 M11 /
+  // §12.6), queued alongside (not instead of) the 'ember-despawned' entries
+  // pushed to `events` above. GameEvent stays a plain string union (the
+  // audio bridge's whole contract) so the one occurrence that needs a
+  // payload — the render layer's vanish-effect position — gets its own
+  // parallel queue rather than turning every event into a discriminated
+  // union. See drainDespawnedEmberPositions() below and GameSession's
+  // forwarding of the same.
+  private despawnedEmberPositions = new EventQueue<Point>();
 
   // Debug-panel overrides (docs/plan.md §6 M10 / §12.4). `debugOverrides`
   // holds only the fields the panel has actually touched; everything else
@@ -296,6 +305,18 @@ export class Game {
    */
   drainEvents(): GameEvent[] {
     return this.events.drain();
+  }
+
+  /**
+   * Drains (returns and clears) every position where an Ember has just been
+   * despawned since the last call (docs/plan.md §6 M11 / §12.6). The render
+   * layer uses these to spawn a short "vanish" visual effect; core itself
+   * holds no drawing state, just the plain position. Callers should drain
+   * this once per tick, same as drainEvents() — see that method's doc
+   * comment for why (GameSession forwards both up to main.ts identically).
+   */
+  drainDespawnedEmberPositions(): Point[] {
+    return this.despawnedEmberPositions.drain();
   }
 
   /**
@@ -486,6 +507,7 @@ export class Game {
         this.occupancy = claimResult.occupancy;
         this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
         this.despawnIgniter();
+        this.despawnTrappedEmbers();
         this.events.push('area-claimed');
         this.lastClearWasSplit = claimResult.split;
         if (claimResult.split) {
@@ -600,6 +622,28 @@ export class Game {
     this.igniter = null;
     this.stillTicks = 0;
     this.marker.setRetractEnabled(true);
+  }
+
+  /**
+   * Removes any Ember whose current cell is no longer BORDER after the
+   * claimArea() call just above pruned it into a claimed state (docs/plan.md
+   * §6 M11 / §12.6). Left unhandled, such an Ember's `update()` finds zero
+   * BORDER neighbors to step onto and holds position forever — visibly
+   * frozen inside the newly-claimed area, which real playtesting flagged as
+   * looking like a bug. Queues one 'ember-despawned' event (audio) and one
+   * despawn position (the render layer's vanish effect) per Ember removed;
+   * no special respawn handling is needed since the periodic
+   * maybeSpawnEmbers() pair-spawn continues on its own schedule regardless.
+   */
+  private despawnTrappedEmbers(): void {
+    this.embers = this.embers.filter((ember) => {
+      if (this.field.get(ember.getPosition()) === BORDER) {
+        return true;
+      }
+      this.despawnedEmberPositions.push(ember.getPosition());
+      this.events.push('ember-despawned');
+      return false;
+    });
   }
 
   /**

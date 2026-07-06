@@ -18,7 +18,15 @@ export type GameEvent =
   | 'miss'
   | 'igniter-spawned'
   | 'igniter-approaching'
-  | 'ember-spawned';
+  | 'ember-spawned'
+  // An Ember was despawned because the BORDER cell it stood on got claimed
+  // out from under it (docs/plan.md §6 M11 / §12.6). This is the audio half
+  // of that occurrence — the accompanying *position* (for the render
+  // layer's vanish effect) is a payload no plain string event can carry, so
+  // it travels alongside this event via a separate position queue (see
+  // Game.drainDespawnedEmberPositions()/GameSession's forwarding of the
+  // same) rather than turning GameEvent itself into a discriminated union.
+  | 'ember-despawned';
 
 /**
  * A minimal FIFO queue of items queued since the last drain. Pure data

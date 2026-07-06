@@ -172,6 +172,11 @@ export const SFX_IGNITER_APPROACH_FREQ = 500;
 export const SFX_IGNITER_APPROACH_DURATION = 0.05;
 export const SFX_EMBER_SPAWN_FREQ = 260;
 export const SFX_EMBER_SPAWN_DURATION = 0.08;
+// A short descending "pop" for an Ember despawning after losing its BORDER
+// footing (docs/plan.md §6 M11 / §12.6) — lower/quicker than the spawn tone
+// so the two read as clearly distinct events.
+export const SFX_EMBER_DESPAWN_FREQ = 180;
+export const SFX_EMBER_DESPAWN_DURATION = 0.07;
 
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
@@ -224,6 +229,16 @@ export const IGNITER_CORE_RADIUS_CELLS = 0.5;
 export const IGNITER_HALO_ALPHA_BASE = 0.35;
 export const IGNITER_BLINK_SPEED = 0.5; // radians per rendered frame
 export const IGNITER_BLINK_MIN_ALPHA = 0.4;
+
+// Ember despawn effect (docs/plan.md §6 M11 / §12.6): a trapped Ember
+// (standing on a BORDER cell that a claim just pruned into a claimed state,
+// see Game.despawnTrappedEmbers()) vanishes rather than freezing in place.
+// Renderer draws a short ring at its last position that expands and fades
+// over this many rendered frames — purely a render-layer effect (its own
+// transient effect list, see render/renderer.ts); core only ever hands up
+// the despawn *position* (Game.drainDespawnedEmberPositions()).
+export const EMBER_DESPAWN_EFFECT_DURATION_FRAMES = 24; // ~0.4s at a ~60fps render rate
+export const EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS = 3.0; // ring radius at the end of its life
 
 // Touch controls (docs/plan.md §5.2): screen-bottom virtual d-pad (left) +
 // FAST/SLOW buttons (right). Pure layout tuning — sizes in CSS pixels.
