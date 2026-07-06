@@ -18,17 +18,43 @@ import {
   GLOW_BLUR_FIELD_EDGE,
   WISP_TRAIL_ALPHA_NEAR,
   WISP_TRAIL_ALPHA_FAR,
+  MARKER_DIAMOND_RADIUS_CELLS,
+  MARKER_GLOW_BLUR,
+  MARKER_PULSE_AMPLITUDE,
+  MARKER_PULSE_SPEED,
+  WISP_HEAD_HALO_RADIUS_CELLS,
+  WISP_HEAD_CORE_RADIUS_CELLS,
+  WISP_HEAD_HALO_ALPHA,
+  EMBER_RADIUS_CELLS,
+  EMBER_CORE_RADIUS_CELLS,
+  EMBER_HALO_ALPHA_BASE,
+  EMBER_HALO_ALPHA_VARIANCE,
+  EMBER_FLICKER_SPEED,
+  EMBER_FLICKER_PHASE_STEP,
+  IGNITER_RADIUS_CELLS,
+  IGNITER_CORE_RADIUS_CELLS,
+  IGNITER_HALO_ALPHA_BASE,
+  IGNITER_BLINK_SPEED,
+  IGNITER_BLINK_MIN_ALPHA,
 } from '../config';
 
 // Parsed once from COLOR_WISP_HEAD so the trail's per-segment fade (docs/plan.md
 // §6 M5 "Wispの残像表現の強化") can build an rgba() string with a varying
 // alpha instead of drawing every segment at the same flat opacity.
 const WISP_TRAIL_RGB = hexToRgb(COLOR_WISP_HEAD);
+// Parsed once each so the halo layers of Ember/Igniter (docs/plan.md §6 M9
+// / §12.3) can be drawn as a translucent rgba() fill under the opaque core.
+const EMBER_RGB = hexToRgb(COLOR_EMBER);
+const IGNITER_RGB = hexToRgb(COLOR_IGNITER);
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private backgroundLayer: HTMLCanvasElement;
+  // Drives every M9 (docs/plan.md §12.3) animation (marker idle pulse, Ember
+  // flicker, Igniter blink) via deterministic sin()/cos() functions of this
+  // counter — no state lives in src/core/, and no Math.random is involved.
+  private frameCount = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -91,9 +117,17 @@ export class Renderer {
     igniterPosition?: Point | null,
     markerVisible = true
   ): void {
+    this.frameCount++;
+
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
-    this.drawField(field);
+    // hasLineCells doubles as "is the marker currently drawing a line"
+    // (docs/plan.md §12.3 marker idle pulse): only Marker.tryMove ever writes
+    // the LINE cell state (src/core/marker.ts), and it's present on the field
+    // for exactly as long as Marker.isDrawing() is true, so this reuses the
+    // full-field scan drawField() already does rather than adding a new
+    // render() parameter.
+    const hasLineCells = this.drawField(field);
     this.drawFieldEdgeGlow();
     if (wispTrails) {
       // docs/plan.md §3.7/§4.2: stage 3+ has 2 Wisps; each gets its own
@@ -115,7 +149,7 @@ export class Renderer {
     // draw call entirely (rather than e.g. changing color) makes it a true
     // blink against the field/background behind it.
     if (markerPosition && markerVisible) {
-      this.drawMarker(markerPosition);
+      this.drawMarker(markerPosition, !hasLineCells);
     }
   }
 
@@ -140,9 +174,13 @@ export class Renderer {
     this.ctx.restore();
   }
 
-  private drawField(field: Field): void {
+  // Returns true iff at least one LINE cell was drawn (docs/plan.md §12.3:
+  // the marker idle-pulse's "is currently drawing" signal piggybacks on this
+  // scan — see the render() call site's comment).
+  private drawField(field: Field): boolean {
     const width = field.getWidth();
     const height = field.getHeight();
+    let hasLineCells = false;
 
     // Direct double loop - no intermediate array allocation per frame.
     // UNCLAIMED cells show the pre-rendered background, so only other states need fillRect.
@@ -175,6 +213,7 @@ export class Renderer {
           case LINE:
             this.ctx.shadowBlur = GLOW_BLUR_LINE;
             this.ctx.fillStyle = COLOR_LINE;
+            hasLineCells = true;
             break;
           default:
             continue;
@@ -183,6 +222,7 @@ export class Renderer {
       }
     }
     this.ctx.restore();
+    return hasLineCells;
   }
 
   // Draws the Wisp's afterimage trail (older history first, more transparent
@@ -199,43 +239,106 @@ export class Renderer {
       this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
     }
 
+    // Head enlarged to a ~2x2-cell halo + bright core (docs/plan.md §6 M9 /
+    // §12.3), centered on the head's grid cell so the visible footprint
+    // grows without moving the collision-relevant position.
+    const head = trail[0];
+    const cx = (head.x + 0.5) * RENDER_SCALE;
+    const cy = (head.y + 0.5) * RENDER_SCALE;
     this.ctx.save();
     this.ctx.shadowColor = COLOR_WISP_HEAD;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
+    this.ctx.fillStyle = `rgba(${WISP_TRAIL_RGB.r}, ${WISP_TRAIL_RGB.g}, ${WISP_TRAIL_RGB.b}, ${WISP_HEAD_HALO_ALPHA})`;
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, WISP_HEAD_HALO_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+    this.ctx.fill();
     this.ctx.fillStyle = COLOR_WISP_HEAD;
-    const head = trail[0];
-    this.ctx.fillRect(head.x * RENDER_SCALE, head.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, WISP_HEAD_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+    this.ctx.fill();
     this.ctx.restore();
   }
 
-  // Draws each Ember (border-patrol enemy) as a glowing solid cell.
+  // Draws each Ember (border-patrol enemy) as a ~2x2-cell "ember" — a bright
+  // core + softer halo circle, both flickering per-frame (docs/plan.md §6 M9
+  // / §12.3). Each Ember's flicker phase is offset by its index in
+  // `positions` (EMBER_FLICKER_PHASE_STEP) purely so multiple Embers don't
+  // flicker in lockstep — still a deterministic function of frameCount, no
+  // Math.random.
   private drawEmbers(positions: Point[]): void {
     this.ctx.save();
     this.ctx.shadowColor = COLOR_EMBER;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    this.ctx.fillStyle = COLOR_EMBER;
-    for (const p of positions) {
-      this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
-    }
+    positions.forEach((p, i) => {
+      const flicker = 0.5 + 0.5 * Math.sin(this.frameCount * EMBER_FLICKER_SPEED + i * EMBER_FLICKER_PHASE_STEP);
+      const haloAlpha = EMBER_HALO_ALPHA_BASE + EMBER_HALO_ALPHA_VARIANCE * flicker;
+      const cx = (p.x + 0.5) * RENDER_SCALE;
+      const cy = (p.y + 0.5) * RENDER_SCALE;
+
+      this.ctx.fillStyle = `rgba(${EMBER_RGB.r}, ${EMBER_RGB.g}, ${EMBER_RGB.b}, ${haloAlpha})`;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, EMBER_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.fillStyle = COLOR_EMBER;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, EMBER_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+      this.ctx.fill();
+    });
     this.ctx.restore();
   }
 
-  // Draws the Igniter (line-chasing enemy) as a glowing solid cell along the line it's climbing.
+  // Draws the Igniter (line-chasing enemy) as a ~2x2-cell bright core + halo
+  // circle along the line it's climbing, with a fast alpha blink
+  // (docs/plan.md §6 M9 / §12.3 "危険が伝わる速めの点滅") so it reads as
+  // more urgent than Ember's slower flicker. IGNITER_BLINK_MIN_ALPHA floors
+  // the dip so it never fully disappears mid-blink.
   private drawIgniter(position: Point): void {
+    const blink = 0.5 + 0.5 * Math.sin(this.frameCount * IGNITER_BLINK_SPEED);
+    const alpha = IGNITER_BLINK_MIN_ALPHA + (1 - IGNITER_BLINK_MIN_ALPHA) * blink;
+    const cx = (position.x + 0.5) * RENDER_SCALE;
+    const cy = (position.y + 0.5) * RENDER_SCALE;
+
     this.ctx.save();
+    this.ctx.globalAlpha = alpha;
     this.ctx.shadowColor = COLOR_IGNITER;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
+    this.ctx.fillStyle = `rgba(${IGNITER_RGB.r}, ${IGNITER_RGB.g}, ${IGNITER_RGB.b}, ${IGNITER_HALO_ALPHA_BASE})`;
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, IGNITER_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+    this.ctx.fill();
     this.ctx.fillStyle = COLOR_IGNITER;
-    this.ctx.fillRect(position.x * RENDER_SCALE, position.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+    this.ctx.beginPath();
+    this.ctx.arc(cx, cy, IGNITER_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
+    this.ctx.fill();
     this.ctx.restore();
   }
 
-  private drawMarker(position: Point): void {
+  // Draws the marker as a diamond (◆), ~3x3 cells across, centered on its
+  // grid cell (docs/plan.md §6 M9 / §12.3). While idle (not currently
+  // drawing a line — see the render() call site's comment on hasLineCells),
+  // it breathes via a slow sinusoidal size pulse; while actively drawing, it
+  // holds steady at its base size so the pulse doesn't compete visually with
+  // line-drawing feedback.
+  private drawMarker(position: Point, idle: boolean): void {
+    const cx = (position.x + 0.5) * RENDER_SCALE;
+    const cy = (position.y + 0.5) * RENDER_SCALE;
+    let radius = MARKER_DIAMOND_RADIUS_CELLS * RENDER_SCALE;
+    if (idle) {
+      const pulse = Math.sin(this.frameCount * MARKER_PULSE_SPEED);
+      radius *= 1 + MARKER_PULSE_AMPLITUDE * pulse;
+    }
+
     this.ctx.save();
     this.ctx.shadowColor = COLOR_MARKER;
-    this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
+    this.ctx.shadowBlur = MARKER_GLOW_BLUR;
     this.ctx.fillStyle = COLOR_MARKER;
-    this.ctx.fillRect(position.x * RENDER_SCALE, position.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+    this.ctx.beginPath();
+    this.ctx.moveTo(cx, cy - radius);
+    this.ctx.lineTo(cx + radius, cy);
+    this.ctx.lineTo(cx, cy + radius);
+    this.ctx.lineTo(cx - radius, cy);
+    this.ctx.closePath();
+    this.ctx.fill();
     this.ctx.restore();
   }
 

@@ -173,6 +173,58 @@ export const SFX_IGNITER_APPROACH_DURATION = 0.05;
 export const SFX_EMBER_SPAWN_FREQ = 260;
 export const SFX_EMBER_SPAWN_DURATION = 0.08;
 
+// Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
+// were all a single 1-cell dot, indistinguishable except by color and hard
+// to spot (real-playtest feedback). These constants only enlarge the drawn
+// footprint in Renderer — hit/branch/collision logic in src/core/ still
+// operates on the single grid cell the character occupies, and every shape
+// below is drawn centered on that same cell, so none of this can shift
+// collision behavior.
+
+// Marker (self), drawn as a diamond ~3x3 cells across (radius 1.5 cells from
+// the cell's center to each point) plus a stronger glow than the generic
+// entity glow, since it's the "hero" character.
+export const MARKER_DIAMOND_RADIUS_CELLS = 1.5;
+export const MARKER_GLOW_BLUR = 10; // px
+// Idle "breathing" pulse (§12.3 "待機中は緩やかにパルス"): Renderer applies
+// this only while the field has no in-progress LINE cells (equivalent to
+// Marker.isDrawing(), inferred from the field it already scans every frame
+// rather than a new render() parameter, so the renderer/main.ts call
+// signature doesn't need to change).
+export const MARKER_PULSE_AMPLITUDE = 0.12; // +/- fraction of the base radius
+export const MARKER_PULSE_SPEED = 0.025; // radians per rendered frame (~4s period at 60fps)
+
+// Wisp head, drawn as a bright core + softer halo circle (~2x2 cells across,
+// up from the former 1-cell dot). The afterimage trail behind it is
+// unchanged (still per-cell fillRect, see WISP_TRAIL_ALPHA_* above).
+export const WISP_HEAD_HALO_RADIUS_CELLS = 1.0;
+export const WISP_HEAD_CORE_RADIUS_CELLS = 0.55;
+export const WISP_HEAD_HALO_ALPHA = 0.35;
+
+// Ember, drawn as a bright core + halo circle (~2x2 cells across) with a
+// "flickering ember" animation: halo alpha (and implicitly the perceived
+// radius/brightness) oscillates per-frame. Each Ember's flicker is offset by
+// its index in the position array (EMBER_FLICKER_PHASE_STEP) so multiple
+// Embers don't flicker in perfect unison — still fully deterministic (sine
+// of the renderer's own frame counter), no Math.random involved.
+export const EMBER_RADIUS_CELLS = 1.0;
+export const EMBER_CORE_RADIUS_CELLS = 0.5;
+export const EMBER_HALO_ALPHA_BASE = 0.3;
+export const EMBER_HALO_ALPHA_VARIANCE = 0.2;
+export const EMBER_FLICKER_SPEED = 0.35; // radians per rendered frame
+export const EMBER_FLICKER_PHASE_STEP = 2.1; // radians offset per Ember index
+
+// Igniter, drawn as a bright core + halo circle (~2x2 cells across) with a
+// fast alpha blink (§12.3 "危険が伝わる速めの点滅") — faster than Ember's
+// flicker so it reads as more urgent. Never fully invisible
+// (IGNITER_BLINK_MIN_ALPHA floors the dip) so it stays clearly visible
+// throughout the blink.
+export const IGNITER_RADIUS_CELLS = 1.0;
+export const IGNITER_CORE_RADIUS_CELLS = 0.5;
+export const IGNITER_HALO_ALPHA_BASE = 0.35;
+export const IGNITER_BLINK_SPEED = 0.5; // radians per rendered frame
+export const IGNITER_BLINK_MIN_ALPHA = 0.4;
+
 // Touch controls (docs/plan.md §5.2): screen-bottom virtual d-pad (left) +
 // FAST/SLOW buttons (right). Pure layout tuning — sizes in CSS pixels.
 export const TOUCH_CONTROLS_HEIGHT = 168;
