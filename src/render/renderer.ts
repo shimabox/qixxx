@@ -159,8 +159,8 @@ export class Renderer {
     const hasLineCells = this.drawField(field);
     this.drawFieldEdgeGlow();
     if (wispTrails) {
-      // docs/plan.md §3.7/§4.2: stage 3+ has 2 Wisps; each gets its own
-      // afterimage trail + head, drawn independently.
+      // docs/plan.md §12.7/§4.2: stage n has n Wisps (2+ from stage 2); each
+      // gets its own afterimage trail + head, drawn independently.
       for (const trail of wispTrails) {
         if (trail.length > 0) {
           this.drawWisp(trail);

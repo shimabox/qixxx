@@ -515,7 +515,7 @@ describe('Game — Igniter lifecycle (M3, docs/plan.md §3.2/§3.4 (3)/§3.5)', 
   });
 });
 
-describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4.2/§3.6/§3.7)', () => {
+describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4.2/§3.6/§12.7)', () => {
   it('clears the stage instantly via a split, even when occupancy is well under the required threshold', () => {
     const field = new Field(10, 5); // interior x=1..8, y=1..3 -> 24 UNCLAIMED cells
     const leftWisp = new Wisp({ x: 2, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 2
@@ -551,7 +551,7 @@ describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4
     expect(game.getStatus()).toBe('stageclear'); // cleared via occupancy, not a split
   });
 
-  it('honors a custom requiredOccupancy (docs/plan.md §3.7 stage 3+ escalates toward 75%)', () => {
+  it('honors a custom requiredOccupancy (docs/plan.md §12.7 curve escalates toward 90% by stage 10)', () => {
     const field = new Field(10, 5); // 24 UNCLAIMED cells
     const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
     const game = new Game(field, { x: 7, y: 0 }, wisp, undefined, { requiredOccupancy: 0.9 });
@@ -797,5 +797,73 @@ describe('Game — Ember despawn on claim (docs/plan.md §6 M11 / §12.6)', () =
     // though an emberCount override of 2 is still active.
     expect(game.getEmbers().length).toBe(1);
     expect(game.getEffectiveDebugParams().emberCount).toBe(1);
+  });
+});
+
+describe('Game — Ember concurrency cap (docs/plan.md §6 M12 / §12.7)', () => {
+  it('skips spawning a fresh Ember pair once at maxConcurrentEmbers, but keeps resetting the cooldown to retry next interval', () => {
+    const field = new Field(10, 6);
+    const wisp = new Wisp({ x: 5, y: 3 }, () => 0.5, 0);
+    // moveTicks: 1000 keeps both stationary for the handful of ticks this
+    // test runs — their exact behavior isn't what's under test here.
+    const existingA = new Ember({ x: 0, y: 0 }, { dx: 1, dy: 0 }, () => 1, 1000, 0);
+    const existingB = new Ember({ x: 9, y: 0 }, { dx: -1, dy: 0 }, () => 1, 1000, 0);
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      embers: [existingA, existingB],
+      emberSpawnIntervalTicks: 1,
+      maxConcurrentEmbers: 2, // already at the cap with these 2 preset Embers
+    });
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // cooldown 1 -> 0 (no spawn attempt yet)
+    expect(game.getEmbers().length).toBe(2);
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // cooldown 0 -> spawn attempted, but at the cap -> skipped
+    expect(game.getEmbers().length).toBe(2);
+    expect(game.drainEvents()).not.toContain('ember-spawned');
+  });
+
+  it('tops back up on the next spawn interval once a trapped Ember despawns below the cap (docs/plan.md §6 M11 interplay)', () => {
+    // Same interior-wall fixture as the M11 despawn describe block above:
+    //   ###########
+    //   #ff#..#...#   <- y=1
+    //   #ff#..#...#   <- y=2 (trappedEmber@(3,2), survivingEmber@(6,2), Wisp@(8,2))
+    //   #ff#..#...#   <- y=3
+    //   ###########
+    // Marker walks straight down from (5,0), closing a line at x=5 on tick 4
+    // that prunes the x=3 wall (trappedEmber's footing) into claimed area,
+    // despawning it and dropping the live Ember count to 1 — under this
+    // test's maxConcurrentEmbers of 2.
+    const field = parseField(`
+      ###########
+      #ff#..#...#
+      #ff#..#...#
+      #ff#..#...#
+      ###########
+    `).field;
+
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, 0);
+    const trappedEmber = new Ember({ x: 3, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+    const survivingEmber = new Ember({ x: 6, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      embers: [trappedEmber, survivingEmber],
+      emberSpawnIntervalTicks: 6,
+      maxConcurrentEmbers: 2,
+    });
+
+    for (let tick = 0; tick < 4; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+    expect(game.getEmbers().length).toBe(1); // trappedEmber despawned; survivingEmber remains
+
+    // Run out the spawn cooldown (6 ticks total elapsed across this test;
+    // the first 4 already ticked it down to 2 while the line was drawn).
+    for (let tick = 0; tick < 3; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
+
+    // Now below the cap (1 < 2) -> the periodic spawn tops back up.
+    expect(game.getEmbers().length).toBe(2);
+    expect(game.drainEvents()).toContain('ember-spawned');
   });
 });

@@ -125,13 +125,13 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
     _notes: {
       WISP_COUNT:
-        'Number of Wisps this stage. config.ts has no single constant for this — stage 1-2 always spawn 1; stage 3+ uses STAGE3_WISP_COUNT.',
+        'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
       WISP_SPEED_MULTIPLIER:
-        'Effective multiplier on WISP_SPEED for the current stage. Nearest config constants: STAGE2_WISP_SPEED_MULTIPLIER (stage 2) / STAGE3_WISP_SPEED_MULTIPLIER_BASE + WISP_SPEED_MULTIPLIER_STEP (stage 3+), capped at WISP_SPEED_MULTIPLIER_MAX.',
+        'Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from 1.0 (stage 1) to WISP_SPEED_MULTIPLIER_MAX (stage STAGE_MAX_DIFFICULTY).',
       EMBER_COUNT:
-        'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC) rather than from a fixed config constant.',
+        'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
       DEFAULT_REQUIRED_OCCUPANCY:
-        'Effective required occupancy for the current stage. config.ts applies this value to stage 1-2; stage 3+ escalates it via REQUIRED_OCCUPANCY_STEP up to REQUIRED_OCCUPANCY_MAX.',
+        'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
     },
   };
 }

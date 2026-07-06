@@ -14,14 +14,18 @@ export const TICK_DURATION = 1 / TICK_RATE; // seconds per update
 // running thousands of catch-up ticks after the tab was inactive (spiral of death).
 export const MAX_FRAME_DELTA = 0.25;
 
-// Stage progression (docs/plan.md §3.7): stage 1 and 2 use the explicit
-// values below; stage 3+ (2-Wisp stages, see WISP/EMBER/OCCUPANCY *_STAGE3*
-// and *_STEP constants further down) escalate difficulty per stage, each
-// capped at its documented bound. The exact per-stage curve (how fast each
-// value escalates) is an original tuning choice — the plan only pins down
-// the stage 1/2 values and the stage 3+ asymptotic bounds (speed x2 cap,
-// Ember interval 10s floor, occupancy 75% cap).
-export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // 65% for stage 1-2, increases to 75% in stage 3+
+// Stage progression (docs/plan.md §12.7, replacing the earlier §3.7 table):
+// a single linear interpolation from stage 1 (baseline) to stage
+// STAGE_MAX_DIFFICULTY (every parameter at its documented max), stage 11+
+// held at the stage-10 values. core/stage.ts's getStageConfig() does the
+// interpolating; the constants below only pin down each curve's two
+// endpoints. Stage 1's endpoint is simply this file's existing single-value
+// constants (WISP_SPEED's implicit x1 multiplier, EMBER_MOVE_TICKS,
+// EMBER_BRANCH_CHASE_PROBABILITY, EMBER_SPAWN_INTERVAL_SEC,
+// DEFAULT_REQUIRED_OCCUPANCY) — only the stage-10 endpoints need new
+// constants (the `_MAX`/`_MIN` ones below).
+export const STAGE_MAX_DIFFICULTY = 10;
+export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
 
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
@@ -53,41 +57,51 @@ export const MARKER_MOVE_TICKS_SLOW = 2;
 // It walks the BORDER cell graph (docs/plan.md §4.3), one cell every
 // EMBER_MOVE_TICKS ticks (slower than the marker's 1 tick/cell fast rate), and
 // a new pair appears every EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md
-// §3.7 stage 1: 30s).
+// §12.7 stage 1: 30s, escalating to EMBER_SPAWN_INTERVAL_MIN_SEC by stage
+// STAGE_MAX_DIFFICULTY).
 export const EMBER_SPAWN_INTERVAL_SEC = 30;
 export const EMBER_SPAWN_INTERVAL_TICKS = EMBER_SPAWN_INTERVAL_SEC * TICK_RATE;
-export const EMBER_MOVE_TICKS = 3;
+export const EMBER_MOVE_TICKS = 3; // stage 1 baseline; escalates down to EMBER_MOVE_TICKS_MIN by stage 10
 
-// Branch-chase probability (docs/plan.md §6 M8 / §12.2): at a BORDER-graph
-// branch (2+ non-reversing candidate cells), Ember picks the candidate
-// pointing most toward the marker with this probability, instead of always
-// preferring to keep going straight. Without this, an Ember on the outer
-// ring can maintain its heading forever and never turn onto the branch
+// Branch-chase probability (docs/plan.md §6 M8 / §12.2, curve per §12.7): at
+// a BORDER-graph branch (2+ non-reversing candidate cells), Ember picks the
+// candidate pointing most toward the marker with this probability, instead
+// of always preferring to keep going straight. Without this, an Ember on the
+// outer ring can maintain its heading forever and never turn onto the branch
 // lines created by claimed area, making it a non-threat (real-playtest
 // feedback). 0.7 was chosen so Embers reliably threaten the marker along
 // inner borders while still occasionally patrolling straight through a
-// junction (avoids feeling perfectly omniscient).
+// junction (avoids feeling perfectly omniscient); this is the stage 1
+// baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage 10.
 export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 
-// Stage 2 tuning (docs/plan.md §3.7): 1 Wisp, x1.15 speed, 25s Ember interval,
-// same 65% required occupancy as stage 1.
-export const STAGE2_WISP_SPEED_MULTIPLIER = 1.15;
-export const STAGE2_EMBER_SPAWN_INTERVAL_SEC = 25;
-
-// Stage 3+ tuning (docs/plan.md §3.7 / §4.2): two Wisps (split-clearable),
-// with speed/Ember-interval/required-occupancy escalating one step per stage
-// beyond 3, each capped at its documented bound.
-export const STAGE3_WISP_COUNT = 2;
-export const STAGE3_WISP_SPEED_MULTIPLIER_BASE = 1.3;
-export const WISP_SPEED_MULTIPLIER_STEP = 0.1; // + per stage beyond 3
-export const WISP_SPEED_MULTIPLIER_MAX = 2.0; // hard cap (docs/plan.md §3.7: "上限×2")
-
-export const STAGE3_EMBER_SPAWN_INTERVAL_SEC = 20;
-export const EMBER_SPAWN_INTERVAL_STEP_SEC = 2; // - per stage beyond 3
-export const EMBER_SPAWN_INTERVAL_MIN_SEC = 10; // floor (docs/plan.md §3.7: "下限10秒")
-
-export const REQUIRED_OCCUPANCY_STEP = 0.02; // + per stage from stage 3 onward
-export const REQUIRED_OCCUPANCY_MAX = 0.75; // cap (docs/plan.md §3.3/§3.7)
+// Stage 1 -> STAGE_MAX_DIFFICULTY interpolation endpoints (docs/plan.md
+// §12.7 — replaces the earlier §3.7 stage-2/stage-3+ step constants).
+// core/stage.ts's getStageConfig() linearly interpolates every parameter
+// between its stage-1 baseline (the plain constants above) and the matching
+// `_MAX`/`_MIN` endpoint below, reaching the endpoint exactly at stage
+// STAGE_MAX_DIFFICULTY (10) and holding it for every stage beyond that.
+export const WISP_SPEED_MULTIPLIER_MAX = 5.0; // stage 10: x5 (docs/plan.md §12.7)
+export const EMBER_MOVE_TICKS_MIN = 1; // stage 10: 1 tick/cell (fastest)
+export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // stage 10: always chases at a branch
+// Stage 10's Ember spawn interval floor. The debug panel's own slider goes
+// down to 1s (src/debug/panel.ts RANGES.emberSpawnIntervalSec), but 5s is the
+// deliberately chosen in-curve floor (docs/plan.md §12.7's one documented
+// deviation from "match the panel's most extreme value"): at 1s, Embers
+// would spawn faster than a player can realistically out-maneuver the M11
+// containment mechanic, making that counterplay meaningless. 5s keeps Embers
+// relentless at stage 10 while leaving room to react.
+export const EMBER_SPAWN_INTERVAL_MIN_SEC = 5;
+// Max Embers allowed alive at once (docs/plan.md §12.7 "Ember 同時数上限",
+// new in M12): bounds both the difficulty curve and worst-case per-frame
+// render cost (each Ember draws a glow halo, docs/plan.md §7.3's 60fps
+// budget) now that stage 10 can otherwise accumulate Embers indefinitely.
+// Game.maybeSpawnEmbers() skips spawning once at this cap, but a debug-panel
+// emberCount override (docs/plan.md §6 M10) bypasses it — that's an explicit
+// developer action, not the natural stage curve.
+export const EMBER_MAX_CONCURRENT_STAGE1 = 2;
+export const EMBER_MAX_CONCURRENT_MAX = 10;
+export const REQUIRED_OCCUPANCY_MAX = 0.9; // stage 10: 90% (docs/plan.md §12.7)
 
 // Split multiplier (docs/plan.md §3.6): the score multiplier for a stage is
 // `split successes + 1`, capped at 9x, and resets to 1x (0 successes) the

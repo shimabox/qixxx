@@ -311,7 +311,7 @@ describe('GameSession — event forwarding (M5, docs/plan.md §3.8/§9.9)', () =
   });
 });
 
-describe('GameSession — real stage progression difficulty (M4, docs/plan.md §3.7)', () => {
+describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.md §12.7)', () => {
   const FIELD_WIDTH = 100;
   const FIELD_HEIGHT = 6;
 
@@ -342,7 +342,10 @@ describe('GameSession — real stage progression difficulty (M4, docs/plan.md §
     }
   }
 
-  it('spawns 2 Wisps starting at stage 3, via the real (non-test-hook) per-stage builder', () => {
+  it('spawns wispCount == stage number (stage 2 already has 2 Wisps under the M12 curve), via the real (non-test-hook) per-stage builder', () => {
+    // docs/plan.md §12.7 replaces the old "2 Wisps from stage 3" table with
+    // "stage n = n Wisps" — stage 2 is now the first multi-Wisp stage, one
+    // stage earlier than the pre-M12 curve this test used to exercise.
     const session = new GameSession({ fieldWidth: FIELD_WIDTH, fieldHeight: FIELD_HEIGHT, rng: () => 0.5 });
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 1, playing
     expect(session.getStage()).toBe(1);
@@ -352,12 +355,6 @@ describe('GameSession — real stage progression difficulty (M4, docs/plan.md §
     expect(session.getStatus()).toBe('stageclear');
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 2
     expect(session.getStage()).toBe(2);
-    expect(session.getGame().getWisps().length).toBe(1);
-
-    clearByWallingOffTheWisp(session);
-    expect(session.getStatus()).toBe('stageclear');
-    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 3
-    expect(session.getStage()).toBe(3);
     expect(session.getGame().getWisps().length).toBe(2);
   });
 });

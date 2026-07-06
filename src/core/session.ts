@@ -1,7 +1,7 @@
 // Top-level game state machine (docs/plan.md §4.4 / §6 M4):
 //   Title -> Playing -> (StageClear -> Playing) | (GameOver -> Title)
 // Pure logic — no DOM/Canvas/localStorage dependencies. `GameSession`
-// orchestrates stage-to-stage progression (docs/plan.md §3.7) by
+// orchestrates stage-to-stage progression (docs/plan.md §12.7) by
 // constructing a fresh per-stage `Game` for each stage (see core/stage.ts
 // for the difficulty curve), carrying score/lives/multiplier/split-streak
 // across stage boundaries, and tracking a high-score *value* only —
@@ -47,7 +47,7 @@ export interface SessionOptions {
    * Test hook: overrides how each stage's `Game` is built. Receives the
    * stage number and the score/lives/multiplier to carry into it (the same
    * values the default builder threads through via GameOptions). Defaults
-   * to the real per-stage builder (docs/plan.md §3.7's difficulty curve via
+   * to the real per-stage builder (docs/plan.md §12.7's difficulty curve via
    * core/stage.ts + core/enemy.ts's Wisp). Lets tests drive the
    * Title/Playing/StageClear/GameOver state machine with a small,
    * deterministic `Game` instead of needing to choreograph real Wisp
@@ -319,6 +319,9 @@ export class GameSession {
     return new Game(field, markerStart, undefined, this.rng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
+      emberMoveTicks: config.emberMoveTicks,
+      emberBranchChaseProbability: config.emberBranchChaseProbability,
+      maxConcurrentEmbers: config.maxConcurrentEmbers,
       requiredOccupancy: config.requiredOccupancy,
       // Score, lives, and multiplier carry across a stage-clear into the
       // next stage (docs/plan.md §6 M4); resetToFreshRun() passes fresh
@@ -338,7 +341,7 @@ export class GameSession {
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
       // Spread multiple Wisps symmetrically around the field's horizontal
-      // center so a 2-Wisp stage (docs/plan.md §3.7 stage 3+) doesn't spawn
+      // center so a multi-Wisp stage (docs/plan.md §12.7, stage 2+) doesn't spawn
       // them on top of each other; clamped to stay within the interior even
       // on the small fields used by tests. For a single Wisp this reduces
       // to exactly the field-center spawn used since M2.

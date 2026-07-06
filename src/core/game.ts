@@ -24,6 +24,7 @@ import {
   EMBER_SPAWN_INTERVAL_TICKS,
   EMBER_MOVE_TICKS,
   EMBER_BRANCH_CHASE_PROBABILITY,
+  EMBER_MAX_CONCURRENT_STAGE1,
   TICK_RATE,
 } from '../config';
 
@@ -110,19 +111,38 @@ export interface GameOptions {
    */
   lives?: number;
   /**
-   * Wisps present this stage (docs/plan.md §3.7: 1 for stage 1-2, 2 for
-   * stage 3+ — see core/stage.ts). Takes precedence over the single `wisp`
-   * constructor parameter when provided. Defaults to a single Wisp (the
-   * `wisp` param, or a freshly-constructed one) so single-Wisp callers/tests
-   * are unaffected.
+   * Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped
+   * at STAGE_MAX_DIFFICULTY — see core/stage.ts). Takes precedence over the
+   * single `wisp` constructor parameter when provided. Defaults to a single
+   * Wisp (the `wisp` param, or a freshly-constructed one) so single-Wisp
+   * callers/tests are unaffected.
    */
   wisps?: Wisp[];
   /**
-   * Required occupancy to clear this stage (docs/plan.md §3.7): 65% for
-   * stage 1-2, escalating to 75% by stage 3+. Defaults to
+   * Required occupancy to clear this stage (docs/plan.md §12.7): 65% at
+   * stage 1, escalating to 90% by stage 10. Defaults to
    * DEFAULT_REQUIRED_OCCUPANCY.
    */
   requiredOccupancy?: number;
+  /**
+   * Ticks per BORDER-cell step for every Ember spawned/overridden this stage
+   * (docs/plan.md §12.7: 3 at stage 1, down to 1 by stage 10 — see
+   * core/stage.ts). Defaults to EMBER_MOVE_TICKS (the stage-1 baseline).
+   */
+  emberMoveTicks?: number;
+  /**
+   * Branch-chase probability for every Ember spawned/overridden this stage
+   * (docs/plan.md §12.7: 0.7 at stage 1, up to 1.0 by stage 10). Defaults to
+   * EMBER_BRANCH_CHASE_PROBABILITY (the stage-1 baseline).
+   */
+  emberBranchChaseProbability?: number;
+  /**
+   * Max Embers allowed alive at once before maybeSpawnEmbers() starts
+   * skipping spawns (docs/plan.md §12.7 "Ember 同時数上限": 2 at stage 1, up
+   * to 10 by stage 10). Bypassed while a debug emberCount override is active
+   * (see maybeSpawnEmbers()). Defaults to EMBER_MAX_CONCURRENT_STAGE1.
+   */
+  maxConcurrentEmbers?: number;
 }
 
 export class Game {
@@ -183,6 +203,10 @@ export class Game {
   private readonly baseEmberSpawnIntervalTicks: number;
   private readonly baseEmberBranchChaseProbability: number;
   private readonly baseRequiredOccupancy: number;
+  // Ember concurrency cap (docs/plan.md §6 M12 / §12.7): not debug-overridable
+  // itself (there's no panel slider for it), just the stage's own fixed
+  // value for the lifetime of this Game instance. See maybeSpawnEmbers().
+  private readonly maxConcurrentEmbers: number;
 
   constructor(
     field: Field = new Field(),
@@ -215,10 +239,11 @@ export class Game {
     this.baseWispCount = this.wisps.length;
     this.baseWispSpeedMultiplier = this.wisps[0]?.getSpeedMultiplier() ?? 1;
     this.baseEmberCount = this.embers.length;
-    this.baseEmberMoveTicks = EMBER_MOVE_TICKS;
+    this.baseEmberMoveTicks = options.emberMoveTicks ?? EMBER_MOVE_TICKS;
     this.baseEmberSpawnIntervalTicks = this.emberSpawnIntervalTicks;
-    this.baseEmberBranchChaseProbability = EMBER_BRANCH_CHASE_PROBABILITY;
+    this.baseEmberBranchChaseProbability = options.emberBranchChaseProbability ?? EMBER_BRANCH_CHASE_PROBABILITY;
     this.baseRequiredOccupancy = this.requiredOccupancy;
+    this.maxConcurrentEmbers = options.maxConcurrentEmbers ?? EMBER_MAX_CONCURRENT_STAGE1;
   }
 
   getField(): Field {
@@ -234,7 +259,7 @@ export class Game {
     return this.wisps[0];
   }
 
-  /** All Wisps present this stage (docs/plan.md §3.7: 1 for stage 1-2, 2 for stage 3+). */
+  /** All Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped at STAGE_MAX_DIFFICULTY). */
   getWisps(): Wisp[] {
     return this.wisps;
   }
@@ -559,14 +584,34 @@ export class Game {
 
   /**
    * Spawns a fresh pair of Embers from the top of the field's border every
-   * EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md §3.4 (2) / §3.7 stage 1:
-   * 30s), starting from opposite top corners and heading toward each other.
+   * EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md §3.4 (2) / §12.7 stage 1:
+   * 30s, down to 5s by stage 10), starting from opposite top corners and
+   * heading toward each other.
+   *
+   * Concurrency-capped (docs/plan.md §6 M12 / §12.7 "Ember 同時数上限"): once
+   * `maxConcurrentEmbers` are already alive, this cycle's spawn is skipped
+   * entirely (the cooldown still resets, so the cap is re-checked every
+   * interval — an Ember despawning in the meantime, e.g. via
+   * despawnTrappedEmbers(), naturally lets the next cycle top back up). If
+   * only one slot of room remains, only one of the usual pair spawns rather
+   * than pushing past the cap. The cap is bypassed entirely while a debug
+   * emberCount override is active (docs/plan.md §6 M10) — that's an explicit
+   * developer action, not the natural stage curve, so it's never
+   * second-guessed here.
    */
   private maybeSpawnEmbers(): void {
     if (this.emberSpawnCooldownTicks > 0) {
       this.emberSpawnCooldownTicks--;
       return;
     }
+    this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+
+    const capActive = this.debugOverrides.emberCount === undefined;
+    const room = capActive ? Math.max(0, this.maxConcurrentEmbers - this.embers.length) : 2;
+    if (room === 0) {
+      return;
+    }
+
     const width = this.field.getWidth();
     const rightHeading: Heading = { dx: 1, dy: 0 };
     const leftHeading: Heading = { dx: -1, dy: 0 };
@@ -577,8 +622,9 @@ export class Game {
     const moveTicks = this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks;
     const branchChaseProbability = this.debugOverrides.emberBranchChaseProbability ?? this.baseEmberBranchChaseProbability;
     this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading, this.rng, moveTicks, branchChaseProbability));
-    this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng, moveTicks, branchChaseProbability));
-    this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+    if (room >= 2) {
+      this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng, moveTicks, branchChaseProbability));
+    }
     this.events.push('ember-spawned');
   }
 
