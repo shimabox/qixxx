@@ -4,10 +4,10 @@
 // the same codes a real keyboard would send, instead of duplicating (and
 // risking drifting from) the mapping.
 export const MOVE_KEYS = {
-  up: ['ArrowUp', 'KeyW'],
-  down: ['ArrowDown', 'KeyS'],
-  left: ['ArrowLeft', 'KeyA'],
-  right: ['ArrowRight', 'KeyD'],
+  up: ['ArrowUp', 'KeyW', 'KeyK'],
+  down: ['ArrowDown', 'KeyS', 'KeyJ'],
+  left: ['ArrowLeft', 'KeyA', 'KeyH'],
+  right: ['ArrowRight', 'KeyD', 'KeyL'],
 } as const;
 
 // §5.1: X or Space draws a fast line; Z or Shift draws a slow line. The
