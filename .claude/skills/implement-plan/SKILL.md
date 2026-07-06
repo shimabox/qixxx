@@ -1,6 +1,6 @@
 ---
 name: implement-plan
-description: docs/plan.md のマイルストーン(M0〜M5)をサブエージェントに実装させるオーケストレーション。オーケストレーター(このセッションのモデル)は指示・検証・レビューのみを行い、src/tests への実装は必ずサブエージェントに委譲する。引数でマイルストーン番号を指定可能(例:/implement-plan 1 で M1)。省略時は git 履歴と docs/plan.md から次のマイルストーンを判断する。
+description: docs/plan.md §6 のマイルストーン(v1: M0〜M5、v1.1: M7〜M10、以降追加分も含む)をサブエージェントに実装させるオーケストレーション。オーケストレーター(このセッションのモデル)は指示・検証・レビューのみを行い、src/tests への実装は必ずサブエージェントに委譲する。引数でマイルストーン番号を指定可能(例:/implement-plan 1 で M1)。省略時は git 履歴と docs/plan.md から次のマイルストーンを判断する。
 ---
 
 # implement-plan: プラン駆動オーケストレーション
@@ -25,6 +25,10 @@ description: docs/plan.md のマイルストーン(M0〜M5)をサブエージェ
 | M3 | スパークス+ヒューズ+低速/高速+スコアリング | sonnet | グラフ移動・タイマー系の絡む複合実装 |
 | M4 | 状態機械+ステージ進行+2匹QIX分断倍率+ハイスコア | sonnet | claimArea の拡張(分断判定)を含む |
 | M5 | 効果音+タッチ操作+レスポンシブ+ビジュアル仕上げ+E2E | sonnet | UX の繊細さとマルチタッチ対応 |
+| M7 (v1.1) | UI レイアウト整列(HUD/オーバーレイ/タッチパッド GB 風) | sonnet | レイアウトは目視判断が多い(§12.1) |
+| M8 (v1.1) | 外周敵の確率的追跡(分岐で新境界線へ) | sonnet | core ロジック+決定的 rng テスト設計(§12.2) |
+| M9 (v1.1) | キャラクター視認性向上(描画拡大・形状・アニメ) | sonnet | 見た目の質の判断が要る(§12.3) |
+| M10 (v1.1) | デバッグパネル(dev+?debug 限定、即時反映) | sonnet | core の実行時オーバーライド注入口の設計を含む(§12.4)。M8 の後に実施 |
 | 軽微な修正(typo・定数調整・docs 反映など) | — | haiku | 機械的な変更 |
 
 - 起動は `subagent_type: "general-purpose"` + 上表の `model` を指定する(`fork` は model 指定が無視されるため使わない)。
@@ -62,7 +66,7 @@ description: docs/plan.md のマイルストーン(M0〜M5)をサブエージェ
 
 サブエージェント完了後、自分で以下を実行・確認する:
 
-- `npm run lint && npm run typecheck && npm test && npm run build`(M5 では `npm run e2e` も)
+- `npm run lint && npm run typecheck && npm test && npm run build`(E2E 導入済みの M5 以降は `npm run e2e` も)
 - `git diff` を読み、docs/plan.md §6 の該当受け入れ基準と §9 のレビュー観点を1項目ずつ照合する
 - 機械的チェック: `grep -rn 'document\.\|window\.\|AudioContext\|getContext' src/core/` がヒットしないこと
 - 特に確認する観点:
