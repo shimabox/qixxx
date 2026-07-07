@@ -235,7 +235,11 @@ let lastHudMultiplier = -1;
 // very first renderFrame() call always writes once.
 let lastScreenText: string | null = null;
 
-// Initialize game
+// Initialize game. init() runs exactly once on page load. All registered
+// event listeners and input controllers (TouchControls, KeyboardInput) live
+// for the page's lifetime and are intentionally not disposed — this is not
+// an SPA embedded context but a full-page app. Should remounting become
+// necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;

@@ -213,15 +213,23 @@ export class SfxEngine {
     osc.connect(env).connect(this.masterGain);
     osc.start(start);
     osc.stop(start + duration + 0.02);
-    osc.addEventListener('ended', () => osc.disconnect());
+    osc.addEventListener('ended', () => {
+      osc.disconnect();
+      env.disconnect();
+    });
   }
 
   private stopDrawTone(): void {
     if (this.drawOsc && this.drawGain && this.ctx) {
       const ctx = this.ctx;
       const osc = this.drawOsc;
-      this.drawGain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
+      const gain = this.drawGain;
+      gain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
       osc.stop(ctx.currentTime + 0.08);
+      osc.addEventListener('ended', () => {
+        osc.disconnect();
+        gain.disconnect();
+      });
     }
     this.drawOsc = null;
     this.drawGain = null;
