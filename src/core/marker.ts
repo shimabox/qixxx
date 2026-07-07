@@ -70,6 +70,18 @@ export class Marker {
     return this.line.map((p) => ({ ...p }));
   }
 
+  /**
+   * Non-cloning view of the same line as getLine(): returns the internal
+   * `line` array itself, not a copy.
+   *
+   * Hot path (used by the per-tick Igniter update and per-frame Igniter
+   * position lookup). Callers must NEVER mutate the returned array or any of
+   * its elements — use getLine() instead if a defensive copy is needed.
+   */
+  getLineRef(): ReadonlyArray<Readonly<Point>> {
+    return this.line;
+  }
+
   isDrawing(): boolean {
     return this.drawing;
   }

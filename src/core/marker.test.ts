@@ -144,6 +144,16 @@ describe('Marker', () => {
     expect(marker.getLine().length).toBe(2);
   });
 
+  it('getLineRef returns the same content as getLine while a line is in progress', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+
+    marker.tryMove(field, 0, 1, true); // -> (2,1)
+    marker.tryMove(field, 0, 1, true); // -> (2,2)
+
+    expect(marker.getLineRef()).toEqual(marker.getLine());
+  });
+
   it('rejects invalid (diagonal or zero) move inputs', () => {
     const field = makeField();
     const marker = new Marker({ x: 2, y: 0 });

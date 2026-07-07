@@ -288,8 +288,9 @@ export class Game {
   /** The Igniter's current position along the marker's line, or null if none is active. */
   getIgniterPosition(): Point | null {
     if (!this.igniter) return null;
-    const line = this.marker.getLine();
-    return line[this.igniter.getIndex()] ?? null;
+    const line = this.marker.getLineRef();
+    const cell = line[this.igniter.getIndex()];
+    return cell ? { ...cell } : null;
   }
 
   getOccupancy(): number {
@@ -656,7 +657,7 @@ export class Game {
       return false;
     }
 
-    const maxIndex = this.marker.getLine().length - 1;
+    const maxIndex = this.marker.getLineRef().length - 1;
     const indexBefore = this.igniter.getIndex();
     const caughtUp = this.igniter.update(!holdingDirection, maxIndex);
     // Each step the Igniter actually advances is treated as "getting closer"

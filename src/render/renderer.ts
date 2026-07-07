@@ -40,14 +40,15 @@ import {
   EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS,
 } from '../config';
 
-// Parsed once from COLOR_WISP_HEAD so the trail's per-segment fade (docs/plan.md
-// §6 M5 "Wispの残像表現の強化") can build an rgba() string with a varying
-// alpha instead of drawing every segment at the same flat opacity.
-const WISP_TRAIL_RGB = hexToRgb(COLOR_WISP_HEAD);
-// Parsed once each so the halo layers of Ember/Igniter (docs/plan.md §6 M9
-// / §12.3) can be drawn as a translucent rgba() fill under the opaque core.
-const EMBER_RGB = hexToRgb(COLOR_EMBER);
+// Parsed once so the Igniter halo (docs/plan.md §6 M9 / §12.3) can be drawn
+// as a translucent rgba() fill under the opaque core. Unlike the Wisp trail/
+// Ember halo below, IGNITER_HALO_ALPHA_BASE never varies per frame (only the
+// blink, applied separately via ctx.globalAlpha, does) so the rgba() string
+// itself is cacheable as a single module-level constant — see
+// IGNITER_HALO_COLOR below (docs/plan.md §13.3 P3: avoids rebuilding this
+// string every rendered frame).
 const IGNITER_RGB = hexToRgb(COLOR_IGNITER);
+const IGNITER_HALO_COLOR = `rgba(${IGNITER_RGB.r}, ${IGNITER_RGB.g}, ${IGNITER_RGB.b}, ${IGNITER_HALO_ALPHA_BASE})`;
 
 // A single queued Ember-despawn vanish effect (docs/plan.md §6 M11 / §12.6):
 // a position + the renderer's own `frameCount` value at the moment it was
@@ -141,8 +142,8 @@ export class Renderer {
   render(
     field: Field,
     markerPosition?: Point,
-    wispTrails?: Point[][],
-    emberPositions?: Point[],
+    wispTrails?: ReadonlyArray<ReadonlyArray<Readonly<Point>>>,
+    emberPositions?: ReadonlyArray<Readonly<Point>>,
     igniterPosition?: Point | null,
     markerVisible = true
   ): void {
@@ -258,16 +259,24 @@ export class Renderer {
   // Draws the Wisp's afterimage trail (older history first, more transparent
   // — docs/plan.md §6 M5 "Wispの残像表現の強化") followed by a glowing head,
   // so the head is always painted on top and brightest.
-  private drawWisp(trail: Point[]): void {
+  private drawWisp(trail: ReadonlyArray<Readonly<Point>>): void {
+    // COLOR_WISP_HEAD is already an opaque color string, so painting it
+    // through ctx.globalAlpha reproduces exactly the same composite as the
+    // old per-segment `rgba(r, g, b, alpha)` fillStyle would have — without
+    // building a new string every segment, every frame (docs/plan.md §13.3
+    // P3). Reset to 1 once the (variable-alpha) trail segments are done so
+    // it doesn't leak into the (opaque, save/restore-scoped) head below.
+    this.ctx.fillStyle = COLOR_WISP_HEAD;
     for (let i = trail.length - 1; i >= 1; i--) {
       const p = trail[i];
       // Older (higher index) segments fade toward WISP_TRAIL_ALPHA_FAR;
       // the segment right behind the head sits near WISP_TRAIL_ALPHA_NEAR.
       const t = trail.length > 2 ? (i - 1) / (trail.length - 2) : 0;
       const alpha = WISP_TRAIL_ALPHA_NEAR + (WISP_TRAIL_ALPHA_FAR - WISP_TRAIL_ALPHA_NEAR) * t;
-      this.ctx.fillStyle = `rgba(${WISP_TRAIL_RGB.r}, ${WISP_TRAIL_RGB.g}, ${WISP_TRAIL_RGB.b}, ${alpha})`;
+      this.ctx.globalAlpha = alpha;
       this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
     }
+    this.ctx.globalAlpha = 1;
 
     // Head enlarged to a ~2x2-cell halo + bright core (docs/plan.md §6 M9 /
     // §12.3), centered on the head's grid cell so the visible footprint
@@ -278,10 +287,12 @@ export class Renderer {
     this.ctx.save();
     this.ctx.shadowColor = COLOR_WISP_HEAD;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    this.ctx.fillStyle = `rgba(${WISP_TRAIL_RGB.r}, ${WISP_TRAIL_RGB.g}, ${WISP_TRAIL_RGB.b}, ${WISP_HEAD_HALO_ALPHA})`;
+    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    this.ctx.globalAlpha = WISP_HEAD_HALO_ALPHA;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_HALO_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();
+    this.ctx.globalAlpha = 1;
     this.ctx.fillStyle = COLOR_WISP_HEAD;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
@@ -295,21 +306,25 @@ export class Renderer {
   // `positions` (EMBER_FLICKER_PHASE_STEP) purely so multiple Embers don't
   // flicker in lockstep — still a deterministic function of frameCount, no
   // Math.random.
-  private drawEmbers(positions: Point[]): void {
+  private drawEmbers(positions: ReadonlyArray<Readonly<Point>>): void {
     this.ctx.save();
     this.ctx.shadowColor = COLOR_EMBER;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
+    // COLOR_EMBER is already opaque; the flicker's varying alpha is applied
+    // via ctx.globalAlpha instead of building a new rgba() string per Ember
+    // per frame (docs/plan.md §13.3 P3) — same composite as before.
+    this.ctx.fillStyle = COLOR_EMBER;
     positions.forEach((p, i) => {
       const flicker = 0.5 + 0.5 * Math.sin(this.frameCount * EMBER_FLICKER_SPEED + i * EMBER_FLICKER_PHASE_STEP);
       const haloAlpha = EMBER_HALO_ALPHA_BASE + EMBER_HALO_ALPHA_VARIANCE * flicker;
       const cx = (p.x + 0.5) * RENDER_SCALE;
       const cy = (p.y + 0.5) * RENDER_SCALE;
 
-      this.ctx.fillStyle = `rgba(${EMBER_RGB.r}, ${EMBER_RGB.g}, ${EMBER_RGB.b}, ${haloAlpha})`;
+      this.ctx.globalAlpha = haloAlpha;
       this.ctx.beginPath();
       this.ctx.arc(cx, cy, EMBER_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
       this.ctx.fill();
-      this.ctx.fillStyle = COLOR_EMBER;
+      this.ctx.globalAlpha = 1;
       this.ctx.beginPath();
       this.ctx.arc(cx, cy, EMBER_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
       this.ctx.fill();
@@ -329,6 +344,10 @@ export class Renderer {
 
     this.ctx.save();
     this.ctx.lineWidth = 2;
+    // COLOR_EMBER is already opaque; the fade-out alpha is applied via
+    // ctx.globalAlpha instead of building a new rgba() string per effect per
+    // frame (docs/plan.md §13.3 P3) — same composite as before.
+    this.ctx.strokeStyle = COLOR_EMBER;
     this.emberDespawnEffects = this.emberDespawnEffects.filter((effect) => {
       const age = this.frameCount - effect.startFrame;
       if (age >= EMBER_DESPAWN_EFFECT_DURATION_FRAMES) return false;
@@ -339,7 +358,7 @@ export class Renderer {
       const cx = (effect.position.x + 0.5) * RENDER_SCALE;
       const cy = (effect.position.y + 0.5) * RENDER_SCALE;
 
-      this.ctx.strokeStyle = `rgba(${EMBER_RGB.r}, ${EMBER_RGB.g}, ${EMBER_RGB.b}, ${alpha})`;
+      this.ctx.globalAlpha = alpha;
       this.ctx.beginPath();
       this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       this.ctx.stroke();
@@ -363,7 +382,12 @@ export class Renderer {
     this.ctx.globalAlpha = alpha;
     this.ctx.shadowColor = COLOR_IGNITER;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    this.ctx.fillStyle = `rgba(${IGNITER_RGB.r}, ${IGNITER_RGB.g}, ${IGNITER_RGB.b}, ${IGNITER_HALO_ALPHA_BASE})`;
+    // Precomputed once at module load (IGNITER_HALO_COLOR) instead of
+    // rebuilt every frame — HALO_BASE never varies, only `alpha` (blink)
+    // above does, and that's already applied via globalAlpha, multiplying
+    // with this string's own alpha channel exactly as before (docs/plan.md
+    // §13.3 P3).
+    this.ctx.fillStyle = IGNITER_HALO_COLOR;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, IGNITER_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();

@@ -216,6 +216,25 @@ let lastSavedHighScore = 0;
 // for the continuous draw tone (docs/plan.md §3.8) without re-deriving it.
 let lastInput: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, confirm: false };
 
+// Docs/plan.md §13.3 P3: renderFrame() runs every rendered frame, but the
+// values feeding the HUD text only actually change on discrete game events
+// (score/stage/lives/multiplier/occupancy), not every frame. Caching the
+// last-displayed values lets the (comparatively expensive) textContent write
+// be skipped whenever nothing changed, instead of re-serializing + reflowing
+// the same string 60 times a second.
+let lastHudStage = -1;
+let lastHudScore = -1;
+let lastHudHi = -1;
+let lastHudOccupancy = -1;
+let lastHudLives = -1;
+let lastHudMultiplier = -1;
+
+// Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
+// P3): `null` is a sentinel distinct from any real screenText() result
+// (including the 'playing' status's own empty string), guaranteeing the
+// very first renderFrame() call always writes once.
+let lastScreenText: string | null = null;
+
 // Initialize game
 function init(): void {
   const highScore = loadHighScore();
@@ -350,7 +369,7 @@ function renderFrame(): void {
   renderer.render(
     game.getField(),
     game.getMarker().getPosition(),
-    game.getWisps().map((wisp) => wisp.getTrail()),
+    game.getWisps().map((wisp) => wisp.getTrailRef()),
     game.getEmberPositions(),
     game.getIgniterPosition(),
     markerVisible
@@ -362,11 +381,45 @@ function renderFrame(): void {
   sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
-  hud.textContent =
-    `STAGE ${session.getStage()}  SCORE: ${session.getScore()}  HI: ${session.getHighScore()}  ` +
-    `OCCUPANCY: ${occupancyPercent}%  LIVES: ${session.getLives()}  x${session.getMultiplier()}`;
+  const stage = session.getStage();
+  const score = session.getScore();
+  const hi = session.getHighScore();
+  const lives = session.getLives();
+  const multiplier = session.getMultiplier();
+  if (
+    stage !== lastHudStage ||
+    score !== lastHudScore ||
+    hi !== lastHudHi ||
+    occupancyPercent !== lastHudOccupancy ||
+    lives !== lastHudLives ||
+    multiplier !== lastHudMultiplier
+  ) {
+    lastHudStage = stage;
+    lastHudScore = score;
+    lastHudHi = hi;
+    lastHudOccupancy = occupancyPercent;
+    lastHudLives = lives;
+    lastHudMultiplier = multiplier;
+    hud.textContent =
+      `STAGE ${stage}  SCORE: ${score}  HI: ${hi}  ` +
+      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+  }
 
-  screen.textContent = screenText(session.getStatus());
+  const status = session.getStatus();
+  if (status === 'playing') {
+    // Skip building the (empty) string entirely while playing (docs/plan.md
+    // §13.3 P3) — screenText()'s 'playing' branch always returns ''.
+    if (lastScreenText !== '') {
+      lastScreenText = '';
+      screen.textContent = '';
+    }
+  } else {
+    const text = screenText(status);
+    if (text !== lastScreenText) {
+      lastScreenText = text;
+      screen.textContent = text;
+    }
+  }
 }
 
 function screenText(status: ReturnType<GameSession['getStatus']>): string {
