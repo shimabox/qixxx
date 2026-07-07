@@ -30,6 +30,24 @@ describe('Ember (docs/plan.md §3.4 (2) / §4.3 — border-patrol enemy)', () =>
     }
   });
 
+  it('getPositionRef() returns the same coordinates as getPosition() at every step (a non-cloning reference)', () => {
+    const parsed = parseField(`
+      ##########
+      #........#
+      #........#
+      #........#
+      ##########
+    `);
+    const heading: Heading = { dx: 1, dy: 0 };
+    const ember = new Ember({ x: 0, y: 0 }, heading);
+    const farAwayTarget = { x: 5, y: 2 };
+
+    for (let tick = 0; tick < 20; tick++) {
+      ember.update(parsed.field, farAwayTarget);
+      expect(ember.getPositionRef()).toEqual(ember.getPosition());
+    }
+  });
+
   it('advances exactly one BORDER cell every EMBER_MOVE_TICKS ticks (throttled, slower than the marker)', () => {
     const parsed = parseField(`
       ##########

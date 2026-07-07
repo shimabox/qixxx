@@ -78,6 +78,70 @@ describe('checkCollision', () => {
     expect(checkCollision(parsed.field, trail, markerPosition)).toBe(false);
   });
 
+  it('interpolates a straight gap of several cells and detects a LINE cell strictly between two distant trail points', () => {
+    const parsed = parseField(`
+      ##########
+      #........#
+      #..L.....#
+      #........#
+      ##########
+    `);
+    // LINE cell at (3,2). Trail jumps directly from (7,2) to (1,2) — a
+    // 6-cell gap with no intermediate samples of its own — so only the
+    // Bresenham interpolation between the two endpoints can find it.
+    const trail = [
+      { x: 7, y: 2 },
+      { x: 1, y: 2 },
+    ];
+    const markerPosition = { x: 8, y: 3 }; // well away from the line, UNCLAIMED
+
+    expect(checkCollision(parsed.field, trail, markerPosition)).toBe(true);
+  });
+
+  it('interpolates a diagonal gap and detects a LINE cell strictly between two distant, diagonally-placed trail points', () => {
+    const parsed = parseField(`
+      ##########
+      #........#
+      #...L....#
+      #........#
+      #........#
+      ##########
+    `);
+    // LINE cell at (4,2). Trail jumps diagonally from (1,1) to (7,3) — the
+    // Bresenham path between them (favoring the longer axis, x) passes
+    // through (4,2) partway along.
+    const trail = [
+      { x: 1, y: 1 },
+      { x: 7, y: 3 },
+    ];
+    const markerPosition = { x: 8, y: 4 }; // well away, UNCLAIMED
+
+    expect(checkCollision(parsed.field, trail, markerPosition)).toBe(true);
+  });
+
+  it('does not mutate the trail array or its points', () => {
+    const parsed = parseField(`
+      ##########
+      #..L.....#
+      #..L.....#
+      #........#
+      ##########
+    `);
+    const trail = [
+      { x: 5, y: 2 },
+      { x: 4, y: 2 },
+      { x: 3, y: 2 },
+      { x: 2, y: 2 },
+    ];
+    const trailSnapshot = trail.map((p) => ({ ...p }));
+    const markerPosition = { x: 3, y: 1 };
+
+    checkCollision(parsed.field, trail, markerPosition);
+
+    expect(trail).toEqual(trailSnapshot);
+    expect(trail.length).toBe(trailSnapshot.length);
+  });
+
   it('does not report a hit when the marker is on an internal (already-closed-line) BORDER cell', () => {
     const parsed = parseField(`
       ##########

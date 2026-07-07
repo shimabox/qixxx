@@ -569,14 +569,18 @@ export class Game {
       missedThisTick = true;
     }
 
-    if (
-      !inGrace &&
-      !missedThisTick &&
-      this.status === 'playing' &&
-      (this.wisps.some((w) => checkCollision(this.field, w.getTrail(), this.marker.getPosition())) ||
-        this.embers.some((e) => pointsEqual(e.getPosition(), this.marker.getPosition())))
-    ) {
-      this.handleMiss();
+    if (!inGrace && !missedThisTick && this.status === 'playing') {
+      // Marker position after this tick's move (not `markerPositionBeforeMove`
+      // above, which enemy movement was given) — fetched once and reused for
+      // both checks below instead of calling getPosition() (a fresh
+      // allocation) once per Wisp and again once per Ember.
+      const markerPositionAfterMove = this.marker.getPosition();
+      if (
+        this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionAfterMove)) ||
+        this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))
+      ) {
+        this.handleMiss();
+      }
     }
 
     return result;

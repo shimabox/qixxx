@@ -5,49 +5,51 @@ import { Field, Point, LINE, BORDER } from './field';
 
 /**
  * Returns true if the polyline described by `trail` (an enemy's head cell
- * followed by its recent distinct-cell history — see Wisp.getTrail())
- * touches an in-progress LINE cell, or passes through the marker's current
- * position.
+ * followed by its recent distinct-cell history — see Wisp.getTrail() /
+ * getTrailRef()) touches an in-progress LINE cell, or passes through the
+ * marker's current position.
  *
  * Consecutive trail points are NOT assumed to be grid-adjacent: the cells
- * between each pair are interpolated (Bresenham) so a fast-moving or
- * sparsely-recorded trail cannot tunnel through a line.
+ * between each pair are interpolated (Bresenham, inlined in `scanBetween`
+ * below — no intermediate array or Point objects are allocated) so a
+ * fast-moving or sparsely-recorded trail cannot tunnel through a line.
  *
  * A confirmed border (BORDER) cell is always safe: even if a checked cell's
  * coordinates match the marker's position there, no collision is reported
  * (docs/plan.md §3.4 / §7.1: "確定境界線上のマーカーには敵は無害").
+ *
+ * `trail` (and its elements) is only ever read, never mutated — callers may
+ * safely pass a hot-path non-cloning reference such as Wisp.getTrailRef().
  */
-export function checkCollision(field: Field, trail: Point[], markerPosition: Point): boolean {
+export function checkCollision(field: Field, trail: ReadonlyArray<Readonly<Point>>, markerPosition: Point): boolean {
   for (let i = 0; i < trail.length; i++) {
-    if (cellHits(field, trail[i], markerPosition)) {
+    if (cellHits(field, trail[i].x, trail[i].y, markerPosition)) {
       return true;
     }
-    if (i + 1 < trail.length) {
-      for (const cell of cellsBetween(trail[i], trail[i + 1])) {
-        if (cellHits(field, cell, markerPosition)) {
-          return true;
-        }
-      }
+    if (i + 1 < trail.length && scanBetween(field, trail[i], trail[i + 1], markerPosition)) {
+      return true;
     }
   }
   return false;
 }
 
-function cellHits(field: Field, cell: Point, markerPosition: Point): boolean {
-  const state = field.get(cell);
+function cellHits(field: Field, x: number, y: number, markerPosition: Point): boolean {
+  const state = field.getAt(x, y);
   if (state === LINE) {
     return true;
   }
-  return cell.x === markerPosition.x && cell.y === markerPosition.y && state !== BORDER;
+  return x === markerPosition.x && y === markerPosition.y && state !== BORDER;
 }
 
 /**
- * Grid cells strictly between `a` and `b` along a Bresenham line
- * (endpoints excluded — callers check those themselves). Returns an empty
- * array for identical or grid-adjacent (incl. diagonal) points.
+ * Walks the grid cells strictly between `a` and `b` along a Bresenham line
+ * (endpoints excluded — callers check those themselves), checking each for
+ * a collision as it's visited rather than collecting them into an array
+ * first. Same cell sequence and visiting order as the original array-
+ * returning `cellsBetween` this replaced. A no-op (returns false
+ * immediately) for identical or grid-adjacent (incl. diagonal) points.
  */
-function cellsBetween(a: Point, b: Point): Point[] {
-  const cells: Point[] = [];
+function scanBetween(field: Field, a: Readonly<Point>, b: Readonly<Point>, markerPosition: Point): boolean {
   let x = a.x;
   let y = a.y;
   const dx = Math.abs(b.x - a.x);
@@ -72,8 +74,10 @@ function cellsBetween(a: Point, b: Point): Point[] {
     if (x === b.x && y === b.y) {
       break;
     }
-    cells.push({ x, y });
+    if (cellHits(field, x, y, markerPosition)) {
+      return true;
+    }
   }
 
-  return cells;
+  return false;
 }

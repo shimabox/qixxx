@@ -20,7 +20,7 @@
 // non-threat (real-playtest feedback that motivated M8). This deliberately
 // isn't a shortest-path search — docs/plan.md §4.3/§8 call that unnecessary;
 // the original game's Sparx use a similarly simple heuristic.
-import { Field, Point, BORDER, pointsEqual } from './field';
+import { Field, Point, BORDER } from './field';
 import { EMBER_MOVE_TICKS, EMBER_BRANCH_CHASE_PROBABILITY } from '../config';
 
 export interface Heading {
@@ -35,11 +35,6 @@ export interface Heading {
  * here so patrol.ts doesn't depend on enemy.ts.
  */
 export type Rng = () => number;
-
-interface Candidate {
-  dir: Heading;
-  point: Point;
-}
 
 // Fixed iteration order (up, right, down, left) makes branch tie-breaks deterministic.
 const DIRECTIONS: readonly Heading[] = [
@@ -94,6 +89,18 @@ export class Ember {
     return { ...this.pos };
   }
 
+  /**
+   * Non-cloning view of the same position as getPosition(): returns the
+   * internal `pos` object itself, not a copy.
+   *
+   * Hot path (used by the per-tick marker-contact check). Callers must
+   * NEVER mutate the returned object — use getPosition() instead if a
+   * defensive copy is needed.
+   */
+  getPositionRef(): Readonly<Point> {
+    return this.pos;
+  }
+
   getHeading(): Heading {
     return { ...this.heading };
   }
@@ -136,54 +143,97 @@ export class Ember {
     }
     this.cooldownTicks = this.moveTicks - 1;
 
-    const candidates: Candidate[] = DIRECTIONS.map((dir) => ({
-      dir,
-      point: { x: this.pos.x + dir.dx, y: this.pos.y + dir.dy },
-    })).filter((c) => field.isInBounds(c.point) && field.get(c.point) === BORDER);
+    const width = field.getWidth();
+    const height = field.getHeight();
 
-    if (candidates.length === 0) {
+    // Single pass over the 4 fixed directions (DIRECTIONS' order), tracking
+    // which are valid (in-bounds BORDER neighbor) and which of those are
+    // non-reversing (don't lead back into cameFrom) via bitmasks rather
+    // than building Candidate/Point objects and Array.map/filter chains —
+    // this is the hot path this rewrite targets (docs/plan.md §13.3 P2).
+    let validMask = 0;
+    let nonReversingMask = 0;
+    let validCount = 0;
+    let nonReversingCount = 0;
+    for (let i = 0; i < DIRECTIONS.length; i++) {
+      const dir = DIRECTIONS[i];
+      const px = this.pos.x + dir.dx;
+      const py = this.pos.y + dir.dy;
+      // Inlined field.isInBounds(); out-of-bounds neighbors must be excluded
+      // even though field.getAt() would also report BORDER for them.
+      if (px < 0 || px >= width || py < 0 || py >= height || field.getAt(px, py) !== BORDER) {
+        continue;
+      }
+      const bit = 1 << i;
+      validMask |= bit;
+      validCount++;
+      if (px !== this.cameFrom.x || py !== this.cameFrom.y) {
+        nonReversingMask |= bit;
+        nonReversingCount++;
+      }
+    }
+
+    if (validCount === 0) {
       // Boxed in — shouldn't normally happen on a connected border graph.
       // Hold position for this tick rather than crashing or teleporting.
       return;
     }
 
-    const nonReversing = candidates.filter((c) => !pointsEqual(c.point, this.cameFrom));
-    const pool = nonReversing.length > 0 ? nonReversing : candidates;
+    const poolMask = nonReversingCount > 0 ? nonReversingMask : validMask;
 
     // Branch point (docs/plan.md §6 M8 / §12.2): 2+ non-reversing candidates
     // means Ember has a real choice, not just "continue" vs "reverse". The
     // rng roll — and the marker-chase override it can produce — only ever
     // applies here; a corridor (0 or 1 non-reversing candidates) always
     // keeps the pre-M8 "maintain heading, else chase" behavior.
-    const isBranchPoint = nonReversing.length >= 2;
+    const isBranchPoint = nonReversingCount >= 2;
     const rollsChase = isBranchPoint && this.rng() < this.branchChaseProbability;
 
-    let chosen: Candidate;
+    let chosenIdx: number;
     if (rollsChase) {
-      chosen = this.pickTowardTarget(pool, targetPos);
+      chosenIdx = this.pickTowardTargetIdx(poolMask, targetPos);
     } else {
-      const maintainingHeading = pool.find((c) => c.dir.dx === this.heading.dx && c.dir.dy === this.heading.dy);
-      chosen = maintainingHeading ?? this.pickTowardTarget(pool, targetPos);
+      chosenIdx = -1;
+      for (let i = 0; i < DIRECTIONS.length; i++) {
+        if ((poolMask & (1 << i)) === 0) continue;
+        const dir = DIRECTIONS[i];
+        if (dir.dx === this.heading.dx && dir.dy === this.heading.dy) {
+          chosenIdx = i;
+          break;
+        }
+      }
+      if (chosenIdx === -1) {
+        chosenIdx = this.pickTowardTargetIdx(poolMask, targetPos);
+      }
     }
 
+    const dir = DIRECTIONS[chosenIdx];
     this.cameFrom = this.pos;
-    this.pos = chosen.point;
-    this.heading = chosen.dir;
+    this.pos = { x: this.pos.x + dir.dx, y: this.pos.y + dir.dy };
+    this.heading = dir;
   }
 
-  private pickTowardTarget(pool: Candidate[], targetPos: Point): Candidate {
+  /**
+   * Index into DIRECTIONS (not a Candidate object) of whichever direction
+   * in `poolMask` scores highest by dot product with the vector toward
+   * `targetPos` — first-in-DIRECTIONS-order wins ties, matching the
+   * original `pool[0]`-seeded, strict-`>`-only-replaces loop this replaced.
+   */
+  private pickTowardTargetIdx(poolMask: number, targetPos: Point): number {
     const vx = targetPos.x - this.pos.x;
     const vy = targetPos.y - this.pos.y;
 
-    let best = pool[0];
-    let bestScore = best.dir.dx * vx + best.dir.dy * vy;
-    for (let i = 1; i < pool.length; i++) {
-      const score = pool[i].dir.dx * vx + pool[i].dir.dy * vy;
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+    for (let i = 0; i < DIRECTIONS.length; i++) {
+      if ((poolMask & (1 << i)) === 0) continue;
+      const dir = DIRECTIONS[i];
+      const score = dir.dx * vx + dir.dy * vy;
       if (score > bestScore) {
-        best = pool[i];
         bestScore = score;
+        bestIdx = i;
       }
     }
-    return best;
+    return bestIdx;
   }
 }

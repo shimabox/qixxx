@@ -144,6 +144,21 @@ describe('Wisp', () => {
     expect(trail[0]).toEqual(wisp.getPosition());
   });
 
+  it('getTrailRef() returns the same content as getTrail() (a non-cloning reference)', () => {
+    const parsed = openField(40, 5, 2, 2);
+    const start = markerAt(parsed, 'W');
+    const wisp = new Wisp(start, () => 0.5, 0);
+
+    for (let tick = 0; tick < 15; tick++) {
+      wisp.update(parsed.field);
+    }
+
+    expect(wisp.getTrailRef()).toEqual(wisp.getTrail());
+    // It's a reference to the live internal history, not a fresh clone each
+    // call: two calls in the same tick return the exact same array object.
+    expect(wisp.getTrailRef()).toBe(wisp.getTrailRef());
+  });
+
   it('does not treat an in-progress LINE cell as a wall: the head walks straight onto and across it', () => {
     const parsed = parseField(`
       ########

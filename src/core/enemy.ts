@@ -65,6 +65,18 @@ export class Wisp {
     return this.history.map((p) => ({ ...p }));
   }
 
+  /**
+   * Non-cloning view of the same trail as getTrail(): returns the internal
+   * `history` array itself, not a copy.
+   *
+   * Hot path (used by the per-tick collision check and per-frame render).
+   * Callers must NEVER mutate the returned array or any of its elements —
+   * use getTrail() instead if a defensive copy is needed.
+   */
+  getTrailRef(): ReadonlyArray<Readonly<Point>> {
+    return this.history;
+  }
+
   /** Current speed multiplier (docs/plan.md §6 M10 debug panel reads this for the effective-params export). */
   getSpeedMultiplier(): number {
     return this.speedMultiplier;
@@ -101,7 +113,10 @@ export class Wisp {
       this.tryStep(field, -dx, -dy);
 
     if (step) {
-      this.pos = { x: step.x, y: step.y };
+      // `step` already carries exactly {x, y, angle} — reusing it directly
+      // as the new `pos` (its extra `angle` field is simply ignored by
+      // `pos`'s type) avoids a redundant clone.
+      this.pos = step;
       this.angle = step.angle;
     }
     // If every reflection is also blocked (fully boxed in), stay put this
@@ -113,7 +128,11 @@ export class Wisp {
   private tryStep(field: Field, dx: number, dy: number): { x: number; y: number; angle: number } | null {
     const x = this.pos.x + dx;
     const y = this.pos.y + dy;
-    const state = field.get({ x: Math.round(x), y: Math.round(y) });
+    // field.getAt(x, y) is the allocation-free lookup (no Point object
+    // needed) — equivalent to field.get({x, y}) for in-bounds coordinates,
+    // and both return BORDER when out of bounds, matching this hot path's
+    // needs identically.
+    const state = field.getAt(Math.round(x), Math.round(y));
     if (state !== UNCLAIMED && state !== LINE) {
       return null;
     }
@@ -123,14 +142,17 @@ export class Wisp {
   // Records the head's grid cell into the trail history, but only when it
   // differs from the current head entry — the trail is a sequence of
   // distinct cells, not of per-tick samples (which would collapse into a
-  // single dot at sub-cell speeds).
+  // single dot at sub-cell speeds). Compares rounded coordinates directly
+  // (rather than via getPosition()) so the common no-change tick allocates
+  // nothing.
   private recordCellIfChanged(): void {
-    const cell = this.getPosition();
+    const cx = Math.round(this.pos.x);
+    const cy = Math.round(this.pos.y);
     const head = this.history[0];
-    if (head && head.x === cell.x && head.y === cell.y) {
+    if (head && head.x === cx && head.y === cy) {
       return;
     }
-    this.history.unshift(cell);
+    this.history.unshift({ x: cx, y: cy });
     if (this.history.length > WISP_HISTORY_LENGTH) {
       this.history.length = WISP_HISTORY_LENGTH;
     }
