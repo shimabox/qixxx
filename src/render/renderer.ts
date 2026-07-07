@@ -1,4 +1,5 @@
 import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
+import type { Ember } from '../core/patrol';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -12,6 +13,7 @@ import {
   COLOR_MARKER,
   COLOR_WISP_HEAD,
   COLOR_EMBER,
+  COLOR_EMBER_BLAZE,
   COLOR_IGNITER,
   GLOW_BLUR_ENTITY,
   GLOW_BLUR_LINE,
@@ -31,6 +33,7 @@ import {
   EMBER_HALO_ALPHA_VARIANCE,
   EMBER_FLICKER_SPEED,
   EMBER_FLICKER_PHASE_STEP,
+  EMBER_BLAZE_FLICKER_SPEED,
   IGNITER_RADIUS_CELLS,
   IGNITER_CORE_RADIUS_CELLS,
   IGNITER_HALO_ALPHA_BASE,
@@ -143,7 +146,7 @@ export class Renderer {
     field: Field,
     markerPosition?: Point,
     wispTrails?: ReadonlyArray<ReadonlyArray<Readonly<Point>>>,
-    emberPositions?: ReadonlyArray<Readonly<Point>>,
+    embers?: ReadonlyArray<Ember>,
     igniterPosition?: Point | null,
     markerVisible = true
   ): void {
@@ -168,8 +171,8 @@ export class Renderer {
         }
       }
     }
-    if (emberPositions && emberPositions.length > 0) {
-      this.drawEmbers(emberPositions);
+    if (embers && embers.length > 0) {
+      this.drawEmbers(embers);
     }
     if (igniterPosition) {
       this.drawIgniter(igniterPosition);
@@ -302,21 +305,30 @@ export class Renderer {
 
   // Draws each Ember (border-patrol enemy) as a ~2x2-cell "ember" — a bright
   // core + softer halo circle, both flickering per-frame (docs/plan.md §6 M9
-  // / §12.3). Each Ember's flicker phase is offset by its index in
-  // `positions` (EMBER_FLICKER_PHASE_STEP) purely so multiple Embers don't
-  // flicker in lockstep — still a deterministic function of frameCount, no
-  // Math.random.
-  private drawEmbers(positions: ReadonlyArray<Readonly<Point>>): void {
+  // / §12.3). Each Ember's flicker phase is offset by its index in `embers`
+  // (EMBER_FLICKER_PHASE_STEP) purely so multiple Embers don't flicker in
+  // lockstep — still a deterministic function of frameCount, no
+  // Math.random. A "Blaze" (docs/plan.md §14 M6-1, Ember.isBlaze()) swaps in
+  // COLOR_EMBER_BLAZE and the faster EMBER_BLAZE_FLICKER_SPEED instead —
+  // per-Ember state read straight off each Ember (P3's non-cloning
+  // getPositionRef()), not a parallel array, so core's Ember stays the
+  // single source of truth for which individuals are Blazes.
+  private drawEmbers(embers: ReadonlyArray<Ember>): void {
     this.ctx.save();
-    this.ctx.shadowColor = COLOR_EMBER;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    // COLOR_EMBER is already opaque; the flicker's varying alpha is applied
-    // via ctx.globalAlpha instead of building a new rgba() string per Ember
-    // per frame (docs/plan.md §13.3 P3) — same composite as before.
-    this.ctx.fillStyle = COLOR_EMBER;
-    positions.forEach((p, i) => {
-      const flicker = 0.5 + 0.5 * Math.sin(this.frameCount * EMBER_FLICKER_SPEED + i * EMBER_FLICKER_PHASE_STEP);
+    embers.forEach((ember, i) => {
+      const isBlaze = ember.isBlaze();
+      // Both colors are already opaque, static string constants (never
+      // built per-Ember per-frame); the flicker's varying alpha is applied
+      // via ctx.globalAlpha instead of an rgba() string (docs/plan.md §13.3 P3).
+      const color = isBlaze ? COLOR_EMBER_BLAZE : COLOR_EMBER;
+      const flickerSpeed = isBlaze ? EMBER_BLAZE_FLICKER_SPEED : EMBER_FLICKER_SPEED;
+      this.ctx.shadowColor = color;
+      this.ctx.fillStyle = color;
+
+      const flicker = 0.5 + 0.5 * Math.sin(this.frameCount * flickerSpeed + i * EMBER_FLICKER_PHASE_STEP);
       const haloAlpha = EMBER_HALO_ALPHA_BASE + EMBER_HALO_ALPHA_VARIANCE * flicker;
+      const p = ember.getPositionRef();
       const cx = (p.x + 0.5) * RENDER_SCALE;
       const cy = (p.y + 0.5) * RENDER_SCALE;
 

@@ -5,7 +5,7 @@
 // wiring that this module intentionally does not depend on.
 import { describe, it, expect } from 'vitest';
 import { Ember, Heading } from './patrol';
-import { BORDER } from './field';
+import { BORDER, LINE } from './field';
 import { EMBER_MOVE_TICKS, EMBER_BRANCH_CHASE_PROBABILITY } from '../config';
 import { parseField } from './fieldFixture';
 
@@ -192,5 +192,78 @@ describe('Ember — probabilistic branch-chase (docs/plan.md §6 M8 / §12.2)', 
     // toward (4,1) is "up" (first in iteration order at score 0) — not a
     // reversal back into the corridor.
     expect(ember.getPosition()).toEqual({ x: 5, y: 0 });
+  });
+});
+
+describe('Ember — Blaze line entry (docs/plan.md §14 M6-1)', () => {
+  // A BORDER ring with a 3-cell LINE stub hanging off the top border at
+  // x=5 (a one-way, branchless corridor once entered — the only way a
+  // Blaze descending it can ever move is further down or back the way it
+  // came, and "never reverse" already rules out the latter).
+  const LINE_STUB = `
+    ##########
+    #....L...#
+    #....L...#
+    #....L...#
+    ##########
+  `;
+
+  it('isBlaze() reflects the constructor flag, defaulting to false', () => {
+    const heading: Heading = { dx: 1, dy: 0 };
+    expect(new Ember({ x: 0, y: 0 }, heading).isBlaze()).toBe(false);
+    expect(
+      new Ember({ x: 0, y: 0 }, heading, Math.random, EMBER_MOVE_TICKS, EMBER_BRANCH_CHASE_PROBABILITY, true).isBlaze()
+    ).toBe(true);
+  });
+
+  it('canEnterLine=true steps from BORDER onto a LINE cell and keeps climbing it to the far BORDER', () => {
+    const parsed = parseField(LINE_STUB);
+    const downHeading: Heading = { dx: 0, dy: 1 };
+    const target = { x: 5, y: 3 }; // irrelevant once inside the branchless LINE corridor
+    const blaze = new Ember({ x: 5, y: 0 }, downHeading, () => 1, 1, 0, /* canEnterLine */ true);
+    expect(blaze.isBlaze()).toBe(true);
+
+    blaze.update(parsed.field, target); // (5,0) -> (5,1)
+    expect(parsed.field.get(blaze.getPosition())).toBe(LINE);
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 1 });
+
+    blaze.update(parsed.field, target); // (5,1) -> (5,2)
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 2 });
+
+    blaze.update(parsed.field, target); // (5,2) -> (5,3)
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 3 });
+
+    blaze.update(parsed.field, target); // (5,3) -> (5,4): back onto BORDER at the far end
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 4 });
+    expect(parsed.field.get(blaze.getPosition())).toBe(BORDER);
+  });
+
+  it('canEnterLine=false (default) never steps onto a LINE cell, even heading straight at one', () => {
+    const parsed = parseField(LINE_STUB);
+    const downHeading: Heading = { dx: 0, dy: 1 };
+    const target = { x: 0, y: 0 };
+    const ember = new Ember({ x: 5, y: 0 }, downHeading, () => 1, 1, 0); // canEnterLine defaults to false
+    expect(ember.isBlaze()).toBe(false);
+
+    for (let tick = 0; tick < 10; tick++) {
+      ember.update(parsed.field, target);
+      expect(parsed.field.get(ember.getPosition())).not.toBe(LINE);
+    }
+  });
+
+  it('at a branch offering a LINE candidate, a chasing Blaze climbs toward the marker even when heading points elsewhere', () => {
+    const parsed = parseField(LINE_STUB);
+    const rightHeading: Heading = { dx: 1, dy: 0 }; // "maintain heading" would prefer +x, not the LINE stub below
+    const alwaysChase = () => 0; // always rolls the branch-chase, whatever the threshold
+    const targetBelow = { x: 5, y: 3 };
+    const blaze = new Ember({ x: 5, y: 0 }, rightHeading, alwaysChase, 1, 0.5, true);
+
+    for (let tick = 0; tick < 4; tick++) {
+      blaze.update(parsed.field, targetBelow);
+    }
+
+    // Descended the LINE stub (rather than continuing along the top border)
+    // and walked off its far end back onto BORDER.
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 4 });
   });
 });

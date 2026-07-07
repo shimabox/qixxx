@@ -6,7 +6,7 @@
 // strings stages together across a run (docs/plan.md §4.4 / §6 M4) lives one
 // level up, in core/session.ts's GameSession — this class only ever knows
 // about 'playing' | 'stageclear' | 'gameover' for the stage it's running.
-import { Field, Point, pointsEqual, UNCLAIMED, BORDER } from './field';
+import { Field, Point, pointsEqual, UNCLAIMED, BORDER, LINE } from './field';
 import { Marker, MarkerMoveResult, Axis } from './marker';
 import { claimArea, ClaimResult, LineSpeed } from './claim';
 import { Wisp, Rng } from './enemy';
@@ -25,6 +25,7 @@ import {
   EMBER_MOVE_TICKS,
   EMBER_BRANCH_CHASE_PROBABILITY,
   EMBER_MAX_CONCURRENT_STAGE1,
+  EMBER_LINE_ENTRY_GENERATION,
   TICK_RATE,
 } from '../config';
 
@@ -190,6 +191,20 @@ export class Game {
   // union. See drainDespawnedEmberPositions() below and GameSession's
   // forwarding of the same.
   private despawnedEmberPositions = new EventQueue<Point>();
+
+  // Ember spawn-generation counter (docs/plan.md §14 M6-1): incremented once
+  // every time maybeSpawnEmbers()'s cooldown elapses and a spawn cycle
+  // actually runs — including a cycle that skips spawning entirely because
+  // the concurrency cap is full (a pair still counts as one generation).
+  // Never reset mid-stage; a new stage means a new Game instance, so this
+  // naturally resets across stage boundaries.
+  private emberGeneration = 0;
+  // Tracks whether each currently-known Ember was on a LINE cell as of the
+  // last tick (docs/plan.md §14 M6-1 "ライン進入検知"), so update() can
+  // edge-trigger 'ember-entered-line' exactly once per BORDER->LINE
+  // transition rather than every tick a Blaze remains on the line. A
+  // WeakMap needs no manual cleanup when an Ember despawns.
+  private readonly emberWasOnLine = new WeakMap<Ember, boolean>();
 
   // Debug-panel overrides (docs/plan.md §6 M10 / §12.4). `debugOverrides`
   // holds only the fields the panel has actually touched; everything else
@@ -511,7 +526,26 @@ export class Game {
     }
     for (const ember of this.embers) {
       ember.update(this.field, markerPositionBeforeMove);
+      // Ember line-entry detection (docs/plan.md §14 M6-1 (1)/(5)): only a
+      // Blaze can ever actually be on a LINE cell (patrol.ts's update()
+      // guards non-Blaze Embers off LINE entirely), so this is a no-op for
+      // plain Embers, but the edge-trigger check is cheap enough to run
+      // uniformly rather than special-casing on isBlaze() here too.
+      const isOnLine = this.field.get(ember.getPositionRef()) === LINE;
+      const wasOnLine = this.emberWasOnLine.get(ember) ?? false;
+      if (isOnLine && !wasOnLine) {
+        this.events.push('ember-entered-line');
+      }
+      this.emberWasOnLine.set(ember, isOnLine);
     }
+    // Generalized footing-loss despawn (docs/plan.md §14 M6-1 (4)): run once
+    // per tick, right after every Ember has moved, so an Ember stranded by a
+    // field mutation from a *previous* tick (e.g. a miss's cancelLine()
+    // reverting LINE back to UNCLAIMED under a Blaze) is caught here even
+    // though nothing this tick has moved the Ember itself. The claim-time
+    // call further below stays too, so a claim's BORDER->CLAIMED pruning is
+    // still handled the same tick it happens, not one tick late.
+    this.despawnStrandedEmbers();
     this.maybeSpawnEmbers();
 
     const holdingDirection = input.dx !== 0 || input.dy !== 0;
@@ -533,7 +567,7 @@ export class Game {
         this.occupancy = claimResult.occupancy;
         this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
         this.despawnIgniter();
-        this.despawnTrappedEmbers();
+        this.despawnStrandedEmbers();
         this.events.push('area-claimed');
         this.lastClearWasSplit = claimResult.split;
         if (claimResult.split) {
@@ -597,12 +631,20 @@ export class Game {
    * `maxConcurrentEmbers` are already alive, this cycle's spawn is skipped
    * entirely (the cooldown still resets, so the cap is re-checked every
    * interval — an Ember despawning in the meantime, e.g. via
-   * despawnTrappedEmbers(), naturally lets the next cycle top back up). If
+   * despawnStrandedEmbers(), naturally lets the next cycle top back up). If
    * only one slot of room remains, only one of the usual pair spawns rather
    * than pushing past the cap. The cap is bypassed entirely while a debug
    * emberCount override is active (docs/plan.md §6 M10) — that's an explicit
    * developer action, not the natural stage curve, so it's never
    * second-guessed here.
+   *
+   * Generation counting / Blaze spawning (docs/plan.md §14 M6-1): every time
+   * the cooldown elapses and this method proceeds past the early return
+   * above — even a cycle that then skips spawning because `room === 0` —
+   * counts as one more Ember "generation" (a pair still counts as a single
+   * generation). From EMBER_LINE_ENTRY_GENERATION onward, every Ember
+   * spawned this cycle is constructed as a Blaze (`canEnterLine: true`) and
+   * 'ember-blaze-spawned' is pushed instead of 'ember-spawned'.
    */
   private maybeSpawnEmbers(): void {
     if (this.emberSpawnCooldownTicks > 0) {
@@ -610,6 +652,7 @@ export class Game {
       return;
     }
     this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+    this.emberGeneration++;
 
     const capActive = this.debugOverrides.emberCount === undefined;
     const room = capActive ? Math.max(0, this.maxConcurrentEmbers - this.embers.length) : 2;
@@ -626,11 +669,16 @@ export class Game {
     // silently ignore the panel's settings until the next slider change.
     const moveTicks = this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks;
     const branchChaseProbability = this.debugOverrides.emberBranchChaseProbability ?? this.baseEmberBranchChaseProbability;
-    this.embers.push(new Ember({ x: 0, y: 0 }, rightHeading, this.rng, moveTicks, branchChaseProbability));
+    const isBlazeGeneration = this.emberGeneration >= EMBER_LINE_ENTRY_GENERATION;
+    this.embers.push(
+      new Ember({ x: 0, y: 0 }, rightHeading, this.rng, moveTicks, branchChaseProbability, isBlazeGeneration)
+    );
     if (room >= 2) {
-      this.embers.push(new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng, moveTicks, branchChaseProbability));
+      this.embers.push(
+        new Ember({ x: width - 1, y: 0 }, leftHeading, this.rng, moveTicks, branchChaseProbability, isBlazeGeneration)
+      );
     }
-    this.events.push('ember-spawned');
+    this.events.push(isBlazeGeneration ? 'ember-blaze-spawned' : 'ember-spawned');
   }
 
   /**
@@ -676,19 +724,38 @@ export class Game {
   }
 
   /**
-   * Removes any Ember whose current cell is no longer BORDER after the
-   * claimArea() call just above pruned it into a claimed state (docs/plan.md
-   * §6 M11 / §12.6). Left unhandled, such an Ember's `update()` finds zero
-   * BORDER neighbors to step onto and holds position forever — visibly
-   * frozen inside the newly-claimed area, which real playtesting flagged as
-   * looking like a bug. Queues one 'ember-despawned' event (audio) and one
-   * despawn position (the render layer's vanish effect) per Ember removed;
-   * no special respawn handling is needed since the periodic
-   * maybeSpawnEmbers() pair-spawn continues on its own schedule regardless.
+   * True iff `ember`'s current cell is no longer one it can stand on
+   * (docs/plan.md §14 M6-1 (4)): BORDER for a plain Ember, or BORDER/LINE
+   * for a Blaze (see Ember.isBlaze()). Shared by despawnStrandedEmbers()'s
+   * both call sites so the walkability rule is defined in exactly one place.
    */
-  private despawnTrappedEmbers(): void {
+  private isEmberStranded(ember: Ember): boolean {
+    const state = this.field.get(ember.getPositionRef());
+    if (state === BORDER) return false;
+    if (ember.isBlaze() && state === LINE) return false;
+    return true;
+  }
+
+  /**
+   * Removes any Ember stranded on a cell it can no longer stand on
+   * (docs/plan.md §6 M11 / §12.6, generalized by §14 M6-1 (4) to also cover
+   * a Blaze whose LINE footing vanished — e.g. a miss's cancelLine()
+   * reverting LINE back to UNCLAIMED, or a claim pruning BORDER into a
+   * claimed state). Left unhandled, such an Ember's `update()` finds zero
+   * walkable neighbors to step onto and holds position forever — visibly
+   * frozen, which real playtesting flagged as looking like a bug for the
+   * BORDER->CLAIMED case this originally covered. Queues one
+   * 'ember-despawned' event (audio) and one despawn position (the render
+   * layer's vanish effect) per Ember removed; no special respawn handling is
+   * needed since the periodic maybeSpawnEmbers() pair-spawn continues on its
+   * own schedule regardless. Called both once per tick (the general case,
+   * see update()) and immediately after a claim (so that specific case's
+   * despawn isn't delayed a tick) — filtering an already-fine Ember list a
+   * second time in the same tick is a harmless no-op.
+   */
+  private despawnStrandedEmbers(): void {
     this.embers = this.embers.filter((ember) => {
-      if (this.field.get(ember.getPosition()) === BORDER) {
+      if (!this.isEmberStranded(ember)) {
         return true;
       }
       this.despawnedEmberPositions.push(ember.getPosition());

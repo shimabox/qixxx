@@ -13,6 +13,7 @@ import {
   EMBER_MOVE_TICKS,
   EMBER_BRANCH_CHASE_PROBABILITY,
   EMBER_SPAWN_INTERVAL_SEC,
+  EMBER_LINE_ENTRY_GENERATION,
 } from '../config';
 
 describe('Game — event queue (M5, docs/plan.md §3.8/§9.9)', () => {
@@ -865,5 +866,152 @@ describe('Game — Ember concurrency cap (docs/plan.md §6 M12 / §12.7)', () =>
     // Now below the cap (1 < 2) -> the periodic spawn tops back up.
     expect(game.getEmbers().length).toBe(2);
     expect(game.drainEvents()).toContain('ember-spawned');
+  });
+});
+
+describe('Game — Ember Blaze generation threshold (docs/plan.md §14 M6-1 (1))', () => {
+  it('spawns plain Embers for every generation before EMBER_LINE_ENTRY_GENERATION, then Blazes from it onward', () => {
+    const field = new Field(10, 6);
+    const wisp = new Wisp({ x: 5, y: 3 }, () => 0.5, 0);
+    // A high maxConcurrentEmbers keeps every generation's pair from being
+    // skipped by the concurrency cap (docs/plan.md §6 M12) — this test is
+    // only about the generation counter, not the cap.
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      emberSpawnIntervalTicks: 1,
+      maxConcurrentEmbers: 10,
+    });
+
+    // Each generation takes 2 ticks with emberSpawnIntervalTicks: 1 (cooldown
+    // 1 -> 0 with no spawn, then the spawn cycle itself), and spawns exactly
+    // one pair — so after `generation` generations, exactly `generation * 2`
+    // Embers exist.
+    for (let generation = 1; generation <= EMBER_LINE_ENTRY_GENERATION; generation++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+
+      expect(game.getEmbers().length).toBe(generation * 2);
+      const thisGenerationsPair = game.getEmbers().slice(-2);
+      const isEntryGeneration = generation >= EMBER_LINE_ENTRY_GENERATION;
+      expect(thisGenerationsPair.every((e) => e.isBlaze())).toBe(isEntryGeneration);
+      expect(game.drainEvents()).toEqual([isEntryGeneration ? 'ember-blaze-spawned' : 'ember-spawned']);
+    }
+  });
+
+  it('debug emberCount overrides and the GameOptions.embers test hook still produce plain (non-Blaze) Embers', () => {
+    const field = new Field(10, 6);
+    const wisp = new Wisp({ x: 5, y: 3 }, () => 0.5, 0);
+    const preExisting = new Ember({ x: 0, y: 0 }, { dx: 1, dy: 0 });
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, { embers: [preExisting] });
+
+    expect(preExisting.isBlaze()).toBe(false);
+
+    game.applyDebugOverrides({ emberCount: 4 });
+    expect(game.getEmbers().length).toBe(4);
+    expect(game.getEmbers().every((e) => !e.isBlaze())).toBe(true);
+  });
+});
+
+describe('Game — Ember Blaze line-entry event (docs/plan.md §14 M6-1 (1)/(5))', () => {
+  // A BORDER ring with a pre-drawn 3-cell LINE stub at x=5 (docs/plan.md
+  // §7.1-style ASCII fixture) — lets a Blaze step straight from BORDER onto
+  // LINE without needing the marker to actually draw anything first.
+  const LINE_STUB = `
+    ##########
+    #....L...#
+    #....L...#
+    #....L...#
+    ##########
+  `;
+
+  it('queues ember-entered-line exactly once on the BORDER->LINE transition tick, not on later ticks spent on LINE', () => {
+    const field = parseField(LINE_STUB).field;
+    const wisp = new Wisp({ x: 2, y: 2 }, () => 0.5, 0);
+    // moveTicks 1 + branchChaseProbability 0 make the climb deterministic:
+    // "maintain heading" (down) is always available once the LINE cell is a
+    // valid (Blaze-only) candidate.
+    const blaze = new Ember({ x: 5, y: 0 }, { dx: 0, dy: 1 }, () => 1, 1, 0, /* canEnterLine */ true);
+    const game = new Game(field, { x: 0, y: 0 }, wisp, undefined, { embers: [blaze] });
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // (5,0) -> (5,1): BORDER -> LINE
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 1 });
+    expect(game.drainEvents()).toContain('ember-entered-line');
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // (5,1) -> (5,2): still on LINE, no repeat
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 2 });
+    expect(game.drainEvents()).not.toContain('ember-entered-line');
+  });
+
+  it('a plain (non-Blaze) Ember never triggers ember-entered-line (it cannot even reach LINE)', () => {
+    const field = parseField(LINE_STUB).field;
+    const wisp = new Wisp({ x: 2, y: 2 }, () => 0.5, 0);
+    const ember = new Ember({ x: 5, y: 0 }, { dx: 0, dy: 1 }, () => 1, 1, 0); // canEnterLine defaults to false
+    const game = new Game(field, { x: 0, y: 0 }, wisp, undefined, { embers: [ember] });
+
+    for (let tick = 0; tick < 5; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+      expect(game.drainEvents()).not.toContain('ember-entered-line');
+    }
+  });
+});
+
+describe('Game — Ember Blaze: climbs the marker line, misses, and despawns on cancelLine (docs/plan.md §14 M6-1 (2)/(3)/(4))', () => {
+  // Builds a Game where the marker draws a short line straight down from
+  // (5,0) then holds still, while a Blaze starting a few cells away on the
+  // BORDER aggressively chases (deterministic rng/branch-chase) toward
+  // wherever the marker currently is — reproducing the scenario §14
+  // targets: "climbs the just-drawn line from its root, toward the
+  // stationary marker".
+  function buildBlazeChaseGame(): { game: Game; blaze: Ember } {
+    const field = new Field(10, 6); // interior x=1..8, y=1..4
+    const wisp = new Wisp({ x: 8, y: 4 }, () => 0.5, 0); // parked well away from the x=5 line
+    // alwaysChase (rng always below any positive threshold) + moveTicks 1
+    // make the Blaze deterministically chase the marker one BORDER/LINE
+    // cell per tick.
+    const alwaysChase = () => 0;
+    const blaze = new Ember({ x: 3, y: 0 }, { dx: 1, dy: 0 }, alwaysChase, 1, 1, /* canEnterLine */ true);
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, { embers: [blaze] });
+    return { game, blaze };
+  }
+
+  it('the Blaze climbs the drawn line and colliding with the stationary marker triggers a miss', () => {
+    const { game, blaze } = buildBlazeChaseGame();
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // marker (5,0) -> (5,1)
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // marker (5,1) -> (5,2), then holds still
+    expect(game.getLives()).toBe(INITIAL_LIVES);
+
+    let missed = false;
+    for (let tick = 0; tick < 20 && !missed; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+      if (game.drainEvents().includes('miss')) missed = true;
+    }
+
+    expect(missed).toBe(true);
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    // Caught the marker exactly at its held position, on what was LINE.
+    expect(blaze.getPosition()).toEqual({ x: 5, y: 2 });
+  });
+
+  it('once the miss cancels the line, the now-stranded Blaze despawns (event + drainable position)', () => {
+    const { game, blaze } = buildBlazeChaseGame();
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+
+    let missed = false;
+    for (let tick = 0; tick < 20 && !missed; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+      if (game.drainEvents().includes('miss')) missed = true;
+    }
+    expect(missed).toBe(true);
+
+    // One more tick: despawnStrandedEmbers() (run every tick, docs/plan.md
+    // §14 M6-1 (4)) finds the Blaze sitting on the UNCLAIMED cell the
+    // just-cancelled line reverted to, and despawns it.
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+
+    expect(game.getEmbers()).not.toContain(blaze);
+    expect(game.drainEvents()).toContain('ember-despawned');
+    expect(game.drainDespawnedEmberPositions()).toContainEqual({ x: 5, y: 2 });
   });
 });

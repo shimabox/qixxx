@@ -20,7 +20,7 @@
 // non-threat (real-playtest feedback that motivated M8). This deliberately
 // isn't a shortest-path search — docs/plan.md §4.3/§8 call that unnecessary;
 // the original game's Sparx use a similarly simple heuristic.
-import { Field, Point, BORDER } from './field';
+import { Field, Point, BORDER, LINE } from './field';
 import { EMBER_MOVE_TICKS, EMBER_BRANCH_CHASE_PROBABILITY } from '../config';
 
 export interface Heading {
@@ -52,6 +52,7 @@ export class Ember {
   private readonly rng: Rng;
   private moveTicks: number;
   private branchChaseProbability: number;
+  private readonly canEnterLine: boolean;
 
   /**
    * @param start Initial position, must be a BORDER cell.
@@ -67,13 +68,19 @@ export class Ember {
    * @param branchChaseProbability Overrides EMBER_BRANCH_CHASE_PROBABILITY
    *   (docs/plan.md §6 M10 / §12.4: the debug panel's "分岐追跡確率" slider).
    *   Defaults to the config constant so pre-M10 call sites are unaffected.
+   * @param canEnterLine "Blaze" flag (docs/plan.md §14 M6-1): when true, this
+   *   Ember's candidate-cell scan in update() also accepts LINE cells, not
+   *   just BORDER, so it can walk onto and up the player's in-progress line.
+   *   Defaults to false so every pre-M6-1 call site/test keeps producing a
+   *   plain Ember unchanged. See isBlaze().
    */
   constructor(
     start: Point,
     initialHeading: Heading,
     rng: Rng = Math.random,
     moveTicks: number = EMBER_MOVE_TICKS,
-    branchChaseProbability: number = EMBER_BRANCH_CHASE_PROBABILITY
+    branchChaseProbability: number = EMBER_BRANCH_CHASE_PROBABILITY,
+    canEnterLine = false
   ) {
     this.pos = { ...start };
     this.heading = initialHeading;
@@ -83,6 +90,7 @@ export class Ember {
     this.rng = rng;
     this.moveTicks = moveTicks;
     this.branchChaseProbability = branchChaseProbability;
+    this.canEnterLine = canEnterLine;
   }
 
   getPosition(): Point {
@@ -131,6 +139,16 @@ export class Ember {
   }
 
   /**
+   * True for a "Blaze" (docs/plan.md §14 M6-1): this Ember can walk onto
+   * LINE cells in addition to BORDER (see the candidate scan in update()).
+   * Read by Game (spawn bookkeeping/despawn rules) and the render layer
+   * (color/flicker-speed swap) to tell a Blaze apart from a plain Ember.
+   */
+  isBlaze(): boolean {
+    return this.canEnterLine;
+  }
+
+  /**
    * Advances Ember by one tick, throttled to one BORDER-cell step per
    * EMBER_MOVE_TICKS ticks. `targetPos` (the marker's position) only
    * influences which branch to take at a fork — Ember never leaves the
@@ -161,7 +179,15 @@ export class Ember {
       const py = this.pos.y + dir.dy;
       // Inlined field.isInBounds(); out-of-bounds neighbors must be excluded
       // even though field.getAt() would also report BORDER for them.
-      if (px < 0 || px >= width || py < 0 || py >= height || field.getAt(px, py) !== BORDER) {
+      if (px < 0 || px >= width || py < 0 || py >= height) {
+        continue;
+      }
+      // A Blaze (docs/plan.md §14 M6-1) may also step onto LINE cells, not
+      // just BORDER — the field is otherwise unchanged, so a LINE stretch is
+      // always a branchless one-way corridor toward wherever the marker is
+      // currently drawing.
+      const cellState = field.getAt(px, py);
+      if (cellState !== BORDER && !(this.canEnterLine && cellState === LINE)) {
         continue;
       }
       const bit = 1 << i;

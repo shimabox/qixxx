@@ -19,6 +19,14 @@ export type GameEvent =
   | 'igniter-spawned'
   | 'igniter-approaching'
   | 'ember-spawned'
+  // A fresh Ember spawned this generation is a "Blaze" (docs/plan.md §14
+  // M6-1: EMBER_LINE_ENTRY_GENERATION onward) — pushed instead of, never
+  // alongside, 'ember-spawned' for that same spawn cycle.
+  | 'ember-blaze-spawned'
+  // A Blaze just stepped from a BORDER cell onto a LINE cell (docs/plan.md
+  // §14 M6-1): edge-triggered, pushed exactly once per BORDER->LINE
+  // transition, not on every tick it remains on LINE afterward.
+  | 'ember-entered-line'
   // An Ember was despawned because the BORDER cell it stood on got claimed
   // out from under it (docs/plan.md §6 M11 / §12.6). This is the audio half
   // of that occurrence — the accompanying *position* (for the render

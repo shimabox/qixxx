@@ -374,7 +374,7 @@ function renderFrame(): void {
     game.getField(),
     game.getMarker().getPosition(),
     game.getWisps().map((wisp) => wisp.getTrailRef()),
-    game.getEmberPositions(),
+    game.getEmbers(),
     game.getIgniterPosition(),
     markerVisible
   );

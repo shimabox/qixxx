@@ -75,6 +75,15 @@ export const EMBER_MOVE_TICKS = 3; // stage 1 baseline; escalates down to EMBER_
 // baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage 10.
 export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 
+// Ember line-entry generation threshold (docs/plan.md §14 M6-1 "ブレイズ"):
+// maybeSpawnEmbers() counts every natural spawn cycle as one "generation"
+// (a skipped cycle at the concurrency cap still counts). From this
+// generation onward, every Ember spawned that cycle is a "Blaze" — it can
+// walk onto LINE cells, not just BORDER (see patrol.ts's `canEnterLine`).
+// Debug-panel emberCount overrides and the GameOptions.embers test hook
+// always produce plain (non-Blaze) Embers, regardless of generation.
+export const EMBER_LINE_ENTRY_GENERATION = 3;
+
 // Stage 1 -> STAGE_MAX_DIFFICULTY interpolation endpoints (docs/plan.md
 // §12.7 — replaces the earlier §3.7 stage-2/stage-3+ step constants).
 // core/stage.ts's getStageConfig() linearly interpolates every parameter
@@ -138,6 +147,11 @@ export const COLOR_MARKER = '#ffffff'; // Marker (player) - bright white
 export const COLOR_WISP_HEAD = '#b967ff'; // Neon purple - Wisp head
 export const COLOR_EMBER = '#ff8c1a'; // Neon orange - Ember (border patrol)
 export const COLOR_IGNITER = '#ff3b3b'; // Neon red - Igniter (line chaser)
+// Deep crimson - Blaze (docs/plan.md §14 M6-1: the line-entering, enhanced
+// Ember that spawns from EMBER_LINE_ENTRY_GENERATION onward). Deliberately
+// darker/more saturated than both COLOR_EMBER's orange and COLOR_IGNITER's
+// brighter red so all three read as visually distinct at a glance.
+export const COLOR_EMBER_BLAZE = '#a4133c';
 
 // HUD
 export const HUD_FONT = '16px monospace';
@@ -191,6 +205,17 @@ export const SFX_EMBER_SPAWN_DURATION = 0.08;
 // so the two read as clearly distinct events.
 export const SFX_EMBER_DESPAWN_FREQ = 180;
 export const SFX_EMBER_DESPAWN_DURATION = 0.07;
+// A sharper, higher one-shot for a Blaze spawning (docs/plan.md §14 M6-1
+// "通常スポーン音より鋭い音") — higher-pitched and shorter than
+// SFX_EMBER_SPAWN_* so the two spawn sounds are clearly distinguishable.
+export const SFX_EMBER_BLAZE_SPAWN_FREQ = 420;
+export const SFX_EMBER_BLAZE_SPAWN_DURATION = 0.07;
+// A short 2-note alarm blip for the instant a Blaze steps from BORDER onto
+// LINE (docs/plan.md §14 M6-1 "危険が伝わる短いアラーム"), played via the
+// existing playArpeggio() mechanism (see SFX_STAGE_CLEAR_NOTES et al.) —
+// no new audio machinery needed.
+export const SFX_EMBER_ENTERED_LINE_NOTES = [880, 660];
+export const SFX_EMBER_ENTERED_LINE_NOTE_DURATION = 0.05;
 
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
@@ -232,6 +257,11 @@ export const EMBER_HALO_ALPHA_BASE = 0.3;
 export const EMBER_HALO_ALPHA_VARIANCE = 0.2;
 export const EMBER_FLICKER_SPEED = 0.35; // radians per rendered frame
 export const EMBER_FLICKER_PHASE_STEP = 2.1; // radians offset per Ember index
+// Blaze flicker speed (docs/plan.md §14 M6-1 "速いフリッカー"): noticeably
+// faster than EMBER_FLICKER_SPEED so a Blaze reads as more agitated/urgent
+// than a plain Ember, echoing how IGNITER_BLINK_SPEED already reads faster
+// than EMBER_FLICKER_SPEED.
+export const EMBER_BLAZE_FLICKER_SPEED = 0.7;
 
 // Igniter, drawn as a bright core + halo circle (~2x2 cells across) with a
 // fast alpha blink (§12.3 "危険が伝わる速めの点滅") — faster than Ember's
