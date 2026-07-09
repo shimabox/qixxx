@@ -5,6 +5,7 @@ import { TouchControls, attachTapToConfirm } from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
+import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import {
   TICK_DURATION,
   MAX_FRAME_DELTA,
@@ -199,6 +200,7 @@ let keyboard: KeyboardInput;
 let sfx: SfxEngine;
 let hud: HTMLDivElement;
 let screen: HTMLDivElement;
+let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
@@ -235,6 +237,13 @@ let lastHudMultiplier = -1;
 // very first renderFrame() call always writes once.
 let lastScreenText: string | null = null;
 
+// GAME OVER modal show/hide edge trigger (docs/plan-cloudflare-x-share.md
+// Phase 1): show() is only ever called on the frame `status` first becomes
+// 'gameover', hide() only on the frame it stops being 'gameover' — never
+// every frame, which would otherwise stomp the modal's own in-flight share
+// state (e.g. mid-fetch "POSTING..."/"FAILED - RETRY") each render.
+let gameOverModalShown = false;
+
 // Initialize game. init() runs exactly once on page load. All registered
 // event listeners and input controllers (TouchControls, KeyboardInput) live
 // for the page's lifetime and are intentionally not disposed — this is not
@@ -264,6 +273,7 @@ function init(): void {
   // order here, with no `order` CSS needed.
   hud = getHudElement(hudRow);
   screen = getScreenElement(canvasWrap);
+  gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
   muteButton = getMuteButtonElement(hudRow, toggleMute);
@@ -410,6 +420,22 @@ function renderFrame(): void {
   }
 
   const status = session.getStatus();
+
+  // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
+  // show it exactly once on the frame `status` first becomes 'gameover',
+  // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
+  // TITLE"/any-key resets the run to 'title'). `score`/`stage`/`hi` were
+  // already computed above for the HUD text.
+  if (status === 'gameover') {
+    if (!gameOverModalShown) {
+      gameOverModalShown = true;
+      gameOverModal.show({ score, stage, hiScore: hi });
+    }
+  } else if (gameOverModalShown) {
+    gameOverModalShown = false;
+    gameOverModal.hide();
+  }
+
   if (status === 'playing') {
     // Skip building the (empty) string entirely while playing (docs/plan.md
     // §13.3 P3) — screenText()'s 'playing' branch always returns ''.
@@ -435,7 +461,13 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
     }
     case 'gameover':
-      return `GAME OVER\n\nSCORE: ${session.getScore()}\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP FOR TITLE`;
+      // Score info + the "press any key" hint both live inside the
+      // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's
+      // an opaque box centered at this exact same spot, so leaving text here
+      // too would just sit invisibly behind it. Returning '' avoids that
+      // dead/duplicate node entirely (see the module comment in
+      // src/ui/gameOverModal.ts's hint line).
+      return '';
     case 'playing':
       return '';
   }
