@@ -12,7 +12,16 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
-import { INITIAL_LIVES, DEFAULT_SCORE_MULTIPLIER, SPLIT_MULTIPLIER_CAP, GRID_WIDTH, GRID_HEIGHT } from '../config';
+import {
+  INITIAL_LIVES,
+  DEFAULT_SCORE_MULTIPLIER,
+  SPLIT_MULTIPLIER_CAP,
+  GRID_WIDTH,
+  GRID_HEIGHT,
+  WISP_SPAWN_MARGIN_X_RATIO,
+  WISP_SPAWN_MARGIN_Y_RATIO,
+  WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN,
+} from '../config';
 
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
 
@@ -332,19 +341,58 @@ export class GameSession {
     });
   }
 
+  /**
+   * Builds this stage's Wisp cluster, spawned around a randomized center
+   * instead of the field's fixed center (docs/plan.md's anti-exploit fix,
+   * see config.ts's WISP_SPAWN_* constants for the full rationale): with the
+   * old fixed-center spawn, a single straight line down the marker's own
+   * start column reliably split the whole formation and instant-cleared
+   * stages 2-6 with little risk. The randomized center is pushed away from
+   * the marker's start column by at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
+   * cells (best effort on fields too small to fit the full offset) so that
+   * exploit no longer works reliably.
+   */
   private buildWisps(field: Field, config: StageConfig): Wisp[] {
     const width = field.getWidth();
-    const cx = Math.floor(width / 2);
-    const cy = Math.floor(field.getHeight() / 2);
+    const height = field.getHeight();
+    const rng = this.rng ?? Math.random;
     const spacing = 3;
+
+    // Marker always starts at { x: floor(width/2), y: 0 } — see
+    // buildDefaultStageGame() above.
+    const markerColumn = Math.floor(width / 2);
+
+    // Draw the cluster center from the field's interior, kept off the
+    // walls by WISP_SPAWN_MARGIN_X_RATIO/_Y_RATIO on every side.
+    const marginX = width * WISP_SPAWN_MARGIN_X_RATIO;
+    const marginY = height * WISP_SPAWN_MARGIN_Y_RATIO;
+    let cx = Math.round(marginX + rng() * (width - 2 * marginX));
+    let cy = Math.round(marginY + rng() * (height - 2 * marginY));
+
+    // The actual anti-exploit guarantee: push the center away from the
+    // marker's start column if it landed too close. On a field too narrow
+    // for the full offset to fit inside the interior, this is necessarily
+    // best-effort — the clamp below still keeps every spawned Wisp safely
+    // inside the field regardless.
+    if (Math.abs(cx - markerColumn) < WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN) {
+      cx =
+        cx >= markerColumn
+          ? markerColumn + WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
+          : markerColumn - WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN;
+    }
+
+    // Safety clamp for small fields (e.g. tests): keeps the center itself
+    // inside the interior even after the push above may have moved it past
+    // a margin bound, or past the field edge entirely on a narrow field.
+    cx = Math.min(width - 2, Math.max(1, cx));
+    cy = Math.min(height - 2, Math.max(1, cy));
 
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
-      // Spread multiple Wisps symmetrically around the field's horizontal
-      // center so a multi-Wisp stage (docs/plan.md §12.7, stage 2+) doesn't spawn
-      // them on top of each other; clamped to stay within the interior even
-      // on the small fields used by tests. For a single Wisp this reduces
-      // to exactly the field-center spawn used since M2.
+      // Spread multiple Wisps symmetrically around the cluster center so a
+      // multi-Wisp stage (docs/plan.md §12.7, stage 2+) doesn't spawn them
+      // on top of each other; clamped to stay within the interior even on
+      // the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
       wisps.push(new Wisp({ x, y: cy }, this.rng, undefined, config.wispSpeedMultiplier));

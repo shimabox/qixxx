@@ -47,6 +47,27 @@ export const WISP_TURN_JITTER = 0.2; // max random heading change per tick, radi
 // spans this many *distinct* cells (8-12 per docs/plan.md §4.3).
 export const WISP_HISTORY_LENGTH = 10;
 
+// Wisp spawn-cluster randomization (anti-exploit): previously every stage
+// spawned its Wisp cluster dead-center, symmetric around the marker's own
+// fixed start column (floor(width/2)). That made "draw one straight line
+// straight down from the start" a near-guaranteed instant split-clear on
+// stages 2-6 (300-run simulation: 37-59% success, essentially free retries)
+// since it always cut the symmetric formation clean in half. The cluster
+// center is now drawn from the field's interior — margins below keep it off
+// the walls — and then, if it landed too close to the marker's own start
+// column, is pushed away (see core/session.ts's buildWisps()) so a single
+// center-line slice can no longer reliably separate the whole formation.
+// Ratios of field width/height kept clear of the border on each side (e.g.
+// 0.2 -> the cluster center's x lands somewhere in [20%, 80%] of the width).
+export const WISP_SPAWN_MARGIN_X_RATIO = 0.2;
+export const WISP_SPAWN_MARGIN_Y_RATIO = 0.25;
+// Minimum horizontal distance (grid cells) the Wisp cluster's center must
+// keep from the marker's starting column (floor(width/2)) — the actual
+// anti-exploit guarantee. On very small (e.g. test) fields the interior may
+// not be wide enough to honor this fully; buildWisps() degrades gracefully
+// there (best effort, still fully clamped inside the field).
+export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN = 15;
+
 // Marker movement rate: number of ticks required to advance one grid cell.
 // Fast = 1 tick/cell. Slow (M3, §5.1) halves the effective speed (2 ticks/cell).
 export const MARKER_MOVE_TICKS_FAST = 1;

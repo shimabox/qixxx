@@ -5,7 +5,8 @@ import { Field } from './field';
 import { parseField } from './fieldFixture';
 import { Wisp } from './enemy';
 import { Ember } from './patrol';
-import { INITIAL_LIVES, MISS_GRACE_TICKS } from '../config';
+import { INITIAL_LIVES, MISS_GRACE_TICKS, WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN } from '../config';
+import { getStageConfig } from './stage';
 
 type Carry = { score: number; lives: number; multiplier: number };
 
@@ -356,6 +357,83 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 2
     expect(session.getStage()).toBe(2);
     expect(session.getGame().getWisps().length).toBe(2);
+  });
+});
+
+describe('GameSession — randomized Wisp spawn cluster (anti center-line-split exploit, docs/plan.md)', () => {
+  // Large enough that WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN always fits
+  // comfortably inside the interior on either side of the marker's start
+  // column, so the offset guarantee below is never just "best effort".
+  const FIELD_WIDTH = 200;
+  const FIELD_HEIGHT = 100;
+
+  /**
+   * Tiny deterministic PRNG (mulberry32), seeded per-call so each test can
+   * cheaply explore many distinct, reproducible spawn rolls without relying
+   * on Math.random. Contrast with the constant `() => 0.5` rng used
+   * elsewhere in this file (which only ever exercises a single, fixed
+   * spawn roll and is exactly why the tests below sweep many seeds
+   * instead).
+   */
+  function mulberry32(seed: number): () => number {
+    let a = seed;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function stage1WispsFor(rng: () => number) {
+    const session = new GameSession({ fieldWidth: FIELD_WIDTH, fieldHeight: FIELD_HEIGHT, rng });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 1, playing
+    return session.getGame().getWisps();
+  }
+
+  it('spawns every Wisp inside the field interior (never on/through a BORDER cell), across many seeds', () => {
+    for (let seed = 0; seed < 50; seed++) {
+      for (const wisp of stage1WispsFor(mulberry32(seed))) {
+        const { x, y } = wisp.getPosition();
+        expect(x).toBeGreaterThanOrEqual(1);
+        expect(x).toBeLessThanOrEqual(FIELD_WIDTH - 2);
+        expect(y).toBeGreaterThanOrEqual(1);
+        expect(y).toBeLessThanOrEqual(FIELD_HEIGHT - 2);
+      }
+    }
+  });
+
+  it("keeps the spawn cluster's center at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN cells from the marker's start column, across many seeds", () => {
+    const markerColumn = Math.floor(FIELD_WIDTH / 2);
+    for (let seed = 0; seed < 50; seed++) {
+      // Stage 1 has exactly one Wisp, so its x *is* the cluster center (no
+      // spacing offset is applied for a single-Wisp cluster) — this is the
+      // exact anti-exploit property the M12 center-line split relied on
+      // the absence of.
+      const [wisp] = stage1WispsFor(mulberry32(seed));
+      const offset = Math.abs(wisp.getPosition().x - markerColumn);
+      expect(offset).toBeGreaterThanOrEqual(WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN);
+    }
+  });
+
+  it('produces an identical spawn cluster for the same injected rng (determinism)', () => {
+    const a = stage1WispsFor(mulberry32(42)).map((w) => w.getPosition());
+    const b = stage1WispsFor(mulberry32(42)).map((w) => w.getPosition());
+    expect(a).toEqual(b);
+  });
+
+  it('spawns wispCount matching the stage config (docs/plan.md §12.7: stage n = n Wisps) even with the randomized spawn center', () => {
+    // Stage-1-to-stage-2 progression with the *real* per-stage builder is
+    // already covered end-to-end by the "spawns wispCount == stage number"
+    // test above (which continues to pass unchanged with the randomized
+    // spawn center); here we just re-confirm, across several seeds, that
+    // randomizing the spawn center didn't change how many Wisps stage 1
+    // asks for.
+    for (let seed = 0; seed < 10; seed++) {
+      const wisps = stage1WispsFor(mulberry32(seed));
+      expect(wisps.length).toBe(getStageConfig(1).wispCount);
+    }
   });
 });
 
