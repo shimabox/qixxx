@@ -12,14 +12,13 @@ compatibility_date = "2025-07-18"
 # vite.config.ts's cloudflareRedirectsPlugin) — both inside this one root.
 pages_build_output_dir = "dist"
 
-# Local-dev-only KV binding (docs/plan-cloudflare-x-share.md Phase 2). The
-# id below is an arbitrary local identifier for `wrangler pages dev`'s
-# built-in local KV emulation (backed by on-disk sqlite under .wrangler/,
-# gitignored) — it is NOT a real Cloudflare KV namespace id and doesn't need
-# to be. In production, the "SHARES" binding is configured separately in the
-# Cloudflare dashboard (Pages project -> Settings -> Functions -> KV
-# namespace bindings), pointing at a real namespace created there; nothing
-# in this file affects that production binding.
+# KV namespace bindings for the SHARES binding. When this wrangler.toml is
+# deployed to Cloudflare Pages, it becomes the source of truth for all KV
+# bindings — the id below is the actual qixxx-shares namespace ID and is used
+# for both production and preview deployments. Local development with
+# `wrangler pages dev` still uses the local KV emulation (backed by on-disk
+# sqlite under .wrangler/, gitignored), independent of this id. The id is not
+# a secret (it requires Cloudflare account authentication to be used).
 [[kv_namespaces]]
 binding = "SHARES"
-id = "local-dev-shares-namespace"
+id = "6c911969b6e94e5d90ea71ca6ab529dd"
