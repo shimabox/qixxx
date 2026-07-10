@@ -35,7 +35,7 @@
 | ユニットテスト | **Vitest** | Vite と親和。コアロジックは DOM 非依存で書くため node 環境で高速に回る |
 | E2E | **Playwright**（スモークのみ） | 起動・描画・基本操作の確認 |
 | Lint/Format | ESLint + Prettier（または Biome） | 実装モデルの出力品質の底上げ |
-| デプロイ | **GitHub Pages**（確定） | 静的ファイルのみ。GitHub Actions で main への push 時に自動デプロイ。`vite.config.ts` の `base` をリポジトリ名に合わせること |
+| デプロイ | **Cloudflare Pages**（2026-07-10 に GitHub Pages から変更。docs/plan-cloudflare-x-share.md 参照） | ダッシュボード連携で push 時に自動ビルド。`app.orukubami.sh/qixxx` で配信。シェア機能の Pages Functions（`functions/`）も同一プロジェクトで配信 |
 | 効果音 | **Web Audio API**（追加ライブラリなし） | SE を実行時生成。音源アセット不要 |
 
 **依存を増やさないこと。** ゲームエンジン（Phaser 等）は使わない。コアロジックが独立している方がテストとレビューがしやすい。
@@ -379,7 +379,7 @@ GitHub Actions: push ごとに `lint → typecheck → vitest → build`。Playw
 
 1. **技術スタック**: TypeScript + Canvas 2D + Vite + Vitest + Playwright で確定
 2. **要求占有率のデフォルト**: 65%（ステージ進行で 75% へ逓増）で確定
-3. **デプロイ先**: GitHub Pages で確定（Actions で自動デプロイ）
+3. **デプロイ先**: GitHub Pages で確定（Actions で自動デプロイ）→ **2026-07-10 に Cloudflare Pages へ移行**（`app.orukubami.sh/qixxx`。経緯と計画は docs/plan-cloudflare-x-share.md）
 4. **v1 スコープ**: 引き戻し・2 匹 QIX + 分断倍率・効果音を **すべて v1 に含める**（§6 の M1/M3/M4/M5 に組み込み済み）
 5. 敵の独自名称は §1 の例を仮とし、実装時に決定してよい（レビューで「原作名をそのまま使っていないこと」のみ確認する）
 
