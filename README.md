@@ -10,6 +10,10 @@
 敵が 2 匹以上いるステージでは、ラインで敵同士を**分断**すると占有率に関係なく即クリア（一発逆転の大技）。
 デスクトップ（キーボード）とスマホ（タッチ）の両方で遊べます。
 
+ゲームオーバー時には、そのプレイのスコアを **X（旧 Twitter）にシェア**できます。スコア入りのカード画像付きで投稿されます。
+
+![X シェア時に生成されるスコアカード](docs/images/readme-share-card.png)
+
 **➡️ 詳しいルールと遊び方: [遊び方ガイド](docs/how-to-play.md)**
 
 ## 遊ぶ
@@ -46,6 +50,8 @@ npm run dev
 - TypeScript (strict) + Canvas 2D — フレームワーク・ゲームエンジン不使用
 - Vite（開発・ビルド） / Vitest（ユニットテスト） / Playwright（E2E スモーク）
 - 効果音は Web Audio API による実行時生成（音源アセットなし）
+- ホスティングは Cloudflare Pages（app.orukubami.sh/qixxx）
+- X シェアのスコアカードは Cloudflare Pages Functions + Workers KV + workers-og（Satori）でエッジ動的生成
 
 コアロジック（`src/core/`）は DOM・Canvas 非依存の純 TypeScript で、ユニットテストで網羅しています。
 
@@ -76,7 +82,9 @@ src/
 ├── audio/    # Web Audio 効果音
 ├── storage/  # localStorage（ハイスコア・設定）
 ├── config.ts # チューニング定数・配色
+├── ui/       # GAME OVER モーダル（X シェア）
 └── main.ts   # エントリポイント（結線・ゲームループ）
+functions/    # Cloudflare Pages Functions（シェア API・OG カード生成）
 docs/
 ├── plan.md          # 実装計画書
 └── how-to-play.md   # 遊び方ガイド
