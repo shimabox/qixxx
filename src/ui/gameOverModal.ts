@@ -118,8 +118,8 @@ export class GameOverModal {
     // session/KeyboardInput instances.
     backButton.addEventListener('click', () => dispatchConfirm());
 
-    buttonRow.appendChild(this.shareButton);
     buttonRow.appendChild(backButton);
+    buttonRow.appendChild(this.shareButton);
     this.container.appendChild(buttonRow);
 
     // Folded in here (rather than left in #screen behind this opaque modal)
