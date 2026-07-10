@@ -1,6 +1,10 @@
 # QIXXX（キックス）
 
-線を引いて陣地を切り取る、ネオン風の陣取りアクションゲーム。
+[![PLAY NOW](https://img.shields.io/badge/%E2%96%B6_PLAY_NOW-app.orukubami.sh%2Fqixxx-00ff41?style=flat-square&labelColor=0a0e27)](https://app.orukubami.sh/qixxx/)
+[![X @shimabox](https://img.shields.io/badge/X-%40shimabox-ffffff?style=flat-square&labelColor=0a0e27&logo=x&logoColor=white)](https://x.com/shimabox)
+
+線を引いて陣地を切り取る、ネオン風の陣取りアクションゲーム。  
+https://app.orukubami.sh/qixxx/  
 1981 年のアーケードゲーム QIX へのオマージュとして、メカニクスは原作準拠・名称やビジュアルはオリジナルで作られています。
 
 ![プレイ画面。左が低速ライン（赤・高得点）、右が高速ライン（青）で取った陣地。中央の黄色が引き途中のライン](docs/images/readme-playing.png)
