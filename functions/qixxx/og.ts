@@ -49,13 +49,35 @@ function formatWithCommas(value: number): string {
 const CONTENT_WIDTH = IMAGE_WIDTH - 2 * 40 - 2 * 56;
 const STAT_LABEL_WIDTH = 260;
 
+// Numeric (not string) font-size constants: BIG_VALUE_RIGHT_BEARING_OFFSET_PX
+// below is derived from these, so they need to be arithmetic-ready rather
+// than pre-formatted '96px' strings.
+const BIG_VALUE_FONT_SIZE_PX = 96;
+const SMALL_VALUE_FONT_SIZE_PX = 56;
+
+// Press Start 2P draws every glyph in a 7x7 cell inside an 8x8 em grid, which
+// leaves a fixed 1/8 em right-side bearing (blank space) after each glyph's
+// ink. That bearing is a fraction of the em, so its pixel size scales with
+// font-size: ~12px at SCORE's 96px vs ~7px at STAGE/HI's 56px. Even though
+// all three rows' boxes are right-aligned (see CONTENT_WIDTH comment above),
+// that ~5px bearing difference means SCORE's actual ink falls short of
+// STAGE/HI's ink — visible as "SCORE looks misaligned". Shifting the big
+// row's value right by exactly that difference (1/8 em of the size delta)
+// realigns the ink, not just the boxes.
+const BIG_VALUE_RIGHT_BEARING_OFFSET_PX = (BIG_VALUE_FONT_SIZE_PX - SMALL_VALUE_FONT_SIZE_PX) / 8;
+
 function statRow(label: string, value: string, color: string, big: boolean): string {
-  const valueFontSize = big ? '96px' : '56px';
+  const valueFontSize = big ? BIG_VALUE_FONT_SIZE_PX : SMALL_VALUE_FONT_SIZE_PX;
+  // position:relative + right:-Npx (rather than a negative margin-right)
+  // is what satori/workers-og actually honors here: it shifts the value
+  // span's painted position without perturbing the flex layout that
+  // right-aligns every row's box within CONTENT_WIDTH.
+  const valueOffsetStyle = big ? ` position:relative; right:-${BIG_VALUE_RIGHT_BEARING_OFFSET_PX}px;` : '';
   return `
     <div style="display:flex; align-items:baseline; width:${CONTENT_WIDTH}px;">
       <span style="display:flex; width:${STAT_LABEL_WIDTH}px; color:${HUD_TEXT_COLOR}; font-size:32px;">${label}</span>
       <div style="display:flex; flex:1; justify-content:flex-end;">
-        <span style="display:flex; color:${color}; font-size:${valueFontSize};">${value}</span>
+        <span style="display:flex; color:${color}; font-size:${valueFontSize}px;${valueOffsetStyle}">${value}</span>
       </div>
     </div>
   `;
