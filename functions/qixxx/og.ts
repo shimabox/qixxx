@@ -38,11 +38,14 @@ function formatWithCommas(value: number): string {
 // Fixed content width the card's inner (bordered) area renders at: IMAGE_WIDTH
 // minus the outer padding (40px * 2) and the card's own padding (56px * 2).
 // Every row below is pinned to this same width, with a fixed-width label
-// column (STAT_LABEL_WIDTH) so all three value columns start at the same x
-// regardless of how wide "SCORE"/"STAGE"/"HI" or their values are — using
-// `justify-content: space-between` per row instead (right-aligning each
-// value to the row's own edge) left rows visually stair-stepped since each
-// value's width differs.
+// column (STAT_LABEL_WIDTH) on the left. Values are right-aligned to the
+// row's right edge (arcade scoreboard style) rather than left-aligned after
+// the label: Press Start 2P is a pixel font whose glyphs (notably "1") carry
+// uneven left-side bearing, so left-aligned digits' ink doesn't start at a
+// consistent x — an offset that gets magnified by SCORE's larger font size
+// (96px vs 56px) and reads as misalignment. Right-aligning sidesteps this
+// entirely: every row's right edge lands at the same x regardless of which
+// glyphs (or how many digits) make up the value.
 const CONTENT_WIDTH = IMAGE_WIDTH - 2 * 40 - 2 * 56;
 const STAT_LABEL_WIDTH = 260;
 
@@ -51,7 +54,9 @@ function statRow(label: string, value: string, color: string, big: boolean): str
   return `
     <div style="display:flex; align-items:baseline; width:${CONTENT_WIDTH}px;">
       <span style="display:flex; width:${STAT_LABEL_WIDTH}px; color:${HUD_TEXT_COLOR}; font-size:32px;">${label}</span>
-      <span style="display:flex; color:${color}; font-size:${valueFontSize};">${value}</span>
+      <div style="display:flex; flex:1; justify-content:flex-end;">
+        <span style="display:flex; color:${color}; font-size:${valueFontSize};">${value}</span>
+      </div>
     </div>
   `;
 }
