@@ -6,9 +6,25 @@
   <rect x="0" y="0" width="64" height="64" fill="#00ff41" />
   <rect x="6" y="6" width="52" height="52" fill="#0a0e27" />
 
-  <!-- Player marker (white diamond, matches COLOR_MARKER) -->
-  <polygon points="32,16 48,32 32,48 16,32" fill="#ffffff" />
+  <!-- "Q" (white, matches COLOR_MARKER) — Press Start 2P glyph traced onto a
+       7x7 pixel grid (cell = 6 units, origin 11,11):
+         .#####.
+         ##...##
+         ##...##
+         ##...##
+         ##.####
+         ##..##.
+         .####.#                                                          -->
+  <g fill="#ffffff">
+    <rect x="17" y="11" width="30" height="6" />
+    <rect x="11" y="17" width="12" height="30" />
+    <rect x="41" y="17" width="12" height="18" />
+    <rect x="29" y="35" width="24" height="6" />
+    <rect x="35" y="41" width="12" height="6" />
+    <rect x="17" y="47" width="24" height="6" />
+    <rect x="47" y="47" width="6" height="6" />
+  </g>
 
-  <!-- Wisp (neon purple, matches COLOR_WISP_HEAD) -->
-  <circle cx="48" cy="16" r="5" fill="#b967ff" />
+  <!-- Wisp (neon purple, matches COLOR_WISP_HEAD), in the Q's top-right nook -->
+  <circle cx="52" cy="12" r="4" fill="#b967ff" />
 </svg>
