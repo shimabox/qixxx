@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges">
+  <!-- Background (dark blue-black, matches src/config.ts COLOR_BACKGROUND) -->
+  <rect x="0" y="0" width="64" height="64" fill="#0a0e27" />
+
+  <!-- Field border (neon green, matches COLOR_BORDER) -->
+  <rect x="0" y="0" width="64" height="64" fill="#00ff41" />
+  <rect x="6" y="6" width="52" height="52" fill="#0a0e27" />
+
+  <!-- "Q" (white, matches COLOR_MARKER) — Press Start 2P glyph traced onto a
+       7x7 pixel grid (cell = 6 units, origin 11,11):
+         .#####.
+         ##...##
+         ##...##
+         ##...##
+         ##.####
+         ##..##.
+         .####.#                                                          -->
+  <g fill="#ffffff">
+    <rect x="17" y="11" width="30" height="6" />
+    <rect x="11" y="17" width="12" height="30" />
+    <rect x="41" y="17" width="12" height="18" />
+    <rect x="29" y="35" width="24" height="6" />
+    <rect x="35" y="41" width="12" height="6" />
+    <rect x="17" y="47" width="24" height="6" />
+    <rect x="47" y="47" width="6" height="6" />
+  </g>
+
+  <!-- Wisp (neon purple, matches COLOR_WISP_HEAD), in the Q's top-right nook -->
+  <circle cx="52" cy="12" r="4" fill="#b967ff" />
+</svg>

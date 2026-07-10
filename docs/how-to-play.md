@@ -11,7 +11,7 @@
 
 ## 1. まず動かしてみる
 
-**🎮 ブラウザですぐ遊べます: https://shimabox.github.io/qixxx/**
+**🎮 ブラウザですぐ遊べます: https://app.orukubami.sh/qixxx/**
 
 ローカルで動かす場合:
 
