@@ -178,6 +178,14 @@ export const COLOR_EMBER_BLAZE = '#a4133c';
 export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
+// Below this window.innerWidth (CSS px), the HUD switches from its single
+// nowrap+ellipsis line to two explicit stacked lines (main.ts's
+// updateHudMode()) so OCCUPANCY/LIVES/the multiplier stay visible on narrow
+// phones instead of being clipped by the ellipsis. Deliberately keyed off
+// window.innerWidth alone, never hudRow/canvas width — those are themselves
+// derived from the HUD row's height in fitCanvasToViewport(), so measuring
+// them here would create a width<->height layout circularity.
+export const HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX = 600;
 
 // Neon glow (docs/plan.md §1/§6 M5). Applied only to a handful of
 // small/bounded-count draw calls per frame (marker, Wisp head, Igniter,

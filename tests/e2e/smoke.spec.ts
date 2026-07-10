@@ -116,3 +116,38 @@ test.describe('mobile viewport', () => {
     await expect(pad.locator('button')).toHaveCount(6);
   });
 });
+
+test.describe('narrow mobile viewport HUD (two-line mode)', () => {
+  // Below HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX (config.ts, ~600), main.ts's
+  // updateHudMode() switches the HUD from one nowrap+ellipsis line to two
+  // explicit stacked lines so OCCUPANCY/LIVES/the multiplier stay visible
+  // instead of being clipped by the ellipsis (the bug this test guards
+  // against). 390x844 mirrors a typical modern phone in portrait.
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('OCCUPANCY and LIVES are visible, not ellipsis-clipped', async ({ page }) => {
+    await page.goto(APP_URL);
+    await page.keyboard.press('Space'); // Title -> Playing
+
+    await expect
+      .poll(() => page.evaluate(() => window.__game__?.session.getStatus()))
+      .toBe('playing');
+
+    const hud = page.locator('#hud');
+    await expect(hud).toContainText('OCCUPANCY');
+    await expect(hud).toContainText('LIVES');
+
+    // The regression this guards against: in one-line mode, #hud's
+    // nowrap+ellipsis text-overflow silently truncated LIVES/OCCUPANCY off
+    // the end at this width without failing a plain toContainText() check
+    // (Playwright reads full textContent regardless of CSS ellipsis
+    // clipping) — so also assert the second line is on its own, unclipped
+    // (scrollWidth <= clientWidth means nothing is cut off by overflow).
+    const line2 = page.locator('#hud-line2');
+    await expect(line2).toBeVisible();
+    await expect(line2).toContainText('OCCUPANCY');
+    await expect(line2).toContainText('LIVES');
+    const isUnclipped = await line2.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+    expect(isUnclipped).toBe(true);
+  });
+});

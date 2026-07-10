@@ -15,6 +15,7 @@ import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
+  HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -112,7 +113,14 @@ function getCanvasElement(wrap: HTMLDivElement): HTMLCanvasElement {
   return canvas;
 }
 
-// Get or create the HUD overlay element (stage/score/occupancy/lives/multiplier, §3.3/§6 M1/M4).
+// Get or create the HUD overlay container (stage/score/occupancy/lives/multiplier, §3.3/§6 M1/M4).
+// Holds one or two line elements (see getHudLineElement() below) — never
+// wraps text itself. fitCanvasToViewport() reads this row's *height* to
+// reserve space for the canvas below it, so the number of lines is decided
+// explicitly (updateHudMode(), keyed only off window.innerWidth) rather than
+// left to the browser's text wrapping, which would depend on the row's own
+// *width* — itself derived from this row's height — creating a circular
+// width<->height layout dependency between the HUD row and the canvas.
 function getHudElement(row: HTMLDivElement): HTMLDivElement {
   let hud = document.getElementById('hud') as HTMLDivElement | null;
   if (!hud) {
@@ -124,19 +132,29 @@ function getHudElement(row: HTMLDivElement): HTMLDivElement {
     hud.style.textShadow = `0 0 6px ${HUD_ACCENT_COLOR}`;
     hud.style.pointerEvents = 'none';
     hud.style.userSelect = 'none';
-    // Never wraps to a second line (fitCanvasToViewport() below reads this
-    // row's *height* to reserve space for the canvas below it; keeping the
-    // height stable and independent of the row's width, rather than
-    // depending on how much text fits, avoids a circular width<->height
-    // layout dependency between the HUD row and the canvas).
-    hud.style.whiteSpace = 'nowrap';
-    hud.style.overflow = 'hidden';
-    hud.style.textOverflow = 'ellipsis';
     hud.style.flex = '1 1 auto';
     hud.style.minWidth = '0';
     row.appendChild(hud);
   }
   return hud;
+}
+
+// Get or create one HUD text line inside #hud. Each line is its own nowrap
+// box (color/font/text-shadow/pointer-events/user-select are inherited from
+// #hud, so they don't need repeating here) — kept nowrap+ellipsis even in
+// two-line mode as a safety net, though in practice each line's shorter
+// two-line-mode text shouldn't need it (docs: "各行はnowrapのままでよい").
+function getHudLineElement(hud: HTMLDivElement, id: string): HTMLDivElement {
+  let line = document.getElementById(id) as HTMLDivElement | null;
+  if (!line) {
+    line = document.createElement('div');
+    line.id = id;
+    line.style.whiteSpace = 'nowrap';
+    line.style.overflow = 'hidden';
+    line.style.textOverflow = 'ellipsis';
+    hud.appendChild(line);
+  }
+  return line;
 }
 
 // Get or create the screen-overlay element (Title / StageClear / GameOver, §4.4/§6 M4),
@@ -199,6 +217,8 @@ let renderer: Renderer;
 let keyboard: KeyboardInput;
 let sfx: SfxEngine;
 let hud: HTMLDivElement;
+let hudLine1: HTMLDivElement;
+let hudLine2: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
@@ -230,6 +250,15 @@ let lastHudHi = -1;
 let lastHudOccupancy = -1;
 let lastHudLives = -1;
 let lastHudMultiplier = -1;
+
+// Whether the HUD is currently rendering as two stacked lines (narrow
+// viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
+// a module-level flag rather than re-derived every call so updateHudMode()
+// can cheaply detect a *change* and invalidate the lastHud* cache above only
+// when the mode itself actually flips (otherwise a value-unchanged render
+// frame right after a resize would wrongly skip rewriting the DOM into the
+// new line layout).
+let hudTwoLineMode = false;
 
 // Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
 // P3): `null` is a sentinel distinct from any real screenText() result
@@ -272,6 +301,10 @@ function init(): void {
   // HUD行の右端に統合") — plain flex layout keeps DOM order as visual
   // order here, with no `order` CSS needed.
   hud = getHudElement(hudRow);
+  hudLine1 = getHudLineElement(hud, 'hud-line1');
+  hudLine2 = getHudLineElement(hud, 'hud-line2');
+  hudTwoLineMode = window.innerWidth <= HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX;
+  hudLine2.style.display = hudTwoLineMode ? 'block' : 'none';
   screen = getScreenElement(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap);
 
@@ -314,6 +347,72 @@ function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
 }
 
+// Re-derive the HUD's line mode from window.innerWidth alone (never from
+// hudRow/canvas width — see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX's comment in
+// config.ts for why that would be circular). Called from fitCanvasToViewport()
+// itself, which already runs on init + every resize/orientationchange, so no
+// separate listener is needed. On an actual mode flip, invalidates the
+// lastHud* cache (so the next updateHud() call unconditionally rewrites the
+// DOM into the new line layout instead of skipping a no-op-looking value
+// comparison) and immediately reflects the new mode into the DOM/cache via
+// updateHud(), so hudRow's height already accounts for it by the time
+// fitCanvasToViewport() measures hudRow.offsetHeight right after this call.
+function updateHudMode(): void {
+  const twoLine = window.innerWidth <= HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX;
+  if (twoLine === hudTwoLineMode) return;
+
+  hudTwoLineMode = twoLine;
+  hudLine2.style.display = twoLine ? 'block' : 'none';
+  lastHudStage = -1;
+  lastHudScore = -1;
+  lastHudHi = -1;
+  lastHudOccupancy = -1;
+  lastHudLives = -1;
+  lastHudMultiplier = -1;
+  updateHud();
+}
+
+// Write the HUD text, skipping the DOM write when nothing displayed has
+// actually changed since the last call (docs/plan.md §13.3 P3 — see the
+// lastHud* module comment above). Shared by renderFrame() (every rendered
+// frame, but usually a no-op) and updateHudMode() (once, right after a mode
+// flip, to force a rewrite via the invalidated cache).
+function updateHud(): void {
+  const game = session.getGame();
+  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
+  const stage = session.getStage();
+  const score = session.getScore();
+  const hi = session.getHighScore();
+  const lives = session.getLives();
+  const multiplier = session.getMultiplier();
+
+  if (
+    stage === lastHudStage &&
+    score === lastHudScore &&
+    hi === lastHudHi &&
+    occupancyPercent === lastHudOccupancy &&
+    lives === lastHudLives &&
+    multiplier === lastHudMultiplier
+  ) {
+    return;
+  }
+  lastHudStage = stage;
+  lastHudScore = score;
+  lastHudHi = hi;
+  lastHudOccupancy = occupancyPercent;
+  lastHudLives = lives;
+  lastHudMultiplier = multiplier;
+
+  if (hudTwoLineMode) {
+    hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
+    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+  } else {
+    hudLine1.textContent =
+      `STAGE ${stage}  SCORE: ${score}  HI: ${hi}  ` +
+      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+  }
+}
+
 // Keeps the canvas's CSS box letterboxed at the fixed 4:3 (CANVAS_WIDTH x
 // CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
 // once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
@@ -325,11 +424,18 @@ function updateMuteButtonLabel(): void {
 //
 // The HUD row's height is measured directly (rather than assumed as a
 // constant) so it stays correct if its font-size clamp() resolves
-// differently at a given viewport width; since #hud never wraps (see
-// getHudElement()), that height doesn't depend on the row's *width* — which
-// this same function sets below — so a single measure-then-layout pass is
-// sufficient and there's no risk of it oscillating.
+// differently at a given viewport width, or if the HUD is currently in
+// two-line mode (see updateHudMode()); since neither #hud's lines nor its
+// line *count* ever depends on the row's own *width* — which this same
+// function sets below — a single measure-then-layout pass is sufficient and
+// there's no risk of it oscillating.
 function fitCanvasToViewport(): void {
+  // Resolve the HUD's line mode (and, if it just changed, its DOM content)
+  // from window.innerWidth *before* measuring hudRow's height below, so a
+  // mode flip's new line count is already reflected in that measurement
+  // rather than lagging a frame behind.
+  updateHudMode();
+
   const availW = gameRoot.clientWidth;
   const hudRowHeight = hudRow.offsetHeight;
   const availH = gameRoot.clientHeight - hudRowHeight - HUD_GAP_PX;
@@ -394,42 +500,20 @@ function renderFrame(): void {
   // recent tick's merged input held.
   sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
 
-  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
-  const stage = session.getStage();
-  const score = session.getScore();
-  const hi = session.getHighScore();
-  const lives = session.getLives();
-  const multiplier = session.getMultiplier();
-  if (
-    stage !== lastHudStage ||
-    score !== lastHudScore ||
-    hi !== lastHudHi ||
-    occupancyPercent !== lastHudOccupancy ||
-    lives !== lastHudLives ||
-    multiplier !== lastHudMultiplier
-  ) {
-    lastHudStage = stage;
-    lastHudScore = score;
-    lastHudHi = hi;
-    lastHudOccupancy = occupancyPercent;
-    lastHudLives = lives;
-    lastHudMultiplier = multiplier;
-    hud.textContent =
-      `STAGE ${stage}  SCORE: ${score}  HI: ${hi}  ` +
-      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
-  }
+  updateHud();
 
   const status = session.getStatus();
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
   // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
-  // TITLE"/any-key resets the run to 'title'). `score`/`stage`/`hi` were
-  // already computed above for the HUD text.
+  // TITLE"/any-key resets the run to 'title'). Re-read here (rather than
+  // reused from updateHud()'s internals) since that call may have skipped
+  // its own re-read via the lastHud* cache when nothing displayed changed.
   if (status === 'gameover') {
     if (!gameOverModalShown) {
       gameOverModalShown = true;
-      gameOverModal.show({ score, stage, hiScore: hi });
+      gameOverModal.show({ score: session.getScore(), stage: session.getStage(), hiScore: session.getHighScore() });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
