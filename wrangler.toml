@@ -1,0 +1,25 @@
+name = "qixxx"
+# Pinned to the newest date the locally-installed wrangler@3.114.17's
+# bundled Workers runtime actually supports (a newer date here just falls
+# back to this one anyway, with a warning) — production Pages deployments
+# use whatever wrangler/runtime version Cloudflare's dashboard build runs,
+# independent of this local-dev pin.
+compatibility_date = "2025-07-18"
+
+# Build output root (docs/plan-cloudflare-x-share.md Phase 3): the static
+# app lives at dist/qixxx (vite.config.ts's build.outDir, matching the
+# `/qixxx/` base path) and `_redirects` lives at dist/_redirects (written by
+# vite.config.ts's cloudflareRedirectsPlugin) — both inside this one root.
+pages_build_output_dir = "dist"
+
+# Local-dev-only KV binding (docs/plan-cloudflare-x-share.md Phase 2). The
+# id below is an arbitrary local identifier for `wrangler pages dev`'s
+# built-in local KV emulation (backed by on-disk sqlite under .wrangler/,
+# gitignored) — it is NOT a real Cloudflare KV namespace id and doesn't need
+# to be. In production, the "SHARES" binding is configured separately in the
+# Cloudflare dashboard (Pages project -> Settings -> Functions -> KV
+# namespace bindings), pointing at a real namespace created there; nothing
+# in this file affects that production binding.
+[[kv_namespaces]]
+binding = "SHARES"
+id = "local-dev-shares-namespace"

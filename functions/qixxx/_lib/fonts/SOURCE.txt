@@ -1,0 +1,21 @@
+Font: Press Start 2P (Regular)
+License: SIL Open Font License 1.1 (see OFL.txt in this directory)
+Copyright: 2012 The Press Start 2P Project Authors (cody@zone38.net)
+Source: https://github.com/google/fonts/raw/main/ofl/pressstart2p/PressStart2P-Regular.ttf
+        (Google Fonts' mirror of the upstream OFL-licensed font, matching
+        docs/plan-cloudflare-x-share.md Phase 2's example font choice.)
+License file source: https://github.com/google/fonts/raw/main/ofl/pressstart2p/OFL.txt
+
+pressStart2P.ts in this directory is a generated base64 embedding of
+PressStart2P-Regular.ttf (see that file's own header comment) — regenerate it
+with:
+
+  node -e "
+    const fs = require('fs');
+    const buf = fs.readFileSync('functions/qixxx/_lib/fonts/PressStart2P-Regular.ttf');
+    const b64 = buf.toString('base64');
+    const lines = [];
+    for (let i = 0; i < b64.length; i += 100) lines.push('  \"' + b64.slice(i, i + 100) + '\"');
+    fs.writeFileSync('functions/qixxx/_lib/fonts/pressStart2P.ts',
+      'export const PRESS_START_2P_TTF_BASE64 =\n' + lines.join(' +\n') + ';\n');
+  "
