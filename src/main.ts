@@ -185,6 +185,34 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
   return screen;
 }
 
+// Get or create the credit link (author attribution). Lives inside the HUD row,
+// positioned between #hud and #mute-button (left of the mute button). Similar to
+// the mute button, it must have pointer-events: auto since the HUD row itself has
+// pointer-events: none. Uses a smaller font than the mute button for a modest appearance.
+function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
+  let link = document.getElementById('credit-link') as HTMLAnchorElement | null;
+  if (!link) {
+    link = document.createElement('a');
+    link.id = 'credit-link';
+    link.href = 'https://x.com/shimabox';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = '@shimabox';
+    link.style.flex = '0 0 auto';
+    link.style.font = HUD_FONT;
+    link.style.color = HUD_ACCENT_COLOR;
+    link.style.fontSize = '0.8em';
+    link.style.opacity = '0.85';
+    link.style.textDecoration = 'none';
+    link.style.whiteSpace = 'nowrap';
+    link.style.pointerEvents = 'auto';
+    link.style.userSelect = 'none';
+    link.style.cursor = 'pointer';
+    row.appendChild(link);
+  }
+  return link;
+}
+
 // Get or create the mute toggle button (docs/plan.md §3.8: "ミュートボタン
 // をHUDに置く"). Lives inside the HUD row (docs/plan.md §12.1: "MUTEボタン
 // はHUD行の右端に統合") rather than #hud itself (which is pointer-events:
@@ -296,10 +324,10 @@ function init(): void {
   new TouchControls(window, document.body);
   attachTapToConfirm(canvas);
 
-  // Appended to #hud-row in this order (hud, then muteButton) so the mute
+  // Appended to #hud-row in this order (hud, creditLink, then muteButton) so the mute
   // button lands at the row's right end (docs/plan.md §12.1: "MUTEボタンは
-  // HUD行の右端に統合") — plain flex layout keeps DOM order as visual
-  // order here, with no `order` CSS needed.
+  // HUD行の右端に統合") and the credit link sits between the HUD text and the mute button.
+  // Plain flex layout keeps DOM order as visual order here, with no `order` CSS needed.
   hud = getHudElement(hudRow);
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
@@ -309,6 +337,7 @@ function init(): void {
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
+  getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
