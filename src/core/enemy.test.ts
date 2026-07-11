@@ -159,6 +159,74 @@ describe('Wisp', () => {
     expect(wisp.getTrailRef()).toBe(wisp.getTrailRef());
   });
 
+  it('does not tunnel through a one-cell-wide wall at the debug panel\'s max speed multiplier', () => {
+    // Two chambers separated by a single-column wall at x=7. WISP_SPEED
+    // (0.3) times a x15 multiplier (src/debug/panel.ts
+    // RANGES.wispSpeedMultiplier.max) advances the head 4.5 cells in a
+    // single tick — enough that a destination-only check (the pre-sweep
+    // implementation) would land past the wall without ever sampling it:
+    // round(5 + 4.5) = 10, deep in the right-hand chamber, while the wall
+    // itself sits at x=7. tryStep's sweep must catch the wall among its
+    // intermediate samples and reject the step, so the head can never
+    // appear on the far side no matter how many ticks run.
+    const parsed = parseField(`
+      ##############
+      #......#.....#
+      #......#.....#
+      #......#.....#
+      #....W.#.....#
+      #......#.....#
+      #......#.....#
+      #......#.....#
+      ##############
+    `);
+    const start = markerAt(parsed, 'W');
+    // Deterministic rng: 0.5 => zero heading jitter; heading straight along
+    // +x (angle 0) drives it directly at the wall every tick it can.
+    const rng = () => 0.5;
+    const DEBUG_PANEL_MAX_SPEED_MULTIPLIER = 15; // src/debug/panel.ts RANGES.wispSpeedMultiplier.max
+    const wisp = new Wisp(start, rng, 0, DEBUG_PANEL_MAX_SPEED_MULTIPLIER);
+
+    for (let tick = 0; tick < 300; tick++) {
+      wisp.update(parsed.field);
+      const pos = wisp.getPosition();
+      expect(parsed.field.get(pos)).toBe(UNCLAIMED);
+      // Never crosses into the right-hand chamber (wall column is x=7).
+      expect(pos.x).toBeLessThan(7);
+    }
+  });
+
+  it('never leaves UNCLAIMED territory at the debug panel\'s max speed multiplier, with jitter applied every tick (deterministic rng sequence)', () => {
+    // Same field/rng shape as the "jitter every tick" test above, but at
+    // the debug panel's most extreme speed multiplier — the high-speed
+    // analogue of that invariant, now backed by tryStep's swept move check
+    // instead of a single destination-cell lookup.
+    const parsed = parseField(`
+      ##########
+      #........#
+      #........#
+      #....W...#
+      #........#
+      #........#
+      ##########
+    `);
+    const start = markerAt(parsed, 'W');
+    let seed = 1;
+    const rng = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const DEBUG_PANEL_MAX_SPEED_MULTIPLIER = 15; // src/debug/panel.ts RANGES.wispSpeedMultiplier.max
+    const wisp = new Wisp(start, rng, undefined, DEBUG_PANEL_MAX_SPEED_MULTIPLIER);
+
+    for (let tick = 0; tick < 1000; tick++) {
+      wisp.update(parsed.field);
+      const pos = wisp.getPosition();
+      expect(parsed.field.isInBounds(pos)).toBe(true);
+      expect(parsed.field.get(pos)).toBe(UNCLAIMED);
+    }
+  });
+
   it('does not treat an in-progress LINE cell as a wall: the head walks straight onto and across it', () => {
     const parsed = parseField(`
       ########
