@@ -17,15 +17,30 @@ import type { DebugOverrides, EffectiveDebugParams } from '../core/game';
  * panel can push well past normal per-stage values for stress-testing —
  * core (Game.setWispCount/setEmberCount) only ever floors at 0, it has no
  * upper clamp of its own, so these panel-side maxes are the only limit.
+ *
+ * wispCount/wispSpeedMultiplier/emberCount/requiredOccupancyPercent's upper
+ * bounds were widened again to 3x their stage-10 (STAGE_MAX_DIFFICULTY)
+ * values (2026-07-11 feedback: wispCount 10->30, wispSpeedMultiplier
+ * 5.0->15.0, emberCount 10->30, requiredOccupancyPercent 90->99 — 99 rather
+ * than a literal 3x270 since occupancy is a percentage and 100% is the
+ * logical ceiling). The other fields (emberMoveTicks, emberSpawnIntervalSec,
+ * emberBranchChaseProbability) are left as-is: they're already at or past
+ * their logical ceiling (1 tick/cell is the fastest possible move rate, 0-1
+ * is branch-chase probability's full range) so widening them further has no
+ * effect. Pushing wispSpeedMultiplier this high requires Wisp.tryStep
+ * (src/core/enemy.ts) to sweep-check the whole move segment rather than
+ * just the destination cell, or a fast Wisp could tunnel clean through a
+ * one-cell-wide BORDER/CLAIMED wall in a single tick — see that method's
+ * doc comment.
  */
 const RANGES = {
-  wispCount: { min: 0, max: 10, step: 1 },
-  wispSpeedMultiplier: { min: 0.25, max: 5.0, step: 0.05 },
-  emberCount: { min: 0, max: 10, step: 1 },
+  wispCount: { min: 0, max: 30, step: 1 },
+  wispSpeedMultiplier: { min: 0.25, max: 15.0, step: 0.05 },
+  emberCount: { min: 0, max: 30, step: 1 },
   emberMoveTicks: { min: 1, max: 10, step: 1 },
   emberSpawnIntervalSec: { min: 1, max: 60, step: 1 },
   emberBranchChaseProbability: { min: 0, max: 1, step: 0.05 },
-  requiredOccupancyPercent: { min: 10, max: 90, step: 1 },
+  requiredOccupancyPercent: { min: 10, max: 99, step: 1 },
 } as const;
 
 interface SliderField {
