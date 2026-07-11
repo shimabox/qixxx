@@ -48,6 +48,7 @@ export class SfxEngine {
   private drawOsc: OscillatorNode | null = null;
   private drawGain: GainNode | null = null;
   private drawing = false;
+  private unlocked = false;
 
   /** @param initialMuted Seeded from src/storage/settings.ts by main.ts. */
   constructor(initialMuted = false) {
@@ -76,12 +77,47 @@ export class SfxEngine {
    * and resumes it if the browser started it suspended. Safe to call
    * repeatedly (e.g. on every keydown/pointerdown) since subsequent calls
    * are no-ops once the context is already running.
+   *
+   * iOS Safari/Chrome for iOS (both WebKit under the hood) need one extra
+   * step here beyond `ctx.resume()`: some WebKit builds keep the hardware
+   * audio output itself gated even after the AudioContext reports
+   * `state === 'running'`, until a buffer has actually been played through
+   * it at least once from directly within a user-gesture call stack. See
+   * `unlockAudioOutput()` for the fix; it runs once per context, tracked by
+   * `unlocked`.
    */
   resume(): void {
     const ctx = this.ensureContext();
-    if (ctx && ctx.state === 'suspended') {
+    if (!ctx) return;
+    if (!this.unlocked) {
+      this.unlockAudioOutput(ctx);
+      this.unlocked = true;
+    }
+    if (ctx.state === 'suspended') {
       void ctx.resume();
     }
+  }
+
+  /**
+   * iOS WebKit Web Audio "unlock" workaround: plays a single silent sample
+   * through a throwaway AudioBufferSourceNode. This is a well-known pattern
+   * for unsticking WebKit's audio output gate on first user interaction —
+   * `ctx.resume()` alone is not always sufficient on iOS. Must be invoked
+   * synchronously within the user-gesture call stack (it is, from
+   * `resume()`); we deliberately don't await anything before calling
+   * `start()`.
+   *
+   * The buffer is 1 sample of silence (`createBuffer(1, 1, 22050)`) so it
+   * has no audible output and no effect on pitch/timing/volume of any other
+   * sound — safe to run unconditionally on every platform, including
+   * desktop browsers where it's a harmless no-op.
+   */
+  private unlockAudioOutput(ctx: AudioContext): void {
+    const buffer = ctx.createBuffer(1, 1, 22050);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
   }
 
   /**
@@ -161,6 +197,7 @@ export class SfxEngine {
       void this.ctx.close();
       this.ctx = null;
       this.masterGain = null;
+      this.unlocked = false;
     }
   }
 
