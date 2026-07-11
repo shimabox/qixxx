@@ -93,6 +93,26 @@ export class SfxEngine {
       this.unlockAudioOutput(ctx);
       this.unlocked = true;
     }
+    this.resumeIfSuspended(ctx);
+  }
+
+  /**
+   * `ctx.resume()` is async (a Promise) and the call sites here don't await
+   * it — including this one, deliberately, since `resume()` must stay
+   * synchronous to run inside a user-gesture call stack (see
+   * `unlockAudioOutput()`). On iOS that Promise can take a couple hundred ms
+   * to settle, so `state` can still read `'suspended'` for a moment after
+   * `resume()` returns. If the very first SE of a session (`playTone()` via
+   * `handleEvents()`, or the draw drone via `setDrawing()`) fires during that
+   * window, WebKit silently drops it — the context isn't actually running
+   * yet — even though every subsequent sound plays fine once the Promise
+   * resolves. That's the "first sound didn't play, but it worked after that"
+   * report from GitHub #4. Retrying `ctx.resume()` at every sound-producing
+   * call site (not just the original user-gesture `resume()`) closes that
+   * window: worst case it's a harmless no-op call on an already-resuming
+   * context.
+   */
+  private resumeIfSuspended(ctx: AudioContext): void {
     if (ctx.state === 'suspended') {
       void ctx.resume();
     }
@@ -134,6 +154,7 @@ export class SfxEngine {
     }
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain) return;
+    this.resumeIfSuspended(ctx);
 
     const freq = speed === 'slow' ? SFX_DRAW_FREQ_SLOW : SFX_DRAW_FREQ_FAST;
     if (!this.drawOsc || !this.drawGain) {
@@ -243,6 +264,7 @@ export class SfxEngine {
     if (this.muted) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain) return;
+    this.resumeIfSuspended(ctx);
 
     const start = startTime ?? ctx.currentTime;
     const osc = ctx.createOscillator();
