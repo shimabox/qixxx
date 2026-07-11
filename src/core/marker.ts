@@ -55,6 +55,14 @@ export class Marker {
   private lineStart: Point | null = null;
   private drawing = false;
   private retractEnabled: boolean;
+  // Whether entering an UNCLAIMED cell (starting a new line) is permitted
+  // (docs/plan.md §3.5 grace-period exploit fix, "案B"). Set to false by
+  // Game while the post-miss grace period is active: BORDER movement stays
+  // free (the player can still reposition to safety), but the invincibility
+  // window can no longer be used to draw. Independent of `retractEnabled` —
+  // the two flags can be false at the same time (e.g. an Igniter was active
+  // when the miss happened) and neither affects the other.
+  private lineEntryEnabled = true;
 
   constructor(start: Point, options: MarkerOptions = {}) {
     this.position = { ...start };
@@ -91,6 +99,16 @@ export class Marker {
   }
 
   /**
+   * Enables/disables entering UNCLAIMED cells, i.e. starting a new line
+   * (docs/plan.md §3.5 grace-period exploit fix). BORDER movement is never
+   * affected. See `lineEntryEnabled`'s doc comment for when Game toggles
+   * this.
+   */
+  setLineEntryEnabled(enabled: boolean): void {
+    this.lineEntryEnabled = enabled;
+  }
+
+  /**
    * Cancels the in-progress line (M2 miss handling, docs/plan.md §3.5): every
    * drawn LINE cell reverts to UNCLAIMED and the marker snaps back to the
    * border point where the line began. No-op (and returns the current
@@ -120,8 +138,10 @@ export class Marker {
    *
    * Movement rules (docs/plan.md §3.1/§3.2):
    * - BORDER cells are always freely walkable.
-   * - UNCLAIMED cells can only be entered while `drawHeld` is true; doing so
-   *   draws a LINE cell (starting a new line if not already drawing).
+   * - UNCLAIMED cells can only be entered while `drawHeld` is true *and*
+   *   `lineEntryEnabled` is true (docs/plan.md §3.5 grace-period exploit
+   *   fix); doing so draws a LINE cell (starting a new line if not already
+   *   drawing).
    * - CLAIMED_FAST/CLAIMED_SLOW cells are impassable (they are filled area,
    *   not a walkable path).
    * - Stepping onto the marker's own in-progress LINE is rejected as a
@@ -190,7 +210,7 @@ export class Marker {
     }
 
     // nextState === UNCLAIMED
-    if (!drawHeld) {
+    if (!drawHeld || !this.lineEntryEnabled) {
       return NO_MOVE;
     }
     if (!this.drawing) {

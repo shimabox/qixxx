@@ -196,6 +196,45 @@ describe('Marker', () => {
     expect(marker.getPosition()).toEqual({ x: 3, y: 1 });
     expect(marker.getLine()).toEqual([{ x: 3, y: 1 }]);
   });
+
+  it('rejects entering an UNCLAIMED cell when line entry is disabled, even with drawHeld true (docs/plan.md §3.5 grace-period exploit fix)', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+    marker.setLineEntryEnabled(false);
+
+    const result = marker.tryMove(field, 0, 1, true);
+
+    expect(result.moved).toBe(false);
+    expect(marker.isDrawing()).toBe(false);
+    expect(marker.getPosition()).toEqual({ x: 2, y: 0 });
+    expect(field.get({ x: 2, y: 1 })).toBe(UNCLAIMED);
+  });
+
+  it('still allows free BORDER movement when line entry is disabled', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+    marker.setLineEntryEnabled(false);
+
+    const result = marker.tryMove(field, 1, 0, false);
+
+    expect(result.moved).toBe(true);
+    expect(marker.getPosition()).toEqual({ x: 3, y: 0 });
+  });
+
+  it('resumes allowing UNCLAIMED entry once line entry is re-enabled', () => {
+    const field = makeField();
+    const marker = new Marker({ x: 2, y: 0 });
+    marker.setLineEntryEnabled(false);
+    expect(marker.tryMove(field, 0, 1, true).moved).toBe(false);
+
+    marker.setLineEntryEnabled(true);
+    const result = marker.tryMove(field, 0, 1, true);
+
+    expect(result.moved).toBe(true);
+    expect(marker.isDrawing()).toBe(true);
+    expect(marker.getPosition()).toEqual({ x: 2, y: 1 });
+    expect(field.get({ x: 2, y: 1 })).toBe(LINE);
+  });
 });
 
 describe('Marker — line speed tracking (M3, docs/plan.md §3.2/§5.1)', () => {
