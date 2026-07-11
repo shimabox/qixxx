@@ -596,6 +596,15 @@ export class Game {
     const inGrace = this.graceTicks > 0;
     if (inGrace) {
       this.graceTicks--;
+      if (this.graceTicks === 0) {
+        // Grace period just elapsed this tick (docs/plan.md §3.5 "案B"): line
+        // entry re-enabled from this tick onward, same tick miss detection
+        // resumes below. A fresh handleMiss() later this same tick (e.g. the
+        // Igniter/collision checks just below) will immediately re-disable
+        // it, so there's no window where a miss mid-grace-expiry leaves line
+        // entry wrongly enabled.
+        this.marker.setLineEntryEnabled(true);
+      }
     }
 
     let missedThisTick = false;
@@ -777,6 +786,12 @@ export class Game {
     this.despawnIgniter();
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.graceTicks = MISS_GRACE_TICKS;
+    // Grace-period exploit fix (docs/plan.md §3.5 "案B"): the invincibility
+    // window granted below must not double as a free pass to draw. BORDER
+    // movement stays available (see Marker.tryMove) so the player can still
+    // reposition to safety; only entering a fresh UNCLAIMED cell is blocked
+    // until the grace period elapses (re-enabled in update() below).
+    this.marker.setLineEntryEnabled(false);
     this.lives -= 1;
     if (this.lives <= 0) {
       this.status = 'gameover';

@@ -73,18 +73,25 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     // Igniter spawn (core/fuse.ts's shouldSpawnIgniter()).
     await page.keyboard.down('Space');
     await page.keyboard.down('ArrowDown');
-    await expect.poll(getMarkerY).toBeGreaterThanOrEqual(5);
+    // On iterations after the first, this also has to wait out the previous
+    // miss's ~2s grace period before the marker can start moving at all (see
+    // the comment on the expect.poll below) — default 5s isn't always enough
+    // headroom on top of that, so this one's timeout is bumped too.
+    await expect.poll(getMarkerY, { timeout: 8_000 }).toBeGreaterThanOrEqual(5);
     await page.keyboard.up('ArrowDown');
     await page.keyboard.up('Space');
 
     // ~1s (IGNITER_SPAWN_STILL_TICKS) for it to spawn, plus a handful of
-    // IGNITER_ADVANCE_TICKS steps to climb the short line and catch up —
-    // 5s comfortably covers that plus the ~2s post-miss grace period
-    // (MISS_GRACE_TICKS) if a previous iteration's miss hadn't fully
-    // elapsed yet (marker movement/drawing isn't blocked during grace, only
-    // miss *detection* is, so this loop's next attempt just resolves once
-    // grace ends).
-    await expect.poll(getLives, { timeout: 5_000 }).toBeLessThan(livesBefore);
+    // IGNITER_ADVANCE_TICKS steps to climb the short line and catch up. On
+    // every iteration after the first, this loop's key-down at the top also
+    // has to first wait out the ~2s post-miss grace period (MISS_GRACE_TICKS)
+    // from the previous iteration's miss: entering an UNCLAIMED cell (i.e.
+    // starting the new line the ArrowDown above is trying to draw) is now
+    // blocked for that whole window (docs/plan.md §3.5 grace-period exploit
+    // fix, "案B") — only BORDER movement stays free during grace — so the
+    // marker sits at the border until grace elapses before it can even begin
+    // moving down. 8s comfortably covers grace + move + spawn + catch-up.
+    await expect.poll(getLives, { timeout: 8_000 }).toBeLessThan(livesBefore);
   }
 
   await expect.poll(getStatus).toBe('gameover');

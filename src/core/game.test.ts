@@ -450,6 +450,103 @@ describe('Game — post-miss grace period (M3 fix, docs/plan.md §3.5)', () => {
   });
 });
 
+describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B")', () => {
+  // The Wisp sits on (2,1), the marker's very first UNCLAIMED step off
+  // (2,0), so every one of these tests reliably triggers a miss (and thus
+  // starts the grace period) on the first update() call — same setup as the
+  // "reverts the in-progress line..." test above.
+  function makeMissedGame() {
+    const field = new Field(6, 5);
+    const wisp = new Wisp({ x: 2, y: 1 }, () => 0.5, 0);
+    const game = new Game(field, { x: 2, y: 0 }, wisp);
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // -> miss, grace starts
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS);
+    return { field, game };
+  }
+
+  it('blocks entering an UNCLAIMED cell (starting a new line) while the grace period is active, even with drawHeld true', () => {
+    const { field, game } = makeMissedGame();
+
+    const attempt = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (2,1), UNCLAIMED
+
+    expect(attempt?.moved).toBe(false);
+    expect(game.getMarker().isDrawing()).toBe(false);
+    expect(game.getMarker().getPosition()).toEqual({ x: 2, y: 0 });
+    expect(field.get({ x: 2, y: 1 })).toBe(UNCLAIMED);
+  });
+
+  it('still allows free BORDER movement while the grace period is active', () => {
+    const { game } = makeMissedGame();
+
+    const move = game.update({ dx: 1, dy: 0, drawHeld: false }); // targets (3,0), BORDER
+
+    expect(move?.moved).toBe(true);
+    expect(game.getMarker().getPosition()).toEqual({ x: 3, y: 0 });
+  });
+
+  it('re-allows UNCLAIMED entry (starting a new line) once the grace period has fully elapsed', () => {
+    // A fresh, Wisp-collision-free setup: the initial miss comes from an
+    // Ember reaching the stationary marker on the border (as in the "Ember
+    // collision" describe block above). The Wisp uses the same
+    // vertical-heading-pinned-far-from-the-drawn-column trick as the
+    // stageclear/Igniter tests above (column 8 vs. the line's column 7) so
+    // its patrol trail can never cross the (7,1) cell this test later draws
+    // into during the 120-tick wait — unlike makeMissedGame's Wisp (parked
+    // on the very column being drawn into), which isn't guaranteed to avoid it.
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 8
+    const ember = new Ember({ x: 6, y: 0 }, { dx: 1, dy: 0 }); // -> (7,0) on its first step, landing on the marker
+    const game = new Game(field, { x: 7, y: 0 }, wisp, undefined, { embers: [ember] });
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // Ember steps onto the marker -> miss, grace starts
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS);
+    expect(game.getMarker().getPosition()).toEqual({ x: 7, y: 0 });
+
+    for (let tick = 0; tick < MISS_GRACE_TICKS; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
+    expect(game.getGraceTicks()).toBe(0);
+
+    const result = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (7,1), UNCLAIMED
+
+    expect(result?.moved).toBe(true);
+    expect(game.getMarker().isDrawing()).toBe(true);
+    expect(game.getMarker().getPosition()).toEqual({ x: 7, y: 1 });
+    expect(field.get({ x: 7, y: 1 })).toBe(LINE);
+  });
+
+  it('does not regress the existing grace-period miss suppression (Ember/Wisp/Igniter contact still ignored while blocked from drawing)', () => {
+    // Same pinned-contact setup as the "post-miss grace period" describe
+    // block above: an Ember with no walkable neighbor holds position on the
+    // marker's cell indefinitely. This exercises that the new line-entry
+    // block coexists with (and doesn't disturb) the pre-existing "no more
+    // than one miss per grace period" behavior.
+    const field = new Field(6, 5);
+    field.set({ x: 2, y: 0 }, CLAIMED_FAST);
+    field.set({ x: 4, y: 0 }, CLAIMED_FAST);
+    const wisp = new Wisp({ x: 3, y: 2 }, () => 0.5, 0);
+    const ember = new Ember({ x: 3, y: 0 }, { dx: 1, dy: 0 });
+    const game = new Game(field, { x: 3, y: 0 }, wisp, undefined, { embers: [ember] });
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // miss #1
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+
+    for (let tick = 0; tick < MISS_GRACE_TICKS; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false }); // grace: sustained contact costs no further life
+      expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    }
+
+    // Grace elapsed with the contact still ongoing -> a second miss occurs,
+    // unaffected by the line-entry block (which only concerns UNCLAIMED
+    // entry, not enemy-contact detection).
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    expect(game.getLives()).toBe(INITIAL_LIVES - 2);
+    expect(game.getStatus()).toBe('playing');
+  });
+});
+
 describe('Game — Igniter lifecycle (M3, docs/plan.md §3.2/§3.4 (3)/§3.5)', () => {
   it('spawns after sustained stillness mid-line (disabling retract), and a catch-up costs a life and restores retract', () => {
     const field = new Field(10, 5);
@@ -485,6 +582,14 @@ describe('Game — Igniter lifecycle (M3, docs/plan.md §3.2/§3.4 (3)/§3.5)', 
     expect(game.getMarker().isDrawing()).toBe(false);
     expect(game.getMarker().getPosition()).toEqual({ x: 7, y: 0 });
     expect(field.get({ x: 7, y: 1 })).toBe(UNCLAIMED);
+
+    // Burn off the post-miss grace period (docs/plan.md §3.5 "案B"
+    // grace-period exploit fix): line entry is blocked while it's active, so
+    // the redraw below must wait for it to elapse just like any other
+    // post-miss line start.
+    for (let tick = 0; tick < MISS_GRACE_TICKS; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
 
     // Retract capability is restored now that the Igniter is gone.
     game.update({ dx: 0, dy: 1, drawHeld: true }); // -> (7,1) LINE again
