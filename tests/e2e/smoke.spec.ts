@@ -29,7 +29,7 @@ declare global {
   }
 }
 
-const APP_URL = 'http://localhost:4173/qixxx/';
+const APP_URL = 'http://localhost:4173/';
 
 test('loads and renders the field on a canvas', async ({ page }) => {
   await page.goto(APP_URL);

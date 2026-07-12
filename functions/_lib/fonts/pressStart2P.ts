@@ -1,7 +1,7 @@
 // Press Start 2P (OFL-1.1) TrueType font, base64-embedded so the Worker
 // bundle needs no special binary-asset module rule (portable across both
 // wrangler pages dev and Cloudflare's dashboard Pages build — see
-// functions/qixxx/_lib/fonts/OFL.txt for the license and README-FONT.txt
+// functions/_lib/fonts/OFL.txt for the license and README-FONT.txt
 // for provenance). Decoded once per request in og.ts via decodePressStart2P().
 // Source: PressStart2P-Regular.ttf, 118204 bytes raw.
 export const PRESS_START_2P_TTF_BASE64 =

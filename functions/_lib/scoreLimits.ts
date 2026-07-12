@@ -1,4 +1,4 @@
-// Theoretical score ceiling used by POST /qixxx/share's "理論上限チェック"
+// Theoretical score ceiling used by POST /share's "理論上限チェック"
 // (docs/plan-cloudflare-x-share.md Phase 2). Reuses the game's own scoring
 // constants (src/config.ts) rather than re-deriving magic numbers here, so
 // the two can never silently drift apart.
@@ -9,7 +9,7 @@ import {
   SPLIT_MULTIPLIER_CAP,
   STAGE_CLEAR_BONUS_PER_PERCENT_POINT,
   DEFAULT_REQUIRED_OCCUPANCY,
-} from '../../../src/config';
+} from '../../src/config';
 
 // Upper bound on cells claimable in a single stage: the whole grid. The real
 // game reserves some cells for BORDER/enemies and requires < 100% occupancy

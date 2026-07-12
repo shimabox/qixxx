@@ -1,4 +1,4 @@
-// Per-IP rate limiting for POST /qixxx/share (docs/plan-cloudflare-x-share.md
+// Per-IP rate limiting for POST /share (docs/plan-cloudflare-x-share.md
 // Phase 2: "IP ごとに 1 時間 30 回まで（KV カウンタ、TTL 1h）"). A simple
 // fixed-window counter: the window boundary is baked into the KV key itself
 // (kv.ts's rateLimitKey), so this is just a get-check-put — no separate

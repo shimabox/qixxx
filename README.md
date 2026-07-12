@@ -1,6 +1,6 @@
 # QIXXX（キックス）
 
-[![PLAY NOW](https://img.shields.io/badge/%E2%96%B6_PLAY_NOW-app.orukubami.sh%2Fqixxx-blue?style=flat-square)](https://app.orukubami.sh/qixxx/)
+[![PLAY NOW](https://img.shields.io/badge/%E2%96%B6_PLAY_NOW-qixxx.orukubami.sh-blue?style=flat-square)](https://qixxx.orukubami.sh/)
 [![X @shimabox](https://img.shields.io/badge/%40shimabox-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/shimabox)
 
 線を引いて陣地を切り取る、ネオン風の陣取りアクションゲーム。  
@@ -21,7 +21,7 @@
 
 ## 遊ぶ
 
-**🎮 ブラウザですぐ遊べます: https://app.orukubami.sh/qixxx/**
+**🎮 ブラウザですぐ遊べます: https://qixxx.orukubami.sh/**
 
 ローカルで動かす場合:
 
@@ -30,7 +30,7 @@ npm install
 npm run dev
 ```
 
-表示された URL（例: `http://localhost:5173/qixxx/`）をブラウザで開き、何かキーを押す（タップする）とスタートします。
+表示された URL（例: `http://localhost:5173/`）をブラウザで開き、何かキーを押す（タップする）とスタートします。
 
 ![タイトル画面](docs/images/readme-title.png)
 
@@ -53,7 +53,7 @@ npm run dev
 - TypeScript (strict) + Canvas 2D — フレームワーク・ゲームエンジン不使用
 - Vite（開発・ビルド） / Vitest（ユニットテスト） / Playwright（E2E スモーク）
 - 効果音は Web Audio API による実行時生成（音源アセットなし）
-- ホスティングは Cloudflare Pages（app.orukubami.sh/qixxx）
+- ホスティングは Cloudflare Pages（qixxx.orukubami.sh）
 - X シェアのスコアカードは Cloudflare Pages Functions + Workers KV + workers-og（Satori）でエッジ動的生成
 
 コアロジック（`src/core/`）は DOM・Canvas 非依存の純 TypeScript で、ユニットテストで網羅しています。

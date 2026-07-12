@@ -6,7 +6,7 @@
 /** Share records are stored 180 days (docs/plan-cloudflare-x-share.md Phase 2). */
 export const SHARE_RECORD_TTL_SECONDS = 60 * 60 * 24 * 180;
 
-/** Key for a share record (functions/qixxx/_lib/types.ts's ShareRecord). */
+/** Key for a share record (functions/_lib/types.ts's ShareRecord). */
 export function shareRecordKey(id: string): string {
   return `share:${id}`;
 }

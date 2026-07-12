@@ -12,10 +12,10 @@ with:
 
   node -e "
     const fs = require('fs');
-    const buf = fs.readFileSync('functions/qixxx/_lib/fonts/PressStart2P-Regular.ttf');
+    const buf = fs.readFileSync('functions/_lib/fonts/PressStart2P-Regular.ttf');
     const b64 = buf.toString('base64');
     const lines = [];
     for (let i = 0; i < b64.length; i += 100) lines.push('  \"' + b64.slice(i, i + 100) + '\"');
-    fs.writeFileSync('functions/qixxx/_lib/fonts/pressStart2P.ts',
+    fs.writeFileSync('functions/_lib/fonts/pressStart2P.ts',
       'export const PRESS_START_2P_TTF_BASE64 =\n' + lines.join(' +\n') + ';\n');
   "

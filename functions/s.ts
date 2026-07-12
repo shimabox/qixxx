@@ -1,5 +1,5 @@
-// GET /qixxx/s?id=... (docs/plan-cloudflare-x-share.md Phase 2): serves an
-// OG-tagged HTML page for a share ID minted by POST /qixxx/share. X's
+// GET /s?id=... (docs/plan-cloudflare-x-share.md Phase 2): serves an
+// OG-tagged HTML page for a share ID minted by POST /share. X's
 // crawler reads the <meta> tags without executing JS; a human visitor's
 // browser runs the redirect script and lands on the game itself. An unknown
 // (or missing) id is a 404 — there being no fallback content means a
@@ -12,9 +12,9 @@ function formatWithCommas(value: number): string {
 }
 
 function renderHtml(record: ShareRecord, origin: string, id: string): string {
-  const gameUrl = `${origin}/qixxx/`;
-  const shareUrl = `${origin}/qixxx/s?id=${encodeURIComponent(id)}`;
-  const ogImageUrl = `${origin}/qixxx/og?id=${encodeURIComponent(id)}`;
+  const gameUrl = `${origin}/`;
+  const shareUrl = `${origin}/s?id=${encodeURIComponent(id)}`;
+  const ogImageUrl = `${origin}/og?id=${encodeURIComponent(id)}`;
   const title = `QIXXX — SCORE ${formatWithCommas(record.score)}`;
   const description = `STAGE ${record.stage} / HI ${formatWithCommas(record.hi)}`;
 

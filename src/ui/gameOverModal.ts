@@ -36,12 +36,12 @@ function formatScoreWithCommas(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/** Phase 2's Cloudflare Function that issues a share ID: `${BASE_URL}share` (= /qixxx/share). */
+/** Phase 2's Cloudflare Function that issues a share ID: `${BASE_URL}share` (= /share). */
 function shareEndpoint(): string {
   return `${import.meta.env.BASE_URL}share`;
 }
 
-/** The `/qixxx/s?id=...` page Phase 2 serves the OG card for. */
+/** The `/s?id=...` page Phase 2 serves the OG card for. */
 function shareViewUrl(id: string): string {
   return `${window.location.origin}${import.meta.env.BASE_URL}s?id=${encodeURIComponent(id)}`;
 }
