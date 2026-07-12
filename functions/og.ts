@@ -1,4 +1,4 @@
-// GET /qixxx/og?id=... (docs/plan-cloudflare-x-share.md Phase 2): renders
+// GET /og?id=... (docs/plan-cloudflare-x-share.md Phase 2): renders
 // the 1200x630 PNG social card for a share ID, using workers-og's Satori
 // -based ImageResponse. Unknown ids are 404 (no fallback/placeholder card is
 // ever generated for a nonexistent id, so a guessed/tampered id can't
@@ -11,7 +11,7 @@ import { ImageResponse } from 'workers-og';
 import type { Env, ShareRecord } from './_lib/types';
 import { shareRecordKey } from './_lib/kv';
 import { PRESS_START_2P_TTF_BASE64 } from './_lib/fonts/pressStart2P';
-import { COLOR_BACKGROUND, COLOR_BORDER, COLOR_CLAIMED_SLOW, HUD_TEXT_COLOR } from '../../src/config';
+import { COLOR_BACKGROUND, COLOR_BORDER, COLOR_CLAIMED_SLOW, HUD_TEXT_COLOR } from '../src/config';
 
 const IMAGE_WIDTH = 1200;
 const IMAGE_HEIGHT = 630;

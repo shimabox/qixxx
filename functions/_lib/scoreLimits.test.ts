@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { maxScoreForStage } from './scoreLimits';
-import { GRID_WIDTH, GRID_HEIGHT, SCORE_PER_CELL_SLOW, SPLIT_MULTIPLIER_CAP } from '../../../src/config';
+import { GRID_WIDTH, GRID_HEIGHT, SCORE_PER_CELL_SLOW, SPLIT_MULTIPLIER_CAP } from '../../src/config';
 
 describe('maxScoreForStage', () => {
   it('is monotonically increasing with stage', () => {

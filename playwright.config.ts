@@ -6,7 +6,7 @@ import { defineConfig, devices } from '@playwright/test';
 // tooling config, not part of the app being type-checked/bundled by
 // `npm run typecheck`/`npm run build`.
 const PORT = 4173;
-const BASE_URL = `http://localhost:${PORT}/qixxx/`;
+const BASE_URL = `http://localhost:${PORT}/`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -18,7 +18,7 @@ export default defineConfig({
   // literal URL (matching BASE_URL below) rather than a relative path, to
   // sidestep baseURL's leading-slash-resets-the-path resolution surprise
   // when the app is served under a non-root `base` (vite.config.ts's
-  // `base: '/qixxx/'`, required for GitHub Pages).
+  // `base: '/'`).
   use: {
     trace: 'retain-on-failure',
   },
@@ -30,7 +30,7 @@ export default defineConfig({
   ],
   webServer: {
     // Vite's dev server (not a production build) is enough for a smoke
-    // suite and starts faster; it already serves under `base: '/qixxx/'`
+    // suite and starts faster; it already serves under `base: '/'`
     // exactly like the production build does (vite.config.ts).
     command: `npx vite --port ${PORT} --strictPort`,
     url: BASE_URL,

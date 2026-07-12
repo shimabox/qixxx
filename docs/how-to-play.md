@@ -11,7 +11,7 @@
 
 ## 1. まず動かしてみる
 
-**🎮 ブラウザですぐ遊べます: https://app.orukubami.sh/qixxx/**
+**🎮 ブラウザですぐ遊べます: https://qixxx.orukubami.sh/**
 
 ローカルで動かす場合:
 
@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-表示された URL（例: `http://localhost:5173/qixxx/`）を開くとタイトル画面が出ます。
+表示された URL（例: `http://localhost:5173/`）を開くとタイトル画面が出ます。
 **何かキーを押す（スマホなら画面をタップ）** とゲームが始まります。
 
 ---

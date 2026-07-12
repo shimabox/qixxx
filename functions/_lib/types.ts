@@ -5,14 +5,14 @@
 // globals) and from vitest's `src/`-only tsconfig-less test run, without
 // either environment needing the other's ambient globals.
 
-/** The validated request body for POST /qixxx/share. */
+/** The validated request body for POST /share. */
 export interface ShareRequestPayload {
   score: number;
   stage: number;
   hi: number;
 }
 
-/** What's stored in KV under `share:<id>` (functions/qixxx/_lib/kv.ts). */
+/** What's stored in KV under `share:<id>` (functions/_lib/kv.ts). */
 export interface ShareRecord extends ShareRequestPayload {
   /** `Date.now()` at the time the record was written. */
   at: number;

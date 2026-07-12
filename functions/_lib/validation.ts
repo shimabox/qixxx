@@ -1,4 +1,4 @@
-// Pure request-body validation for POST /qixxx/share
+// Pure request-body validation for POST /share
 // (docs/plan-cloudflare-x-share.md Phase 2's three checks: this module
 // covers the "shape" checks and the theoretical-max check; Origin and rate
 // limiting are handled in share.ts itself since they need the Request/KV,

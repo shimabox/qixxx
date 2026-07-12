@@ -1,6 +1,6 @@
 // GAME OVER modal + "POST TO X" share E2E (docs/plan-cloudflare-x-share.md
 // Phase 1). Runs against the same Vite dev server as tests/e2e/smoke.spec.ts
-// (see playwright.config.ts). Phase 2's real `/qixxx/share` Cloudflare
+// (see playwright.config.ts). Phase 2's real `/share` Cloudflare
 // Function doesn't exist yet, so the POST is stubbed via route interception
 // — this test only exercises Phase 1's DOM layer (modal, button wiring,
 // intent-URL construction), not the real share backend.
@@ -29,10 +29,10 @@ declare global {
 // `?debug` (main.ts: `import.meta.env.DEV && ...has('debug')`) is what makes
 // window.__game__.session.applyDebugOverrides actually take effect — dev
 // only, never shipped, exactly like the debug panel's own gating.
-const APP_URL = 'http://localhost:4173/qixxx/?debug';
+const APP_URL = 'http://localhost:4173/?debug';
 
 test('GAME OVER modal shows score/stage, shares to X, and returns to Title', async ({ page, context }) => {
-  // Stand in for Phase 2's not-yet-implemented `/qixxx/share` Function.
+  // Stand in for Phase 2's not-yet-implemented `/share` Function.
   await page.route('**/share', async (route) => {
     expect(route.request().method()).toBe('POST');
     await route.fulfill({
@@ -128,7 +128,7 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
   expect(popupUrl.searchParams.get('text')).toBe(
     `QIXXX で STAGE ${stage} / SCORE ${score.toLocaleString('en-US')} を記録！ #QIXXX`
   );
-  expect(popupUrl.searchParams.get('url')).toBe(`http://localhost:4173/qixxx/s?id=e2e-test-id`);
+  expect(popupUrl.searchParams.get('url')).toBe(`http://localhost:4173/s?id=e2e-test-id`);
   await popup.close();
 
   // "BACK TO TITLE": returns to Title (same confirm path as any key/tap) and hides the modal.

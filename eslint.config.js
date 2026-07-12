@@ -4,7 +4,7 @@ import tsParser from '@typescript-eslint/parser';
 
 export default [
   {
-    // pressStart2P.ts is a generated base64 data blob (functions/qixxx/_lib/fonts/SOURCE.txt
+    // pressStart2P.ts is a generated base64 data blob (functions/_lib/fonts/SOURCE.txt
     // documents how to regenerate it), not hand-written source — excluded
     // like the other generated/build-output entries below.
     ignores: [
@@ -13,7 +13,7 @@ export default [
       '.vite/',
       '*.js',
       'eslint.config.js',
-      'functions/qixxx/_lib/fonts/pressStart2P.ts',
+      'functions/_lib/fonts/pressStart2P.ts',
     ],
   },
   {

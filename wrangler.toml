@@ -6,10 +6,8 @@ name = "qixxx"
 # independent of this local-dev pin.
 compatibility_date = "2025-07-18"
 
-# Build output root (docs/plan-cloudflare-x-share.md Phase 3): the static
-# app lives at dist/qixxx (vite.config.ts's build.outDir, matching the
-# `/qixxx/` base path) and `_redirects` lives at dist/_redirects (written by
-# vite.config.ts's cloudflareRedirectsPlugin) — both inside this one root.
+# Build output root: matches vite.config.ts's build.outDir ('dist'), which
+# the app serves from at the root of its own subdomain (qixxx.orukubami.sh).
 pages_build_output_dir = "dist"
 
 # KV namespace bindings for the SHARES binding. When this wrangler.toml is

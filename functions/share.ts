@@ -1,4 +1,4 @@
-// POST /qixxx/share (docs/plan-cloudflare-x-share.md Phase 2): issues an
+// POST /share (docs/plan-cloudflare-x-share.md Phase 2): issues an
 // unguessable share ID for {score, stage, hi} after three checks — Origin,
 // theoretical score ceiling, and per-IP rate limit — then stores the record
 // in KV (`SHARES`) for 180 days and returns { id }.
@@ -14,7 +14,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
   // 1. Origin check (docs/plan-cloudflare-x-share.md Phase 2): the request's
   // own Origin header must match the request URL's own origin. This one
-  // check works identically in production (https://app.orukubami.sh) and
+  // check works identically in production (https://qixxx.orukubami.sh) and
   // under `wrangler pages dev` (http://localhost:8788) with zero
   // environment-specific configuration, since it never hardcodes a domain —
   // it only rejects requests whose Origin doesn't match wherever this
