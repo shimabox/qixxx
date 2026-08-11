@@ -8,6 +8,15 @@ import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
 import { loadBestTime, saveBestTimeIfBetter } from './storage/bestTimes';
 import { getJstDateString, loadDailyBest, saveDailyBestIfBetter, cleanupOldDailyKeys } from './storage/daily';
+import {
+  RunMode,
+  shouldPersistHighScore,
+  shouldPersistDailyBest,
+  shouldPersistBestTime,
+  resolveTitleConfirmRunMode,
+  resolveDisplayHighScore,
+  resolveHudModePrefix,
+} from './runMode';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import {
   TICK_RATE,
@@ -346,11 +355,11 @@ let lastHudMultiplier = -1;
 // above stays a single strict-equality check per field, same shape as every
 // other lastHud* cache.
 let lastHudTime = '';
-// Cache-busts the whole updateHud() comparison the instant isDailyMode
-// itself flips (e.g. a DAILY run's HUD text gaining/losing its "DAILY
-// <date>" prefix) even if every other displayed value happens to be
-// unchanged that same tick.
-let lastHudIsDailyMode = false;
+// Cache-busts the whole updateHud() comparison the instant `runMode` itself
+// flips (e.g. a DAILY/seeded run's HUD text gaining/losing its mode
+// prefix) even if every other displayed value happens to be unchanged that
+// same tick.
+let lastHudRunMode: RunMode = 'normal';
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -374,32 +383,41 @@ let lastScreenText: string | null = null;
 // state (e.g. mid-fetch "POSTING..."/"FAILED - RETRY") each render.
 let gameOverModalShown = false;
 
-// DAILY / TIME ATTACK (docs/plans/2026-08-11-daily-seed-time-attack request
-// tasks 2-4). `explicitSeedParam` is read once at init() from `?seed=`; when
-// present it takes priority over the DAILY button's own date-derived seed
-// (request task 4: "?seed と DAILY ボタンが両方関与する場合は明示的な ?seed
-// を優先する") and stays in effect for every run for the rest of this page
-// load (see maybeStartFreshRunFromTitle() below).
+// DAILY / TIME ATTACK / SEEDED RUNS (docs/plans/2026-08-11-daily-seed-time-
+// attack request tasks 2-4, refined by the 2026-08-11 cross-review fix).
+// `explicitSeedParam` is read once at init() from `?seed=`; when present it
+// takes priority *as the seed value* whenever a DAILY run starts (request
+// task 4: "?seed と DAILY ボタンが両方関与する場合は明示的な ?seed を優先
+// する") — but merely loading the page with `?seed=` and pressing a normal
+// key/tap (not the DAILY button) is its own distinct 'seeded' RunMode, not
+// 'daily' (see runMode.ts's module comment: an arbitrary seed must never be
+// able to write qixxx.daily.<date>.best or claim the "DAILY <date>" HUD
+// label — that was the cross-review's actual finding).
 let explicitSeedParam: number | undefined;
 let dailyButton: HTMLButtonElement;
 let dailyBestLabel: HTMLDivElement;
-// True for the whole lifetime of a seeded run (DAILY button or `?seed=`) —
-// gates every daily-specific behavior: skip qixxx.highScore read/write, show
-// the "DAILY <date>" HUD prefix, skip stage best-time recording (the board
-// isn't the normal one, so a "best" wouldn't mean the same thing day to
-// day). Reset to false by startNormalRunSession(); never reset by the
-// session's own internal GameOver -> Title transition, since a `?seed=`
-// page load must keep reusing the same seed for every retry that page
-// load — see maybeStartFreshRunFromTitle().
-let isDailyMode = false;
+// See runMode.ts's RunMode doc comment for exactly what each value gates
+// (qixxx.highScore / qixxx.daily.<date>.best / qixxx.bestTimes read-write,
+// HUD prefix). Reset by startNormalRunSession()/startSeededRunSession()/
+// startDailyRunSession(); never reset by the session's own internal
+// GameOver -> Title transition on its own — see maybeStartFreshRunFromTitle()
+// for the (runMode.ts-driven) logic deciding what a later Title-screen
+// confirm should do.
+let runMode: RunMode = 'normal';
 let dailyDateStr = '';
-// The DAILY best score already on record when the *current* run started —
-// used both to compute the displayed "HI" (getDisplayHighScore()) and as
-// the baseline lastSavedDailyBest starts from.
+// The seed value used by the current 'seeded' (non-daily) run, shown as
+// `SEED <n>` in the HUD (runMode.ts's resolveHudModePrefix()) so it's never
+// mistaken for the real DAILY board. Unused (and left stale, harmlessly)
+// outside runMode === 'seeded'.
+let seededRunSeed: number | undefined;
+// The DAILY best score already on record when the *current* DAILY run
+// started — used both to compute the displayed "HI" (getDisplayHighScore())
+// and as the baseline lastSavedDailyBest starts from. Unused outside
+// runMode === 'daily'.
 let dailyBestAtRunStart = 0;
 // Mirrors lastSavedHighScore's write-on-change-only guard, but for the
 // separate qixxx.daily.<date>.best key (never qixxx.highScore) while
-// isDailyMode is true.
+// runMode === 'daily'.
 let lastSavedDailyBest = 0;
 // Whether the DAILY button/best-label pair is currently shown (Title screen
 // only) — toggled in renderFrame(), mirroring gameOverModalShown's
@@ -464,12 +482,18 @@ function formatTicks(ticks: number): string {
 }
 
 /**
- * The "HI"/"HI SCORE" value to display right now: a DAILY/seeded run shows
- * the DAILY best (never mixing in qixxx.highScore — request task 4), every
- * other run shows the session's own ordinary high score exactly as before.
+ * The "HI"/"HI SCORE" value to display right now — delegates to
+ * runMode.ts's resolveDisplayHighScore() (see its doc comment): 'daily'
+ * shows the DAILY best (never mixing in qixxx.highScore), 'normal' and
+ * 'seeded' both show the session's own ordinary high score (read-only for
+ * 'seeded' — the write is separately suppressed in update() below).
  */
 function getDisplayHighScore(): number {
-  return isDailyMode ? Math.max(dailyBestAtRunStart, session.getScore()) : session.getHighScore();
+  return resolveDisplayHighScore(runMode, {
+    dailyBestAtRunStart,
+    currentScore: session.getScore(),
+    sessionHighScore: session.getHighScore(),
+  });
 }
 
 /** Resets every per-run render/state cache so a freshly-swapped `session` starts painting from a clean slate. */
@@ -481,7 +505,7 @@ function resetPerRunCaches(): void {
   lastHudLives = -1;
   lastHudMultiplier = -1;
   lastHudTime = '';
-  lastHudIsDailyMode = false;
+  lastHudRunMode = 'normal';
   lastScreenText = null;
   gameOverModalShown = false;
   stageClearTimeStr = '';
@@ -493,8 +517,9 @@ function resetPerRunCaches(): void {
 
 /** Swaps `session` for a brand-new, unseeded (ordinary) run — see maybeStartFreshRunFromTitle()'s call site. */
 function startNormalRunSession(): void {
-  isDailyMode = false;
+  runMode = 'normal';
   dailyDateStr = '';
+  seededRunSeed = undefined;
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
   session = new GameSession({ highScore });
@@ -502,10 +527,38 @@ function startNormalRunSession(): void {
   resetPerRunCaches();
 }
 
-/** Swaps `session` for a brand-new run seeded with `seed` (DAILY button / `?seed=` — see their respective call sites). */
-function startSeededRunSession(seed: number, dateStr: string): void {
-  isDailyMode = true;
+/**
+ * Swaps `session` for a brand-new run seeded with `seed`, WITHOUT treating
+ * it as DAILY (2026-08-11 cross-review fix): a page load with `?seed=`
+ * started by a normal key/tap, or a Title-screen fallback from a previous
+ * DAILY run — see maybeStartFreshRunFromTitle() and runMode.ts's module
+ * comment for why this must stay entirely separate from
+ * startDailyRunSession() below. Reads (for display) but never writes
+ * qixxx.highScore — the write is suppressed in update() via
+ * shouldPersistHighScore(runMode).
+ */
+function startSeededRunSession(seed: number): void {
+  runMode = 'seeded';
+  seededRunSeed = seed;
+  const highScore = loadHighScore();
+  lastSavedHighScore = highScore;
+  session = new GameSession({ seed, highScore });
+  window.__game__ = { session, sfx };
+  resetPerRunCaches();
+}
+
+/**
+ * Swaps `session` for a brand-new, genuine DAILY run — only ever called
+ * from onDailyButtonClick() below (2026-08-11 cross-review fix: merely
+ * loading `?seed=` is NOT enough to be 'daily' — see startSeededRunSession()
+ * and runMode.ts's module comment). Never reads/writes qixxx.highScore
+ * (request.md task 4: "デイリーモード中は通常ハイスコアを読み書きしない");
+ * reads/writes qixxx.daily.<dateStr>.best instead (see update()).
+ */
+function startDailyRunSession(seed: number, dateStr: string): void {
+  runMode = 'daily';
   dailyDateStr = dateStr;
+  seededRunSeed = undefined;
   dailyBestAtRunStart = loadDailyBest(dateStr);
   lastSavedDailyBest = dailyBestAtRunStart;
   session = new GameSession({ seed });
@@ -520,32 +573,42 @@ function startSeededRunSession(seed: number, dateStr: string): void {
  * this can never also feed the keyboard/touch `confirm` pulse. Feeds a
  * single manual `confirm` into the freshly-swapped session immediately
  * after constructing it, starting play on the very same click rather than
- * waiting for a separate key/tap.
+ * waiting for a separate key/tap. Always produces a genuine 'daily' run
+ * (never 'seeded') — see startDailyRunSession()'s doc comment.
  */
 function onDailyButtonClick(): void {
   const { seed, dateStr } = getEffectiveDailySeed();
-  startSeededRunSession(seed, dateStr);
+  startDailyRunSession(seed, dateStr);
   session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
 }
 
 /**
- * A normal key/tap confirming a Title screen that's still tied to a
- * previous DAILY/seeded run's session starts a fresh, unseeded run instead
- * of silently reusing that seed again (request task 4: "それ以外のキー/
- * タップは従来どおり通常モード開始") — only the DAILY button
- * (onDailyButtonClick above) may start another seeded run from Title.
- * Skipped entirely when the whole page load is pinned to `?seed=`
- * (explicitSeedParam set): that seed stays in effect for every run for the
- * rest of this page load, including every GameOver -> Title -> Playing
- * retry, so the E2E claim test's fixed board is reproducible run after run.
+ * A normal key/tap confirming a Title screen decides the resulting run's
+ * mode via runMode.ts's resolveTitleConfirmRunMode() (see its doc comment
+ * for the full decision table) — only swaps `session` when that decision
+ * actually differs from the currently-active mode:
+ * - 'normal' or 'seeded' currently active: no-op (GameSession's own
+ *   internal reset already reuses the same seed, or lack thereof, across
+ *   every retry).
+ * - 'daily' currently active: swaps to a fresh 'seeded' run (if `?seed=`
+ *   pinned the page load) or a fresh 'normal' run (otherwise) — only the
+ *   DAILY button (onDailyButtonClick above) may start another 'daily' run
+ *   from Title.
  * A no-op whenever `session` isn't sitting on Title with a fresh confirm
  * (i.e. every ordinary tick) — including the very first Title screen ever
- * (isDailyMode is false by default), so normal mode's existing behavior is
+ * (runMode is 'normal' by default), so normal mode's existing behavior is
  * completely untouched.
  */
 function maybeStartFreshRunFromTitle(input: SessionInput): void {
   if (session.getStatus() !== 'title' || !input.confirm) return;
-  if (isDailyMode && explicitSeedParam === undefined) {
+  const nextMode = resolveTitleConfirmRunMode(runMode, explicitSeedParam);
+  if (nextMode === runMode) return;
+  // resolveTitleConfirmRunMode() only ever returns 'seeded' when
+  // explicitSeedParam is defined — the `!== undefined` check here is just
+  // how TypeScript sees that correlation (not an independent runtime case).
+  if (nextMode === 'seeded' && explicitSeedParam !== undefined) {
+    startSeededRunSession(explicitSeedParam);
+  } else {
     startNormalRunSession();
   }
 }
@@ -587,16 +650,17 @@ function init(): void {
 
   explicitSeedParam = parseSeedParam();
   if (explicitSeedParam !== undefined) {
-    // `?seed=` pins the whole page load to a seeded run from the very first
-    // Title screen (request task 4: reuses the DAILY route) — see
-    // maybeStartFreshRunFromTitle()'s doc comment for why this never falls
-    // back to an unseeded run later, even after a GameOver -> Title retry.
-    const { seed, dateStr } = getEffectiveDailySeed();
-    isDailyMode = true;
-    dailyDateStr = dateStr;
-    dailyBestAtRunStart = loadDailyBest(dateStr);
-    lastSavedDailyBest = dailyBestAtRunStart;
-    session = new GameSession({ seed });
+    // `?seed=` pins the whole page load to a 'seeded' run (NOT 'daily' —
+    // 2026-08-11 cross-review fix, see runMode.ts's module comment) from
+    // the very first Title screen. maybeStartFreshRunFromTitle() keeps
+    // reusing this seed for every retry (GameOver -> Title -> Playing)
+    // without ever falling back to an unseeded run for the rest of this
+    // page load.
+    runMode = 'seeded';
+    seededRunSeed = explicitSeedParam;
+    const highScore = loadHighScore();
+    lastSavedHighScore = highScore;
+    session = new GameSession({ seed: explicitSeedParam, highScore });
   } else {
     const highScore = loadHighScore();
     lastSavedHighScore = highScore;
@@ -726,7 +790,7 @@ function updateHud(): void {
     lives === lastHudLives &&
     multiplier === lastHudMultiplier &&
     timeStr === lastHudTime &&
-    isDailyMode === lastHudIsDailyMode
+    runMode === lastHudRunMode
   ) {
     return;
   }
@@ -737,20 +801,21 @@ function updateHud(): void {
   lastHudLives = lives;
   lastHudMultiplier = multiplier;
   lastHudTime = timeStr;
-  lastHudIsDailyMode = isDailyMode;
+  lastHudRunMode = runMode;
 
-  // "DAILY <date>" only ever prefixes a DAILY/seeded run's own HUD line —
-  // normal-mode text (isDailyMode === false) is otherwise byte-identical to
-  // before this feature existed, including in two-line mode's line2 (never
-  // touched here at all), which the mobile-viewport E2E test asserts stays
-  // unclipped.
-  const dailyPrefix = isDailyMode ? `DAILY ${dailyDateStr}  ` : '';
+  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
+  // (byte-identical to before this feature existed, including in two-line
+  // mode's line2 — never touched here at all — which the mobile-viewport
+  // E2E test asserts stays unclipped), `DAILY <date>` for a genuine DAILY
+  // run, `SEED <n>` for an arbitrary `?seed=` run (2026-08-11 cross-review
+  // fix: never `DAILY <date>` for the latter — that was the mislabeling).
+  const modePrefix = resolveHudModePrefix(runMode, { dailyDateStr, seededRunSeed });
   if (hudTwoLineMode) {
-    hudLine1.textContent = `${dailyPrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}`;
+    hudLine1.textContent = `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}`;
     hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
   } else {
     hudLine1.textContent =
-      `${dailyPrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
+      `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
       `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
   }
 }
@@ -799,12 +864,13 @@ function update(): void {
   const input = keyboard.getInput();
   lastInput = input;
 
-  // DAILY/`?seed=` (docs/plans/2026-08-11-daily-seed-time-attack request
-  // task 4): a normal key/tap from a Title screen still tied to a previous
-  // seeded run may swap `session` out for a fresh, unseeded one — see its
-  // doc comment. Must run before session.update(input) below so this same
-  // tick's confirm still drives the (possibly new) session's own Title ->
-  // Playing transition, not the next one.
+  // DAILY/SEEDED (docs/plans/2026-08-11-daily-seed-time-attack request task
+  // 4, refined by the 2026-08-11 cross-review fix): a normal key/tap from a
+  // Title screen still tied to a previous DAILY run may swap `session` out
+  // for a fresh 'seeded' or 'normal' one — see its doc comment. Must run
+  // before session.update(input) below so this same tick's confirm still
+  // drives the (possibly new) session's own Title -> Playing transition,
+  // not the next one.
   maybeStartFreshRunFromTitle(input);
 
   session.update(input);
@@ -829,40 +895,48 @@ function update(): void {
   }
   prevStatus = status;
 
-  // Persistence: a DAILY/seeded run's score never touches qixxx.highScore
-  // (request task 4: "デイリーモード中は通常ハイスコアを読み書きしない") —
-  // it's tracked entirely separately, under qixxx.daily.<date>.best. Both
-  // branches skip the write (not the read/display) while any debug override
-  // is active, mirroring the pre-existing highscore guard (docs/plan.md §6
-  // M10: "デバッグパネル使用中はハイスコアを保存しない").
-  if (isDailyMode) {
+  // Persistence, gated per runMode.ts's shouldPersist*() (2026-08-11
+  // cross-review fix): only a genuine DAILY run (runMode === 'daily') may
+  // write qixxx.daily.<date>.best — an arbitrary 'seeded' run must never be
+  // able to overwrite today's real DAILY record. Only a 'normal' run may
+  // write qixxx.highScore — 'seeded' still *reads* it for display (see
+  // getDisplayHighScore()), just never persists to it, since its board
+  // isn't the standard one. Every write additionally skips while any debug
+  // override is active, mirroring the pre-existing highscore guard
+  // (docs/plan.md §6 M10: "デバッグパネル使用中はハイスコアを保存しない").
+  if (shouldPersistDailyBest(runMode)) {
     const currentScore = session.getScore();
     if (currentScore > lastSavedDailyBest && !session.hasActiveDebugOverrides()) {
       lastSavedDailyBest = currentScore;
       saveDailyBestIfBetter(dailyDateStr, currentScore);
     }
-  } else {
+  } else if (shouldPersistHighScore(runMode)) {
     const currentHighScore = session.getHighScore();
     if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
       lastSavedHighScore = currentHighScore;
       saveHighScore(currentHighScore);
     }
   }
+  // runMode === 'seeded': no persistence at all — its board is neither the
+  // normal one nor today's real DAILY one.
 }
 
 /**
- * Records (normal mode only) and formats this stage's just-finished clear
- * time (docs/plans/2026-08-11-daily-seed-time-attack request task 4).
- * Called exactly once per stage clear — see its only call site in update().
+ * Records (normal mode only — see shouldPersistBestTime()) and formats this
+ * stage's just-finished clear time (docs/plans/2026-08-11-daily-seed-time-
+ * attack request task 4). Called exactly once per stage clear — see its
+ * only call site in update().
  */
 function handleStageClearEntered(): void {
   const ticks = session.getStageTicks();
   stageClearTimeStr = formatTicks(ticks);
 
-  // DAILY runs don't record a best time (request task 4: "デイリーは盤面が
-  // 日替わりのため記録しない") — the board isn't the fixed, comparable one a
+  // Neither a DAILY nor an arbitrary seeded run records a best time
+  // (request task 4: "デイリーは盤面が日替わりのため記録しない" — the same
+  // reasoning applies to any non-standard board, per runMode.ts's
+  // shouldPersistBestTime()): the board isn't the fixed, comparable one a
   // "best" is meaningful against.
-  if (isDailyMode) {
+  if (!shouldPersistBestTime(runMode)) {
     stageClearShowsBest = false;
     return;
   }
