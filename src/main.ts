@@ -18,6 +18,10 @@ import {
   resolveHudModePrefix,
 } from './runMode';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
+// Type-only: erased at compile time, so this never pulls src/debug/panel.ts
+// itself (dev-only, dynamically `import()`ed below) into the production
+// bundle — see that module's own "no debug code in dist/" comment.
+import type { DebugPanelHandle } from './debug/panel';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -94,6 +98,41 @@ function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
   return row;
 }
 
+// Get or create the title-only UI row (DAILY button + best-score label —
+// P2 user-review fix, 2026-08-11): a *separate* sibling row from #hud-row,
+// not crammed into it. Originally the DAILY button/label lived inside
+// #hud-row itself alongside the credit link/MUTE button; on a 390px-wide
+// Title screen the four `flex: 0 0 auto` (non-shrinking) items left #hud
+// (the STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES text, `flex: 1 1 auto`) squeezed
+// down to an unreadable ~9px. Giving the DAILY UI its own row removes that
+// competition entirely, at every viewport width — #hud-row's own layout is
+// now completely unaffected by whether the DAILY UI exists at all.
+//
+// Uses `visibility: hidden` (not `display: none`) when hidden outside the
+// Title screen (see main.ts's updateDailyUiVisibility()) specifically so
+// this row keeps occupying the *same* box in #game-root's flex column at
+// all times: fitCanvasToViewport()'s available-height math (which reads
+// this row's height, exactly like #hud-row's) never needs to be
+// recalculated on every Title <-> Playing transition — only on
+// resize/orientationchange, like everything else already does. The small,
+// constant vertical space this reserves even during play is an accepted
+// tradeoff for that simplicity.
+function getTitleUiRowElement(root: HTMLDivElement): HTMLDivElement {
+  let row = document.getElementById('title-ui-row') as HTMLDivElement | null;
+  if (!row) {
+    row = document.createElement('div');
+    row.id = 'title-ui-row';
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'flex-start';
+    row.style.gap = '8px';
+    row.style.boxSizing = 'border-box';
+    row.style.visibility = 'hidden';
+    root.appendChild(row);
+  }
+  return row;
+}
+
 // Get or create the wrapper around the canvas (docs/plan.md §12.1
 // "オーバーレイをフィールド中央に"): a `position: relative` box sized
 // exactly to the canvas's own on-screen box (it has no other content and no
@@ -127,13 +166,14 @@ function getCanvasElement(wrap: HTMLDivElement): HTMLCanvasElement {
 }
 
 // Get or create the HUD overlay container (stage/score/occupancy/lives/multiplier, §3.3/§6 M1/M4).
-// Holds one or two line elements (see getHudLineElement() below) — never
-// wraps text itself. fitCanvasToViewport() reads this row's *height* to
-// reserve space for the canvas below it, so the number of lines is decided
-// explicitly (updateHudMode(), keyed only off window.innerWidth) rather than
-// left to the browser's text wrapping, which would depend on the row's own
-// *width* — itself derived from this row's height — creating a circular
-// width<->height layout dependency between the HUD row and the canvas.
+// Holds one, two, or three line elements (see getHudLineElement() below) —
+// never wraps text itself. fitCanvasToViewport() reads this row's *height*
+// to reserve space for the canvas below it, so the number of lines is
+// decided explicitly (updateHudMode(), keyed only off window.innerWidth)
+// rather than left to the browser's text wrapping, which would depend on
+// the row's own *width* — itself derived from this row's height — creating
+// a circular width<->height layout dependency between the HUD row and the
+// canvas.
 function getHudElement(row: HTMLDivElement): HTMLDivElement {
   let hud = document.getElementById('hud') as HTMLDivElement | null;
   if (!hud) {
@@ -260,12 +300,13 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
 }
 
 // Get or create the DAILY button (docs/plans/2026-08-11-daily-seed-time-
-// attack request task 4): same DOM-button-in-the-HUD-row implementation
-// style as getMuteButtonElement() above (pointer-events: auto, a plain click
+// attack request task 4): same button-styling approach as
+// getMuteButtonElement() above (pointer-events: auto, a plain click
 // listener — no synthetic keyboard events, so clicking it can never also
-// feed the keyboard/touch `confirm` pulse). Shown only while the Title
-// screen is up (see renderFrame()'s updateDailyUiVisibility()) so it never
-// crowds the HUD during actual play.
+// feed the keyboard/touch `confirm` pulse), but mounted into #title-ui-row
+// (see getTitleUiRowElement()'s doc comment), not #hud-row itself — shown
+// only while the Title screen is up (renderFrame()'s
+// updateDailyUiVisibility()) so it never crowds the HUD during actual play.
 function getDailyButtonElement(row: HTMLDivElement, onClick: () => void): HTMLButtonElement {
   let button = document.getElementById('daily-button') as HTMLButtonElement | null;
   if (!button) {
@@ -318,11 +359,22 @@ let sfx: SfxEngine;
 let hud: HTMLDivElement;
 let hudLine1: HTMLDivElement;
 let hudLine2: HTMLDivElement;
+// Narrow-viewport-only 3rd line (P2 user-review fix, 2026-08-11): TIME (and
+// the DAILY/SEED mode prefix) got its own line rather than fighting
+// STAGE/SCORE/HI (line 1) or OCCUPANCY/LIVES (line 2) for width — both of
+// those were already at/near their character budget at 390px *before* TIME
+// was added, so adding it to either risked silently overflowing past the
+// existing E2E-guarded OCCUPANCY/LIVES text (or, on line 1, TIME's own
+// text). Shown/hidden together with hudLine2 — see updateHudMode().
+let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
+// Title-only DAILY button/label row (P2 user-review fix, 2026-08-11) — see
+// getTitleUiRowElement()'s doc comment.
+let titleUiRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
 let accumulator = 0;
 let lastTime = performance.now();
@@ -383,6 +435,16 @@ let lastScreenText: string | null = null;
 // state (e.g. mid-fetch "POSTING..."/"FAILED - RETRY") each render.
 let gameOverModalShown = false;
 
+// Set once the dev-only debug panel's dynamic import resolves (see init()'s
+// `?debug` branch below) — `undefined` for the entire lifetime of a
+// production build/non-`?debug` session, in which case every
+// `debugPanelHandle?.refresh()` call below is a harmless no-op. See
+// src/debug/panel.ts's DebugPanelHandle/initDebugPanel doc comments for the
+// P2 user-review fix (2026-08-11) this exists for: without re-syncing the
+// panel's displayed slider values after a session swap, they'd keep
+// showing the just-discarded session's last values.
+let debugPanelHandle: DebugPanelHandle | undefined;
+
 // DAILY / TIME ATTACK / SEEDED RUNS (docs/plans/2026-08-11-daily-seed-time-
 // attack request tasks 2-4, refined by the 2026-08-11 cross-review fix).
 // `explicitSeedParam` is read once at init() from `?seed=`; when present it
@@ -394,7 +456,6 @@ let gameOverModalShown = false;
 // able to write qixxx.daily.<date>.best or claim the "DAILY <date>" HUD
 // label — that was the cross-review's actual finding).
 let explicitSeedParam: number | undefined;
-let dailyButton: HTMLButtonElement;
 let dailyBestLabel: HTMLDivElement;
 // See runMode.ts's RunMode doc comment for exactly what each value gates
 // (qixxx.highScore / qixxx.daily.<date>.best / qixxx.bestTimes read-write,
@@ -496,7 +557,15 @@ function getDisplayHighScore(): number {
   });
 }
 
-/** Resets every per-run render/state cache so a freshly-swapped `session` starts painting from a clean slate. */
+/**
+ * Resets every per-run render/state cache so a freshly-swapped `session`
+ * starts painting from a clean slate. Also re-syncs the debug panel's
+ * displayed slider values to the new session (P2 user-review fix,
+ * 2026-08-11 — see debugPanelHandle's doc comment): every
+ * startNormalRunSession()/startSeededRunSession()/startDailyRunSession()
+ * call site swaps `session` and then immediately calls this, so this is
+ * the one shared place a refresh can never be forgotten.
+ */
 function resetPerRunCaches(): void {
   lastHudStage = -1;
   lastHudScore = -1;
@@ -513,6 +582,7 @@ function resetPerRunCaches(): void {
   stageClearIsNewRecord = false;
   stageClearShowsBest = false;
   prevStatus = 'title';
+  debugPanelHandle?.refresh();
 }
 
 /** Swaps `session` for a brand-new, unseeded (ordinary) run — see maybeStartFreshRunFromTitle()'s call site. */
@@ -614,18 +684,19 @@ function maybeStartFreshRunFromTitle(input: SessionInput): void {
 }
 
 /**
- * Shows/hides the DAILY button + best-score label (Title screen only) and
- * keeps the label's text current (today's date + today's DAILY best,
- * refreshed on every Title-screen frame in case another tab/session just
- * updated it — cheap: a small string comparison gates the actual DOM
- * write, same pattern as every other cached HUD field).
+ * Shows/hides #title-ui-row (the DAILY button + best-score label — Title
+ * screen only) and keeps the label's text current (today's date + today's
+ * DAILY best, refreshed on every Title-screen frame in case another tab/
+ * session just updated it — cheap: a small string comparison gates the
+ * actual DOM write, same pattern as every other cached HUD field). Toggles
+ * `visibility` (not `display`) on the row itself — see
+ * getTitleUiRowElement()'s doc comment for why.
  */
 function updateDailyUiVisibility(status: SessionStatus): void {
   const showDailyUi = status === 'title';
   if (showDailyUi !== dailyUiVisible) {
     dailyUiVisible = showDailyUi;
-    dailyButton.style.display = showDailyUi ? '' : 'none';
-    dailyBestLabel.style.display = showDailyUi ? '' : 'none';
+    titleUiRow.style.visibility = showDailyUi ? 'visible' : 'hidden';
   }
   if (!showDailyUi) return;
 
@@ -669,6 +740,7 @@ function init(): void {
 
   gameRoot = getGameRootElement();
   hudRow = getHudRowElement(gameRoot);
+  titleUiRow = getTitleUiRowElement(gameRoot);
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
@@ -687,19 +759,22 @@ function init(): void {
   hud = getHudElement(hudRow);
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
+  hudLine3 = getHudLineElement(hud, 'hud-line3');
   hudTwoLineMode = window.innerWidth <= HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX;
   hudLine2.style.display = hudTwoLineMode ? 'block' : 'none';
+  hudLine3.style.display = hudTwoLineMode ? 'block' : 'none';
   screen = getScreenElement(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
   // DAILY button + best-score label (docs/plans/2026-08-11-daily-seed-time-
-  // attack request task 4), placed ahead of the credit link/mute button so
-  // the row reads left-to-right as [HUD text] [DAILY <date> BEST N]
-  // [DAILY button] [@shimabox] [MUTE]. Hidden outside the Title screen —
+  // attack request task 4) live in their own #title-ui-row, not #hud-row
+  // (P2 user-review fix, 2026-08-11 — see getTitleUiRowElement()'s doc
+  // comment for why). Reads left-to-right as [DAILY <date> BEST N] [DAILY
+  // button]. Hidden (visibility, not display) outside the Title screen —
   // see updateDailyUiVisibility(), called every renderFrame().
-  dailyBestLabel = getDailyBestLabelElement(hudRow);
-  dailyButton = getDailyButtonElement(hudRow, onDailyButtonClick);
+  dailyBestLabel = getDailyBestLabelElement(titleUiRow);
+  getDailyButtonElement(titleUiRow, onDailyButtonClick);
   getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
@@ -722,8 +797,20 @@ function init(): void {
   // this whole branch (including the dynamic import call) into unreachable
   // dead code that Vite's build strips entirely — see the module comment in
   // src/debug/panel.ts and the "no debug code in dist/" build check.
+  //
+  // Passes a `() => session` *getter* (P2 user-review fix, 2026-08-11), not
+  // `session` itself — DAILY/seeded/normal-restart runs swap the module-
+  // level `session` variable out for a brand-new GameSession (see
+  // startNormalRunSession()/startSeededRunSession()/startDailyRunSession()
+  // above), and src/debug/panel.ts's own doc comment explains why a plain
+  // instance reference would silently keep operating on a discarded
+  // session forever after that. The returned handle's refresh() is called
+  // from every one of those swap points so the panel's *displayed* slider
+  // values also catch up to the new session immediately.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
-    void import('./debug/panel').then(({ initDebugPanel }) => initDebugPanel(session, hudRow));
+    void import('./debug/panel').then(({ initDebugPanel }) => {
+      debugPanelHandle = initDebugPanel(() => session, hudRow);
+    });
   }
 
   renderFrame();
@@ -755,6 +842,7 @@ function updateHudMode(): void {
 
   hudTwoLineMode = twoLine;
   hudLine2.style.display = twoLine ? 'block' : 'none';
+  hudLine3.style.display = twoLine ? 'block' : 'none';
   lastHudStage = -1;
   lastHudScore = -1;
   lastHudHi = -1;
@@ -805,14 +893,21 @@ function updateHud(): void {
 
   // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
   // (byte-identical to before this feature existed, including in two-line
-  // mode's line2 — never touched here at all — which the mobile-viewport
-  // E2E test asserts stays unclipped), `DAILY <date>` for a genuine DAILY
-  // run, `SEED <n>` for an arbitrary `?seed=` run (2026-08-11 cross-review
-  // fix: never `DAILY <date>` for the latter — that was the mislabeling).
+  // mode's lines 1-2 — never touched here at all — which the mobile-
+  // viewport E2E test asserts stays unclipped), `DAILY <date>` for a
+  // genuine DAILY run, `SEED <n>` for an arbitrary `?seed=` run (2026-08-11
+  // cross-review fix: never `DAILY <date>` for the latter — that was the
+  // mislabeling).
   const modePrefix = resolveHudModePrefix(runMode, { dailyDateStr, seededRunSeed });
   if (hudTwoLineMode) {
-    hudLine1.textContent = `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}`;
+    // Lines 1-2 are exactly the pre-TIME-attack-feature text (P2 user-
+    // review fix, 2026-08-11: both were already at/near their 390px
+    // character budget without TIME — see hudLine3's own doc comment); TIME
+    // (and the mode prefix, when present) gets its own 3rd line instead of
+    // fighting either of them for width.
+    hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
     hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+    hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
   } else {
     hudLine1.textContent =
       `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
@@ -822,20 +917,24 @@ function updateHud(): void {
 
 // Keeps the canvas's CSS box letterboxed at the fixed 4:3 (CANVAS_WIDTH x
 // CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
-// once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
-// canvas's internal resolution never changes here, only its on-screen size.
-// Re-run on resize/orientation change; #game-root's own flex-computed size
-// already accounts for the touch controls' height (docs/plan.md's "縦持ち
-// レイアウト: フィールド上部・コントロール下部") without this function
-// needing to know whether they're visible.
+// once the HUD row *and* #title-ui-row above it are accounted for
+// (docs/plan.md §5.3/§12.1) — the canvas's internal resolution never
+// changes here, only its on-screen size. Re-run on resize/orientation
+// change; #game-root's own flex-computed size already accounts for the
+// touch controls' height (docs/plan.md's "縦持ちレイアウト: フィールド上
+// 部・コントロール下部") without this function needing to know whether
+// they're visible.
 //
-// The HUD row's height is measured directly (rather than assumed as a
-// constant) so it stays correct if its font-size clamp() resolves
+// Both rows' heights are measured directly (rather than assumed as
+// constants) so they stay correct if font-size clamp()/content resolves
 // differently at a given viewport width, or if the HUD is currently in
-// two-line mode (see updateHudMode()); since neither #hud's lines nor its
-// line *count* ever depends on the row's own *width* — which this same
-// function sets below — a single measure-then-layout pass is sufficient and
-// there's no risk of it oscillating.
+// two-line mode (see updateHudMode()); since neither row's height ever
+// depends on its own *width* — which this same function sets below — a
+// single measure-then-layout pass is sufficient and there's no risk of it
+// oscillating. #title-ui-row's height stays constant across Title <->
+// Playing transitions (see getTitleUiRowElement()'s doc comment on why it
+// uses `visibility` rather than `display` to hide), so this function never
+// needs to re-run on a status change, only on an actual resize/rotation.
 function fitCanvasToViewport(): void {
   // Resolve the HUD's line mode (and, if it just changed, its DOM content)
   // from window.innerWidth *before* measuring hudRow's height below, so a
@@ -845,7 +944,10 @@ function fitCanvasToViewport(): void {
 
   const availW = gameRoot.clientWidth;
   const hudRowHeight = hudRow.offsetHeight;
-  const availH = gameRoot.clientHeight - hudRowHeight - HUD_GAP_PX;
+  const titleUiRowHeight = titleUiRow.offsetHeight;
+  // #game-root's flex `gap` applies between every adjacent child pair — now
+  // 2 gaps (hudRow<->titleUiRow, titleUiRow<->canvasWrap) instead of 1.
+  const availH = gameRoot.clientHeight - hudRowHeight - titleUiRowHeight - HUD_GAP_PX * 2;
   if (availW <= 0 || availH <= 0) return;
 
   const scale = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
@@ -854,9 +956,10 @@ function fitCanvasToViewport(): void {
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
 
-  // Keep the HUD row exactly as wide as the canvas's on-screen box
+  // Keep both rows exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
   hudRow.style.width = `${cssWidth}px`;
+  titleUiRow.style.width = `${cssWidth}px`;
 }
 
 // Update logic (fixed timestep)

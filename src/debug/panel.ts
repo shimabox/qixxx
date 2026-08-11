@@ -152,12 +152,47 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
 }
 
 /**
+ * Handle returned by initDebugPanel() so main.ts can keep the panel in sync
+ * across a session swap (P2 user-review fix, 2026-08-11 — see
+ * initDebugPanel()'s doc comment for the bug this fixes).
+ */
+export interface DebugPanelHandle {
+  /**
+   * Re-syncs every slider's displayed value (and readout text) from
+   * whatever `getSession()` currently returns. Call this right after
+   * swapping main.ts's `session` for a new GameSession instance (DAILY
+   * button / `?seed=` / a fresh normal run) — the panel's own slider
+   * *actions* already always affect the current session (see
+   * initDebugPanel()'s doc comment), but the displayed positions would
+   * otherwise still show the just-discarded session's last values until
+   * the player touches a slider again.
+   */
+  refresh: () => void;
+}
+
+/**
  * Mounts the debug panel into the page: a "DEBUG" badge/toggle in the HUD
  * row (docs/plan.md §6 M10: "パネル表示中は HUD などに「DEBUG」表示を出す")
  * and a floating, collapsible control panel with one slider per tunable,
  * plus RESET/EXPORT.
+ *
+ * Takes a `getSession` *getter*, not a `GameSession` instance directly (P2
+ * user-review fix, 2026-08-11): main.ts can swap its own `session` module
+ * variable out for a brand-new GameSession mid-page-load (DAILY button /
+ * `?seed=` / falling back to a fresh normal run from Title — see
+ * src/main.ts's startNormalRunSession()/startSeededRunSession()/
+ * startDailyRunSession()). A plain `session: GameSession` parameter here
+ * would close over whichever instance existed at `?debug` load time and
+ * keep operating on it forever — every slider drag after a swap would
+ * silently apply to (and read `hasActiveDebugOverrides()` from) a discarded
+ * session, never reaching the real, currently-playing one, and — because
+ * the *real* session's `hasActiveDebugOverrides()` would then always read
+ * false — never suppressing qixxx.highScore / qixxx.daily.<date>.best /
+ * qixxx.bestTimes persistence the way active overrides are supposed to. Calling
+ * `getSession()` fresh every time instead means every panel action always
+ * targets whatever session is actually live right now.
  */
-export function initDebugPanel(session: GameSession, hudRow: HTMLElement): void {
+export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElement): DebugPanelHandle {
   // Positioned below the HUD row (rather than a fixed pixel guess) so the
   // floating panel never covers the "DEBUG" badge or the MUTE button that
   // also live in the HUD row, regardless of how tall it renders at a given
@@ -183,10 +218,12 @@ export function initDebugPanel(session: GameSession, hudRow: HTMLElement): void 
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const panel = buildPanel(session, panelTop, () => setOpen(false));
+  const { panel, sync } = buildPanel(getSession, panelTop, () => setOpen(false));
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
+
+  return { refresh: sync };
 }
 
 function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
@@ -208,7 +245,11 @@ function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
   return badge;
 }
 
-function buildPanel(session: GameSession, top: number, onClose: () => void): HTMLDivElement {
+function buildPanel(
+  getSession: () => GameSession,
+  top: number,
+  onClose: () => void
+): { panel: HTMLDivElement; sync: () => void } {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
@@ -261,8 +302,16 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
 
   const rows = new Map<keyof EffectiveDebugParams, { input: HTMLInputElement; readout: HTMLSpanElement }>();
 
+  // Reads from `getSession()` fresh every call (not a captured `session`)
+  // so a session swap mid-page-load is picked up automatically — see
+  // initDebugPanel()'s doc comment. Exported as this panel's `sync` (the
+  // DebugPanelHandle.refresh() main.ts calls right after swapping
+  // `session`), so the sliders' *displayed* values catch up to the new
+  // session's own (fresh, override-free) defaults immediately, rather than
+  // silently showing the discarded session's last values until the player
+  // happens to touch a slider again.
   const syncFromEffectiveParams = (): void => {
-    const params = session.getEffectiveDebugParams();
+    const params = getSession().getEffectiveDebugParams();
     for (const field of FIELDS) {
       const row = rows.get(field.key);
       if (!row) continue;
@@ -274,7 +323,9 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
 
   for (const field of FIELDS) {
     const { row, input, readout } = buildSliderRow(field, (sliderValue) => {
-      session.applyDebugOverrides({ [field.overrideKey]: field.fromSlider(sliderValue) } as Partial<DebugOverrides>);
+      getSession().applyDebugOverrides({
+        [field.overrideKey]: field.fromSlider(sliderValue),
+      } as Partial<DebugOverrides>);
       readout.textContent = field.format(field.fromSlider(sliderValue));
     });
     rows.set(field.key, { input, readout });
@@ -289,12 +340,12 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
   buttonRow.style.marginTop = '8px';
 
   const resetButton = buildButton('RESET', () => {
-    session.resetDebugOverrides();
+    getSession().resetDebugOverrides();
     syncFromEffectiveParams();
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
-    const payload = buildExportPayload(session.getEffectiveDebugParams());
+    const payload = buildExportPayload(getSession().getEffectiveDebugParams());
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
     void copyToClipboard(json);
@@ -318,7 +369,7 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
   exportOutput.style.resize = 'vertical';
   panel.appendChild(exportOutput);
 
-  return panel;
+  return { panel, sync: syncFromEffectiveParams };
 }
 
 function buildSliderRow(
