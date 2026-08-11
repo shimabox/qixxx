@@ -12,6 +12,7 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
+import { mulberry32, deriveStageSeed } from './rng';
 import {
   INITIAL_LIVES,
   DEFAULT_SCORE_MULTIPLIER,
@@ -43,6 +44,18 @@ export interface SessionInput extends GameInput {
 export interface SessionOptions {
   /** Random source threaded into every stage's Wisps. Defaults to Math.random. */
   rng?: Rng;
+  /**
+   * Deterministic seed for a fully reproducible run (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2: DAILY challenge / `?seed=`). When
+   * set, every stage builds its own rng from `deriveStageSeed(seed, stage)`
+   * (core/rng.ts) rather than sharing one continuous stream — see that
+   * function's doc comment for why (a stage's starting layout must not
+   * depend on how many rng calls the *previous* stage's simulation happened
+   * to consume). Takes priority over `rng` above when both are supplied —
+   * `rng` remains available on its own for tests that want to inject an
+   * arbitrary generator directly instead of going through a numeric seed.
+   */
+  seed?: number;
   /** Field size used for every stage (test hook). Defaults to config GRID_WIDTH/GRID_HEIGHT. */
   fieldWidth?: number;
   fieldHeight?: number;
@@ -92,10 +105,31 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
-  private readonly rng?: Rng;
+  private readonly seed?: number;
+  private readonly baseRng?: Rng;
+  // The rng actually in effect for the stage currently being built — either
+  // a fresh `mulberry32(deriveStageSeed(seed, stage))` (seeded runs) or
+  // `baseRng` (the test-hook rng, unseeded runs). Recomputed by
+  // buildStageGame() every time a stage's Game is (re)built; buildWisps()
+  // and buildDefaultStageGame() read it from here rather than a single
+  // session-lifetime rng field, since a seeded run's rng source is itself
+  // per-stage (see `seed` above).
+  private currentStageRng?: Rng;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
+  // Tick counters (docs/plans/2026-08-11-daily-seed-time-attack request task
+  // 2): both count only ticks spent with status === 'playing' (including
+  // post-miss grace ticks — the stage is still 'playing' throughout grace,
+  // see game.ts's handleMiss()); title/stageclear/gameover ticks never
+  // advance either counter. `stageTicks` resets to 0 every time a stage's
+  // Game is (re)built (buildStageGame(), called by both resetToFreshRun()
+  // and advanceStage()) — freezing at its final value once the stage leaves
+  // 'playing' (stageclear/gameover) makes it double as "how long that stage
+  // took", read by main.ts for the StageClear TIME/BEST display.
+  // `totalTicks` only resets on a brand-new run (resetToFreshRun()).
+  private stageTicks = 0;
+  private totalTicks = 0;
   // Debug-panel overrides (docs/plan.md §6 M10 / §12.4), kept here — not just
   // on `this.game` — so they survive advanceStage() replacing `this.game`
   // with a fresh per-stage instance ("オーバーライドはステージをまたいで
@@ -103,7 +137,8 @@ export class GameSession {
   private debugOverrides: DebugOverrides = {};
 
   constructor(options: SessionOptions = {}) {
-    this.rng = options.rng;
+    this.seed = options.seed;
+    this.baseRng = options.rng;
     this.fieldWidth = options.fieldWidth ?? GRID_WIDTH;
     this.fieldHeight = options.fieldHeight ?? GRID_HEIGHT;
     this.highScore = options.highScore ?? 0;
@@ -146,6 +181,30 @@ export class GameSession {
   }
 
   /**
+   * Ticks elapsed since the current stage started (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2), counting only while
+   * `status === 'playing'`. Resets to 0 on every stage transition (fresh run
+   * or advanceStage()) and freezes at its final value once the stage leaves
+   * 'playing' — main.ts's StageClear screen reads this frozen value as "how
+   * long this stage took". Format as `ticks / TICK_RATE` seconds (60 tick =
+   * 1s) — no wall-clock time is involved.
+   */
+  getStageTicks(): number {
+    return this.stageTicks;
+  }
+
+  /**
+   * Ticks elapsed since the current run started (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2), counting only while
+   * `status === 'playing'`, summed across every stage of the run. Resets to
+   * 0 only on a brand-new run (resetToFreshRun()), not on a per-stage
+   * advance.
+   */
+  getTotalTicks(): number {
+    return this.totalTicks;
+  }
+
+  /**
    * The current stage's `Game` instance — exposed so the render layer can
    * keep drawing the field/marker/enemies while a StageClear/GameOver
    * overlay is shown (the last-played stage's board stays on screen behind
@@ -175,6 +234,13 @@ export class GameSession {
         }
         break;
       case 'playing':
+        // Tick counters (see the field comments above) only ever advance
+        // here — the one branch where status was already 'playing' at the
+        // start of this tick, including the tick that itself ends the stage
+        // (a stage/split clear or the final miss into gameover), so that
+        // tick's own gameplay still counts toward its time.
+        this.stageTicks++;
+        this.totalTicks++;
         this.updatePlaying(input);
         break;
       case 'stageclear':
@@ -201,6 +267,7 @@ export class GameSession {
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
+    this.totalTicks = 0;
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
   }
 
@@ -308,6 +375,14 @@ export class GameSession {
   }
 
   private buildStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
+    this.stageTicks = 0;
+    // Seeded runs get a fresh per-stage rng derived from (seed, stage) —
+    // never a stream shared/continued across stages — see `seed`'s field
+    // comment and core/rng.ts's deriveStageSeed() doc comment for why.
+    // Unseeded runs keep using whatever `baseRng` test hook was injected
+    // (or undefined, i.e. Math.random downstream) for every stage, exactly
+    // as before this feature existed.
+    this.currentStageRng = this.seed !== undefined ? mulberry32(deriveStageSeed(this.seed, stage)) : this.baseRng;
     const game = this.gameFactory ? this.gameFactory(stage, carry) : this.buildDefaultStageGame(stage, carry);
 
     // Debug overrides persist across stages (docs/plan.md §6 M10): a fresh
@@ -325,7 +400,7 @@ export class GameSession {
     const markerStart: Point = { x: Math.floor(field.getWidth() / 2), y: 0 };
     const wisps = this.buildWisps(field, config);
 
-    return new Game(field, markerStart, undefined, this.rng, {
+    return new Game(field, markerStart, undefined, this.currentStageRng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
       emberMoveTicks: config.emberMoveTicks,
@@ -355,7 +430,7 @@ export class GameSession {
   private buildWisps(field: Field, config: StageConfig): Wisp[] {
     const width = field.getWidth();
     const height = field.getHeight();
-    const rng = this.rng ?? Math.random;
+    const rng = this.currentStageRng ?? Math.random;
     const spacing = 3;
 
     // Marker always starts at { x: floor(width/2), y: 0 } — see
@@ -395,7 +470,7 @@ export class GameSession {
       // the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
-      wisps.push(new Wisp({ x, y: cy }, this.rng, undefined, config.wispSpeedMultiplier));
+      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, config.wispSpeedMultiplier));
     }
     return wisps;
   }
