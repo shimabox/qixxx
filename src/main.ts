@@ -1,12 +1,16 @@
-import { GameSession, SessionInput } from './core/session';
+import { GameSession, SessionInput, SessionStatus } from './core/session';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
 import { TouchControls, attachTapToConfirm } from './input/touch';
 import { SfxEngine } from './audio/sfx';
+import { hashString } from './core/rng';
 import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
+import { loadBestTime, saveBestTimeIfBetter } from './storage/bestTimes';
+import { getJstDateString, loadDailyBest, saveDailyBestIfBetter, cleanupOldDailyKeys } from './storage/daily';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import {
+  TICK_RATE,
   TICK_DURATION,
   MAX_FRAME_DELTA,
   HUD_FONT,
@@ -246,6 +250,57 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
   return button;
 }
 
+// Get or create the DAILY button (docs/plans/2026-08-11-daily-seed-time-
+// attack request task 4): same DOM-button-in-the-HUD-row implementation
+// style as getMuteButtonElement() above (pointer-events: auto, a plain click
+// listener — no synthetic keyboard events, so clicking it can never also
+// feed the keyboard/touch `confirm` pulse). Shown only while the Title
+// screen is up (see renderFrame()'s updateDailyUiVisibility()) so it never
+// crowds the HUD during actual play.
+function getDailyButtonElement(row: HTMLDivElement, onClick: () => void): HTMLButtonElement {
+  let button = document.getElementById('daily-button') as HTMLButtonElement | null;
+  if (!button) {
+    button = document.createElement('button');
+    button.id = 'daily-button';
+    button.type = 'button';
+    button.textContent = 'DAILY';
+    button.style.flex = '0 0 auto';
+    button.style.font = HUD_FONT;
+    button.style.color = HUD_ACCENT_COLOR;
+    button.style.background = 'rgba(10, 14, 39, 0.7)';
+    button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    button.style.borderRadius = '4px';
+    button.style.padding = '4px 10px';
+    button.style.cursor = 'pointer';
+    button.style.pointerEvents = 'auto';
+    button.style.userSelect = 'none';
+    button.addEventListener('click', onClick);
+    row.appendChild(button);
+  }
+  return button;
+}
+
+// Get or create the small label next to the DAILY button showing today's
+// date and the current DAILY best score (docs/plans/2026-08-11-daily-seed-
+// time-attack request task 4: "タイトルの DAILY ボタン付近にデイリーベスト
+// スコアを表示する") — shown/hidden alongside the button itself.
+function getDailyBestLabelElement(row: HTMLDivElement): HTMLDivElement {
+  let label = document.getElementById('daily-best-label') as HTMLDivElement | null;
+  if (!label) {
+    label = document.createElement('div');
+    label.id = 'daily-best-label';
+    label.style.flex = '0 0 auto';
+    label.style.font = HUD_FONT;
+    label.style.fontSize = '0.8em';
+    label.style.color = HUD_TEXT_COLOR;
+    label.style.whiteSpace = 'nowrap';
+    label.style.pointerEvents = 'none';
+    label.style.userSelect = 'none';
+    row.appendChild(label);
+  }
+  return label;
+}
+
 // Game state
 let session: GameSession;
 let renderer: Renderer;
@@ -285,6 +340,17 @@ let lastHudHi = -1;
 let lastHudOccupancy = -1;
 let lastHudLives = -1;
 let lastHudMultiplier = -1;
+// TIME (docs/plans/2026-08-11-daily-seed-time-attack request task 4) changes
+// far more often than the fields above (roughly every 6 ticks, a decisecond
+// at TICK_RATE=60) — cached as a string (not raw ticks) so the comparison
+// above stays a single strict-equality check per field, same shape as every
+// other lastHud* cache.
+let lastHudTime = '';
+// Cache-busts the whole updateHud() comparison the instant isDailyMode
+// itself flips (e.g. a DAILY run's HUD text gaining/losing its "DAILY
+// <date>" prefix) even if every other displayed value happens to be
+// unchanged that same tick.
+let lastHudIsDailyMode = false;
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -308,15 +374,234 @@ let lastScreenText: string | null = null;
 // state (e.g. mid-fetch "POSTING..."/"FAILED - RETRY") each render.
 let gameOverModalShown = false;
 
+// DAILY / TIME ATTACK (docs/plans/2026-08-11-daily-seed-time-attack request
+// tasks 2-4). `explicitSeedParam` is read once at init() from `?seed=`; when
+// present it takes priority over the DAILY button's own date-derived seed
+// (request task 4: "?seed と DAILY ボタンが両方関与する場合は明示的な ?seed
+// を優先する") and stays in effect for every run for the rest of this page
+// load (see maybeStartFreshRunFromTitle() below).
+let explicitSeedParam: number | undefined;
+let dailyButton: HTMLButtonElement;
+let dailyBestLabel: HTMLDivElement;
+// True for the whole lifetime of a seeded run (DAILY button or `?seed=`) —
+// gates every daily-specific behavior: skip qixxx.highScore read/write, show
+// the "DAILY <date>" HUD prefix, skip stage best-time recording (the board
+// isn't the normal one, so a "best" wouldn't mean the same thing day to
+// day). Reset to false by startNormalRunSession(); never reset by the
+// session's own internal GameOver -> Title transition, since a `?seed=`
+// page load must keep reusing the same seed for every retry that page
+// load — see maybeStartFreshRunFromTitle().
+let isDailyMode = false;
+let dailyDateStr = '';
+// The DAILY best score already on record when the *current* run started —
+// used both to compute the displayed "HI" (getDisplayHighScore()) and as
+// the baseline lastSavedDailyBest starts from.
+let dailyBestAtRunStart = 0;
+// Mirrors lastSavedHighScore's write-on-change-only guard, but for the
+// separate qixxx.daily.<date>.best key (never qixxx.highScore) while
+// isDailyMode is true.
+let lastSavedDailyBest = 0;
+// Whether the DAILY button/best-label pair is currently shown (Title screen
+// only) — toggled in renderFrame(), mirroring gameOverModalShown's
+// edge-trigger-on-status-change pattern below.
+let dailyUiVisible = false;
+let lastDailyBestLabelText = '';
+
+// StageClear TIME/BEST/NEW RECORD (docs/plans/2026-08-11-daily-seed-time-
+// attack request task 4). Populated once, edge-triggered on the tick the
+// session's status first becomes 'stageclear' (see `prevStatus` below,
+// mirroring gameOverModalShown's own edge-trigger) — screenText() then just
+// reads these cached strings every frame instead of re-formatting/re-saving
+// on every render.
+let stageClearTimeStr = '';
+let stageClearBestStr = '';
+let stageClearIsNewRecord = false;
+// False for a DAILY run (the board isn't the normal one, so a "best" isn't
+// meaningful — request task 4: "通常モードのみベストタイムを記録する") —
+// screenText() omits the "/ BEST ..." suffix entirely when this is false.
+let stageClearShowsBest = false;
+// Tracks the previous tick's session status purely to edge-detect the
+// title/playing/stageclear/gameover transitions above (getStatus() itself
+// has no "did it just change" signal of its own).
+let prevStatus: SessionStatus = 'title';
+
+// DAILY / TIME ATTACK helpers (docs/plans/2026-08-11-daily-seed-time-attack
+// request tasks 2-4).
+
+/** Parses `?seed=<number>` from the page URL, or `undefined` if absent/not a finite number. */
+function parseSeedParam(): number | undefined {
+  const raw = new URLSearchParams(window.location.search).get('seed');
+  if (raw === null) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.floor(n) : undefined;
+}
+
+/**
+ * The seed + JST date string a DAILY/`?seed=` run should use right now.
+ * `explicitSeedParam` (an explicit `?seed=`) always wins over the date-
+ * derived seed when both are in play (request task 4: "?seed と DAILY ボタ
+ * ンが両方関与する場合は明示的な ?seed を優先する") — the date itself is
+ * still always today's, since the DAILY label/best-score bucket reuses the
+ * same per-date route regardless of which seed produced the board.
+ */
+function getEffectiveDailySeed(): { seed: number; dateStr: string } {
+  const dateStr = getJstDateString();
+  const seed = explicitSeedParam ?? hashString(`qixxx-daily-${dateStr}`);
+  return { seed, dateStr };
+}
+
+/**
+ * Formats a tick count as `M:SS.D` (minutes:seconds.deciseconds) — no
+ * wall-clock time involved, per core/session.ts's tick timer: 60 ticks =
+ * 1s at config.ts's TICK_RATE.
+ */
+function formatTicks(ticks: number): string {
+  const totalDeciseconds = Math.floor((Math.max(0, ticks) / TICK_RATE) * 10);
+  const minutes = Math.floor(totalDeciseconds / 600);
+  const seconds = Math.floor((totalDeciseconds % 600) / 10);
+  const deciseconds = totalDeciseconds % 10;
+  return `${minutes}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+}
+
+/**
+ * The "HI"/"HI SCORE" value to display right now: a DAILY/seeded run shows
+ * the DAILY best (never mixing in qixxx.highScore — request task 4), every
+ * other run shows the session's own ordinary high score exactly as before.
+ */
+function getDisplayHighScore(): number {
+  return isDailyMode ? Math.max(dailyBestAtRunStart, session.getScore()) : session.getHighScore();
+}
+
+/** Resets every per-run render/state cache so a freshly-swapped `session` starts painting from a clean slate. */
+function resetPerRunCaches(): void {
+  lastHudStage = -1;
+  lastHudScore = -1;
+  lastHudHi = -1;
+  lastHudOccupancy = -1;
+  lastHudLives = -1;
+  lastHudMultiplier = -1;
+  lastHudTime = '';
+  lastHudIsDailyMode = false;
+  lastScreenText = null;
+  gameOverModalShown = false;
+  stageClearTimeStr = '';
+  stageClearBestStr = '';
+  stageClearIsNewRecord = false;
+  stageClearShowsBest = false;
+  prevStatus = 'title';
+}
+
+/** Swaps `session` for a brand-new, unseeded (ordinary) run — see maybeStartFreshRunFromTitle()'s call site. */
+function startNormalRunSession(): void {
+  isDailyMode = false;
+  dailyDateStr = '';
+  const highScore = loadHighScore();
+  lastSavedHighScore = highScore;
+  session = new GameSession({ highScore });
+  window.__game__ = { session, sfx };
+  resetPerRunCaches();
+}
+
+/** Swaps `session` for a brand-new run seeded with `seed` (DAILY button / `?seed=` — see their respective call sites). */
+function startSeededRunSession(seed: number, dateStr: string): void {
+  isDailyMode = true;
+  dailyDateStr = dateStr;
+  dailyBestAtRunStart = loadDailyBest(dateStr);
+  lastSavedDailyBest = dailyBestAtRunStart;
+  session = new GameSession({ seed });
+  window.__game__ = { session, sfx };
+  resetPerRunCaches();
+}
+
+/**
+ * DAILY button click handler (request task 4: "クリック/タップでデイリー
+ * モードのランを開始する"). A plain click listener — no synthetic keyboard
+ * event is ever dispatched here (unlike input/touch.ts's virtual d-pad), so
+ * this can never also feed the keyboard/touch `confirm` pulse. Feeds a
+ * single manual `confirm` into the freshly-swapped session immediately
+ * after constructing it, starting play on the very same click rather than
+ * waiting for a separate key/tap.
+ */
+function onDailyButtonClick(): void {
+  const { seed, dateStr } = getEffectiveDailySeed();
+  startSeededRunSession(seed, dateStr);
+  session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+}
+
+/**
+ * A normal key/tap confirming a Title screen that's still tied to a
+ * previous DAILY/seeded run's session starts a fresh, unseeded run instead
+ * of silently reusing that seed again (request task 4: "それ以外のキー/
+ * タップは従来どおり通常モード開始") — only the DAILY button
+ * (onDailyButtonClick above) may start another seeded run from Title.
+ * Skipped entirely when the whole page load is pinned to `?seed=`
+ * (explicitSeedParam set): that seed stays in effect for every run for the
+ * rest of this page load, including every GameOver -> Title -> Playing
+ * retry, so the E2E claim test's fixed board is reproducible run after run.
+ * A no-op whenever `session` isn't sitting on Title with a fresh confirm
+ * (i.e. every ordinary tick) — including the very first Title screen ever
+ * (isDailyMode is false by default), so normal mode's existing behavior is
+ * completely untouched.
+ */
+function maybeStartFreshRunFromTitle(input: SessionInput): void {
+  if (session.getStatus() !== 'title' || !input.confirm) return;
+  if (isDailyMode && explicitSeedParam === undefined) {
+    startNormalRunSession();
+  }
+}
+
+/**
+ * Shows/hides the DAILY button + best-score label (Title screen only) and
+ * keeps the label's text current (today's date + today's DAILY best,
+ * refreshed on every Title-screen frame in case another tab/session just
+ * updated it — cheap: a small string comparison gates the actual DOM
+ * write, same pattern as every other cached HUD field).
+ */
+function updateDailyUiVisibility(status: SessionStatus): void {
+  const showDailyUi = status === 'title';
+  if (showDailyUi !== dailyUiVisible) {
+    dailyUiVisible = showDailyUi;
+    dailyButton.style.display = showDailyUi ? '' : 'none';
+    dailyBestLabel.style.display = showDailyUi ? '' : 'none';
+  }
+  if (!showDailyUi) return;
+
+  const todayStr = getJstDateString();
+  const best = loadDailyBest(todayStr);
+  const labelText = `DAILY ${todayStr}  BEST ${best}`;
+  if (labelText !== lastDailyBestLabelText) {
+    lastDailyBestLabelText = labelText;
+    dailyBestLabel.textContent = labelText;
+  }
+}
+
 // Initialize game. init() runs exactly once on page load. All registered
 // event listeners and input controllers (TouchControls, KeyboardInput) live
 // for the page's lifetime and are intentionally not disposed — this is not
 // an SPA embedded context but a full-page app. Should remounting become
 // necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
-  const highScore = loadHighScore();
-  lastSavedHighScore = highScore;
-  session = new GameSession({ highScore });
+  // Startup cleanup (docs/plans/2026-08-11-daily-seed-time-attack request
+  // task 3): reclaim every past date's DAILY best-score key, best-effort.
+  cleanupOldDailyKeys(getJstDateString());
+
+  explicitSeedParam = parseSeedParam();
+  if (explicitSeedParam !== undefined) {
+    // `?seed=` pins the whole page load to a seeded run from the very first
+    // Title screen (request task 4: reuses the DAILY route) — see
+    // maybeStartFreshRunFromTitle()'s doc comment for why this never falls
+    // back to an unseeded run later, even after a GameOver -> Title retry.
+    const { seed, dateStr } = getEffectiveDailySeed();
+    isDailyMode = true;
+    dailyDateStr = dateStr;
+    dailyBestAtRunStart = loadDailyBest(dateStr);
+    lastSavedDailyBest = dailyBestAtRunStart;
+    session = new GameSession({ seed });
+  } else {
+    const highScore = loadHighScore();
+    lastSavedHighScore = highScore;
+    session = new GameSession({ highScore });
+  }
 
   gameRoot = getGameRootElement();
   hudRow = getHudRowElement(gameRoot);
@@ -344,6 +629,13 @@ function init(): void {
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
+  // DAILY button + best-score label (docs/plans/2026-08-11-daily-seed-time-
+  // attack request task 4), placed ahead of the credit link/mute button so
+  // the row reads left-to-right as [HUD text] [DAILY <date> BEST N]
+  // [DAILY button] [@shimabox] [MUTE]. Hidden outside the Title screen —
+  // see updateDailyUiVisibility(), called every renderFrame().
+  dailyBestLabel = getDailyBestLabelElement(hudRow);
+  dailyButton = getDailyButtonElement(hudRow, onDailyButtonClick);
   getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
@@ -418,9 +710,13 @@ function updateHud(): void {
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
   const stage = session.getStage();
   const score = session.getScore();
-  const hi = session.getHighScore();
+  const hi = getDisplayHighScore();
   const lives = session.getLives();
   const multiplier = session.getMultiplier();
+  // TIME (docs/plans/2026-08-11-daily-seed-time-attack request task 4): the
+  // *current stage's* elapsed tick count — matches what qixxx.bestTimes
+  // records per stage (see handleStageClearEntered()), not the run total.
+  const timeStr = formatTicks(session.getStageTicks());
 
   if (
     stage === lastHudStage &&
@@ -428,7 +724,9 @@ function updateHud(): void {
     hi === lastHudHi &&
     occupancyPercent === lastHudOccupancy &&
     lives === lastHudLives &&
-    multiplier === lastHudMultiplier
+    multiplier === lastHudMultiplier &&
+    timeStr === lastHudTime &&
+    isDailyMode === lastHudIsDailyMode
   ) {
     return;
   }
@@ -438,13 +736,21 @@ function updateHud(): void {
   lastHudOccupancy = occupancyPercent;
   lastHudLives = lives;
   lastHudMultiplier = multiplier;
+  lastHudTime = timeStr;
+  lastHudIsDailyMode = isDailyMode;
 
+  // "DAILY <date>" only ever prefixes a DAILY/seeded run's own HUD line —
+  // normal-mode text (isDailyMode === false) is otherwise byte-identical to
+  // before this feature existed, including in two-line mode's line2 (never
+  // touched here at all), which the mobile-viewport E2E test asserts stays
+  // unclipped.
+  const dailyPrefix = isDailyMode ? `DAILY ${dailyDateStr}  ` : '';
   if (hudTwoLineMode) {
-    hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
+    hudLine1.textContent = `${dailyPrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}`;
     hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
   } else {
     hudLine1.textContent =
-      `STAGE ${stage}  SCORE: ${score}  HI: ${hi}  ` +
+      `${dailyPrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
       `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
   }
 }
@@ -492,6 +798,15 @@ function fitCanvasToViewport(): void {
 function update(): void {
   const input = keyboard.getInput();
   lastInput = input;
+
+  // DAILY/`?seed=` (docs/plans/2026-08-11-daily-seed-time-attack request
+  // task 4): a normal key/tap from a Title screen still tied to a previous
+  // seeded run may swap `session` out for a fresh, unseeded one — see its
+  // doc comment. Must run before session.update(input) below so this same
+  // tick's confirm still drives the (possibly new) session's own Title ->
+  // Playing transition, not the next one.
+  maybeStartFreshRunFromTitle(input);
+
   session.update(input);
   sfx.handleEvents(session.drainEvents());
   // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
@@ -502,15 +817,64 @@ function update(): void {
     renderer.spawnEmberDespawnEffect(position);
   }
 
-  const currentHighScore = session.getHighScore();
-  // Skip persistence entirely while any debug override is active (docs/plan.md
-  // §6 M10: "デバッグパネル使用中はハイスコアを保存しない") — reading/
-  // displaying the existing high score (via getHighScore() above and in
-  // renderFrame()) is still fine, only the write is suppressed.
-  if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
-    lastSavedHighScore = currentHighScore;
-    saveHighScore(currentHighScore);
+  // StageClear TIME/BEST/NEW RECORD (docs/plans/2026-08-11-daily-seed-time-
+  // attack request task 4): edge-triggered exactly once, the tick status
+  // first becomes 'stageclear', so the recorded/displayed values stay fixed
+  // for as long as the StageClear screen is up (not re-evaluated every tick
+  // — getStageTicks() is frozen anyway once the stage leaves 'playing', but
+  // saveBestTimeIfBetter() itself must run only once per clear).
+  const status = session.getStatus();
+  if (status === 'stageclear' && prevStatus !== 'stageclear') {
+    handleStageClearEntered();
   }
+  prevStatus = status;
+
+  // Persistence: a DAILY/seeded run's score never touches qixxx.highScore
+  // (request task 4: "デイリーモード中は通常ハイスコアを読み書きしない") —
+  // it's tracked entirely separately, under qixxx.daily.<date>.best. Both
+  // branches skip the write (not the read/display) while any debug override
+  // is active, mirroring the pre-existing highscore guard (docs/plan.md §6
+  // M10: "デバッグパネル使用中はハイスコアを保存しない").
+  if (isDailyMode) {
+    const currentScore = session.getScore();
+    if (currentScore > lastSavedDailyBest && !session.hasActiveDebugOverrides()) {
+      lastSavedDailyBest = currentScore;
+      saveDailyBestIfBetter(dailyDateStr, currentScore);
+    }
+  } else {
+    const currentHighScore = session.getHighScore();
+    if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
+      lastSavedHighScore = currentHighScore;
+      saveHighScore(currentHighScore);
+    }
+  }
+}
+
+/**
+ * Records (normal mode only) and formats this stage's just-finished clear
+ * time (docs/plans/2026-08-11-daily-seed-time-attack request task 4).
+ * Called exactly once per stage clear — see its only call site in update().
+ */
+function handleStageClearEntered(): void {
+  const ticks = session.getStageTicks();
+  stageClearTimeStr = formatTicks(ticks);
+
+  // DAILY runs don't record a best time (request task 4: "デイリーは盤面が
+  // 日替わりのため記録しない") — the board isn't the fixed, comparable one a
+  // "best" is meaningful against.
+  if (isDailyMode) {
+    stageClearShowsBest = false;
+    return;
+  }
+
+  stageClearShowsBest = true;
+  const stage = session.getStage();
+  // Read-but-don't-write while a debug override is active, exactly like the
+  // highscore guard above: never taints the persisted record, but a
+  // previously-recorded best is still shown.
+  const isNewRecord = session.hasActiveDebugOverrides() ? false : saveBestTimeIfBetter(stage, ticks);
+  stageClearIsNewRecord = isNewRecord;
+  stageClearBestStr = formatTicks(isNewRecord ? ticks : loadBestTime(stage) ?? ticks);
 }
 
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
@@ -540,6 +904,10 @@ function renderFrame(): void {
 
   const status = session.getStatus();
 
+  // DAILY button + best-score label (docs/plans/2026-08-11-daily-seed-time-
+  // attack request task 4): visible on the Title screen only.
+  updateDailyUiVisibility(status);
+
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
   // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
@@ -549,7 +917,7 @@ function renderFrame(): void {
   if (status === 'gameover') {
     if (!gameOverModalShown) {
       gameOverModalShown = true;
-      gameOverModal.show({ score: session.getScore(), stage: session.getStage(), hiScore: session.getHighScore() });
+      gameOverModal.show({ score: session.getScore(), stage: session.getStage(), hiScore: getDisplayHighScore() });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
@@ -575,10 +943,18 @@ function renderFrame(): void {
 function screenText(status: ReturnType<GameSession['getStatus']>): string {
   switch (status) {
     case 'title':
-      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
+      return `QIXXX\n\nHI SCORE: ${getDisplayHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
     case 'stageclear': {
       const splitNote = session.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
-      return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
+      // TIME/BEST/NEW RECORD (docs/plans/2026-08-11-daily-seed-time-attack
+      // request task 4): populated once by handleStageClearEntered() the
+      // tick this StageClear screen appeared — see its doc comment. DAILY
+      // runs never show a BEST (stageClearShowsBest is false there).
+      const recordSuffix = stageClearIsNewRecord ? '  NEW RECORD!' : '';
+      const timeLine = stageClearShowsBest
+        ? `\nTIME ${stageClearTimeStr} / BEST ${stageClearBestStr}${recordSuffix}`
+        : `\nTIME ${stageClearTimeStr}`;
+      return `STAGE ${session.getStage()} CLEAR!${splitNote}${timeLine}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
     }
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
