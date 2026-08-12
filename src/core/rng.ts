@@ -3,10 +3,10 @@
 // dependency added to package.json (both are a handful of lines each). Pure
 // functions — no DOM/Canvas/localStorage dependency, matching every other
 // module in src/core/. Consumed by GameSession (core/session.ts) to derive a
-// per-stage sub-seed from a single daily/URL seed value, so every player who
-// starts the same day's DAILY run (or the same `?seed=`) sees an identical
-// board, stage by stage, regardless of how many rng calls a previous stage's
-// simulation happened to consume.
+// per-stage sub-seed from the single numeric seed carried by the
+// `?seed=<number>` URL parameter, so every run started with the same
+// `?seed=` sees an identical board, stage by stage, regardless of how many
+// rng calls a previous stage's simulation happened to consume.
 import { Rng } from './enemy';
 
 /**
@@ -28,9 +28,11 @@ export function mulberry32(seed: number): Rng {
 
 /**
  * FNV-1a, a small non-cryptographic 32-bit string hash: turns an arbitrary
- * string (e.g. `qixxx-daily-2026-08-11`) into an unsigned 32-bit integer
- * suitable as a `mulberry32` seed. Deterministic across runs/machines (no
- * reliance on String.prototype's own hash, which JS doesn't expose anyway).
+ * string into an unsigned 32-bit integer suitable as a `mulberry32` seed.
+ * Deterministic across runs/machines (no reliance on String.prototype's own
+ * hash, which JS doesn't expose anyway). Used internally by
+ * `deriveStageSeed` below, which hashes a `"<seed>:<stage>"` string to get
+ * each stage its own independent sub-seed.
  */
 export function hashString(str: string): number {
   let hash = 0x811c9dc5;

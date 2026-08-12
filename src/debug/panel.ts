@@ -152,20 +152,25 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
 }
 
 /**
- * Handle returned by initDebugPanel() so main.ts can keep the panel in sync
- * across a session swap (P2 user-review fix, 2026-08-11 — see
- * initDebugPanel()'s doc comment for the bug this fixes).
+ * Handle returned by initDebugPanel() for a caller to re-sync the panel's
+ * sliders if it ever swaps the `GameSession` instance the `getSession`
+ * getter passed to initDebugPanel() resolves to (P2 user-review fix,
+ * 2026-08-11 — see initDebugPanel()'s doc comment for the full rationale).
+ * No current caller does this (main.ts builds `session` once in init() and
+ * never reconstructs it), so `refresh` currently goes unused, but the hook
+ * stays correct for free if session-swapping is ever reintroduced.
  */
 export interface DebugPanelHandle {
   /**
    * Re-syncs every slider's displayed value (and readout text) from
-   * whatever `getSession()` currently returns. Call this right after
-   * swapping main.ts's `session` for a new GameSession instance (DAILY
-   * button / `?seed=` / a fresh normal run) — the panel's own slider
-   * *actions* already always affect the current session (see
+   * whatever `getSession()` currently returns. Would need to be called
+   * right after a caller swaps the session `getSession()` resolves to, for
+   * a new GameSession instance — the panel's own slider *actions* already
+   * always affect whatever `getSession()` currently returns (see
    * initDebugPanel()'s doc comment), but the displayed positions would
-   * otherwise still show the just-discarded session's last values until
-   * the player touches a slider again.
+   * otherwise still show the previous session's last values until the
+   * player touches a slider again. Currently unused, since no caller swaps
+   * sessions today.
    */
   refresh: () => void;
 }
@@ -177,20 +182,26 @@ export interface DebugPanelHandle {
  * plus RESET/EXPORT.
  *
  * Takes a `getSession` *getter*, not a `GameSession` instance directly (P2
- * user-review fix, 2026-08-11): main.ts can swap its own `session` module
- * variable out for a brand-new GameSession mid-page-load (DAILY button /
- * `?seed=` / falling back to a fresh normal run from Title — see
- * src/main.ts's startNormalRunSession()/startSeededRunSession()/
- * startDailyRunSession()). A plain `session: GameSession` parameter here
- * would close over whichever instance existed at `?debug` load time and
- * keep operating on it forever — every slider drag after a swap would
- * silently apply to (and read `hasActiveDebugOverrides()` from) a discarded
- * session, never reaching the real, currently-playing one, and — because
- * the *real* session's `hasActiveDebugOverrides()` would then always read
- * false — never suppressing qixxx.highScore / qixxx.daily.<date>.best /
- * qixxx.bestTimes persistence the way active overrides are supposed to. Calling
- * `getSession()` fresh every time instead means every panel action always
- * targets whatever session is actually live right now.
+ * user-review fix, 2026-08-11). At the time, main.ts could swap its own
+ * `session` module variable out for a brand-new GameSession mid-page-load
+ * (the since-removed DAILY-challenge feature's Title button, plus `?seed=`
+ * / falling back to a fresh normal run — see commit 58f2f3a, which dropped
+ * that swapping machinery entirely). A plain `session: GameSession`
+ * parameter here would have closed over whichever instance existed at
+ * `?debug` load time and kept operating on it forever — every slider drag
+ * after a swap would silently apply to (and read
+ * `hasActiveDebugOverrides()` from) a discarded session, never reaching the
+ * real, currently-playing one, and — because the *real* session's
+ * `hasActiveDebugOverrides()` would then always read false — never
+ * suppressing high-score persistence the way active overrides are supposed
+ * to. Calling `getSession()` fresh every time instead means every panel
+ * action always targets whatever session is actually live right now.
+ *
+ * That session-swapping no longer happens today — main.ts now constructs
+ * `session` exactly once in init() and never reconstructs it — so the
+ * getter is currently equivalent to a plain captured reference. It's kept
+ * as a getter anyway since it's harmless either way and stays correct for
+ * free should session-swapping ever be reintroduced.
  */
 export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElement): DebugPanelHandle {
   // Positioned below the HUD row (rather than a fixed pixel guess) so the
@@ -303,13 +314,15 @@ function buildPanel(
   const rows = new Map<keyof EffectiveDebugParams, { input: HTMLInputElement; readout: HTMLSpanElement }>();
 
   // Reads from `getSession()` fresh every call (not a captured `session`)
-  // so a session swap mid-page-load is picked up automatically — see
-  // initDebugPanel()'s doc comment. Exported as this panel's `sync` (the
-  // DebugPanelHandle.refresh() main.ts calls right after swapping
-  // `session`), so the sliders' *displayed* values catch up to the new
-  // session's own (fresh, override-free) defaults immediately, rather than
-  // silently showing the discarded session's last values until the player
-  // happens to touch a slider again.
+  // so a session swap would be picked up automatically if one were ever
+  // reintroduced — see initDebugPanel()'s doc comment. Exported as this
+  // panel's `sync` (DebugPanelHandle.refresh(), currently unused since no
+  // caller swaps sessions today — see that interface's doc comment), for a
+  // future caller to invoke right after swapping sessions so the sliders'
+  // *displayed* values would catch up to the new session's own (fresh,
+  // override-free) defaults immediately, rather than silently showing the
+  // discarded session's last values until the player happens to touch a
+  // slider again.
   const syncFromEffectiveParams = (): void => {
     const params = getSession().getEffectiveDebugParams();
     for (const field of FIELDS) {

@@ -46,14 +46,14 @@ export interface SessionOptions {
   rng?: Rng;
   /**
    * Deterministic seed for a fully reproducible run (docs/plans/2026-08-11-
-   * daily-seed-time-attack request task 2: DAILY challenge / `?seed=`). When
-   * set, every stage builds its own rng from `deriveStageSeed(seed, stage)`
-   * (core/rng.ts) rather than sharing one continuous stream — see that
-   * function's doc comment for why (a stage's starting layout must not
-   * depend on how many rng calls the *previous* stage's simulation happened
-   * to consume). Takes priority over `rng` above when both are supplied —
-   * `rng` remains available on its own for tests that want to inject an
-   * arbitrary generator directly instead of going through a numeric seed.
+   * daily-seed-time-attack request task 2: `?seed=`). When set, every stage
+   * builds its own rng from `deriveStageSeed(seed, stage)` (core/rng.ts)
+   * rather than sharing one continuous stream — see that function's doc
+   * comment for why (a stage's starting layout must not depend on how many
+   * rng calls the *previous* stage's simulation happened to consume). Takes
+   * priority over `rng` above when both are supplied — `rng` remains
+   * available on its own for tests that want to inject an arbitrary
+   * generator directly instead of going through a numeric seed.
    */
   seed?: number;
   /** Field size used for every stage (test hook). Defaults to config GRID_WIDTH/GRID_HEIGHT. */
