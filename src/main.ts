@@ -7,6 +7,7 @@ import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
 import { loadBestTime, saveBestTimeIfBetter } from './storage/bestTimes';
 import { RunMode, shouldPersistHighScore, shouldPersistBestTime, resolveHudModePrefix } from './runMode';
+import { parseSeedParam } from './seedParam';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import {
   TICK_RATE,
@@ -359,14 +360,6 @@ let prevStatus: SessionStatus = 'title';
 
 // SEEDED RUNS / TIME ATTACK helpers.
 
-/** Parses `?seed=<number>` from the page URL, or `undefined` if absent/not a finite number. */
-function parseSeedParam(): number | undefined {
-  const raw = new URLSearchParams(window.location.search).get('seed');
-  if (raw === null) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? Math.floor(n) : undefined;
-}
-
 /**
  * Formats a tick count as `M:SS.D` (minutes:seconds.deciseconds) — no
  * wall-clock time involved, per core/session.ts's tick timer: 60 ticks =
@@ -386,7 +379,7 @@ function formatTicks(ticks: number): string {
 // an SPA embedded context but a full-page app. Should remounting become
 // necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
-  explicitSeedParam = parseSeedParam();
+  explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
   if (explicitSeedParam !== undefined) {

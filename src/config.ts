@@ -179,13 +179,29 @@ export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
 // Below this window.innerWidth (CSS px), the HUD switches from its single
-// nowrap+ellipsis line to two explicit stacked lines (main.ts's
-// updateHudMode()) so OCCUPANCY/LIVES/the multiplier stay visible on narrow
-// phones instead of being clipped by the ellipsis. Deliberately keyed off
-// window.innerWidth alone, never hudRow/canvas width — those are themselves
-// derived from the HUD row's height in fitCanvasToViewport(), so measuring
-// them here would create a width<->height layout circularity.
-export const HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX = 600;
+// nowrap+ellipsis line to its stacked-lines layout (main.ts's
+// updateHudMode(), hudLine2/hudLine3) so STAGE/SCORE/HI/TIME/OCCUPANCY/
+// LIVES/xN all stay visible on narrower viewports instead of being clipped
+// by the ellipsis. Deliberately keyed off window.innerWidth alone, never
+// hudRow/canvas width — those are themselves derived from the HUD row's
+// height in fitCanvasToViewport(), so measuring them here would create a
+// width<->height layout circularity.
+//
+// 601-727px P2 fix (user review, 2026-08-12): the single-line layout's
+// natural text width grew once TIME was added, so the old 600px cutoff left
+// a band (~601-727px) where the single line no longer actually fit and
+// OCCUPANCY/LIVES got ellipsis-clipped. Raised to 960 from an empirical
+// measurement of #hud's clientWidth against window.innerWidth (offset ~152px
+// for the credit link/mute button/gaps, in the common width-limited-scale
+// regime — i.e. any viewport with reasonable height headroom for its width)
+// plus the single line's own natural (unclipped) text width for a
+// deliberately generous worst case — 3-digit STAGE, 7-8-digit SCORE/HI,
+// 3-digit-minute TIME, 100% OCCUPANCY, and x9 (SPLIT_MULTIPLIER_CAP)
+// measures ~730-770px at the HUD's 16px-capped font — leaving >=40px of
+// margin at the 960px cutoff itself. Normal-mode 390px (stacked) and
+// desktop widths like 1280px (single line) keep their existing behavior;
+// only the previously-broken 601-960px band changes.
+export const HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX = 960;
 
 // Neon glow (docs/plan.md §1/§6 M5). Applied only to a handful of
 // small/bounded-count draw calls per frame (marker, Wisp head, Igniter,
