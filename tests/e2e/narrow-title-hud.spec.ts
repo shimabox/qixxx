@@ -7,8 +7,8 @@
 // since-removed DAILY-mode Title UI once crowded #hud down to an unreadable
 // ~9px in (see git history for that feature and its removal).
 //
-// Also covers three follow-up user-review findings (2026-08-12) against the
-// same HUD:
+// Also covers four follow-up user-review findings (2026-08-12/13) against
+// the same HUD:
 // - P2 (601-960px band): the single-line layout no longer actually fit once
 //   TIME was added, silently ellipsis-clipping OCCUPANCY/LIVES at a fixed
 //   window.innerWidth cutoff that didn't reflect the resulting text width.
@@ -24,9 +24,23 @@
 //   making the mode decision geometry-based (main.ts's wouldSingleLineFit())
 //   instead of a fixed cutoff — see that function's doc comment for the
 //   algorithm and how it avoids width<->height oscillation.
+// - P2 (stale non-#hud width after the mode decision): wouldSingleLineFit()
+//   only ever measured hudRow's non-#hud siblings (credit link, mute
+//   button) once, at decision time — so a change to any of them afterward
+//   (the mute button's label growing MUTE -> UNMUTE, or the dev-only DEBUG
+//   badge mounting asynchronously after `?debug`'s dynamic import resolves)
+//   could invalidate an already-committed single-line decision without ever
+//   re-checking it. Fixed by reserving the mute button's widest possible
+//   label width up front (so toggling never changes its rendered size, see
+//   getMuteButtonElement()) and re-running fitCanvasToViewport() once right
+//   after the DEBUG badge mounts (see init()).
 //
 // Runs against Vite's dev server (see playwright.config.ts's webServer),
-// local Chromium only, matching smoke.spec.ts's own setup.
+// local Chromium only, matching smoke.spec.ts's own setup. Because this is
+// the dev server (not a production build), import.meta.env.DEV is true here
+// too, so `?debug`'s dynamic import actually mounts the DEBUG badge — this
+// suite is able to cover that case directly rather than needing a
+// unit-test/manual-check substitute.
 import { test, expect, devices } from '@playwright/test';
 
 const APP_URL = 'http://localhost:4173/';
@@ -63,6 +77,31 @@ async function expectFullyReadableHud(page: import('@playwright/test').Page): Pr
     await expect(line1).toContainText('OCCUPANCY');
     await expect(line1).toContainText('LIVES');
   }
+}
+
+/**
+ * Overwrites the HUD's currently-visible line(s) with config.ts's
+ * HUD_WORST_CASE_STATS_TEXT budget (kept in sync by hand — e2e specs can't
+ * import from src/ here, matching every other test in this file), split
+ * across lines exactly like updateHud() does in stacked mode. Real gameplay
+ * can't practically be scripted to Stage 999 / a 6-digit score, so this
+ * simulates "an in-progress game has grown the HUD text to its budgeted
+ * worst case" the same way updateHud() itself writes the DOM (a plain
+ * textContent assignment) — without touching layout/mode.
+ */
+async function setWorstCaseHudText(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => {
+    const l1 = document.getElementById('hud-line1') as HTMLElement;
+    const l2 = document.getElementById('hud-line2') as HTMLElement;
+    const l3 = document.getElementById('hud-line3') as HTMLElement;
+    if (l2.style.display === 'block') {
+      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999';
+      l2.textContent = 'OCCUPANCY: 100%  LIVES: 9  x9';
+      l3.textContent = 'TIME 99:59.9';
+    } else {
+      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999  TIME 99:59.9  OCCUPANCY: 100%  LIVES: 9  x9';
+    }
+  });
 }
 
 test.describe('narrow mobile Title screen (390px)', () => {
@@ -182,5 +221,53 @@ test.describe('short-viewport normal/seeded HUD (P2 fix, 2026-08-12 follow-up)',
     await expectFullyReadableHud(page);
     const stackedLine = (await page.locator('#hud-line2').isVisible()) ? page.locator('#hud-line3') : page.locator('#hud-line1');
     await expect(stackedLine).toContainText('SEED 4294967295');
+  });
+});
+
+test.describe('non-#hud row width changing after the mode decision (P2 fix, 2026-08-13 follow-up)', () => {
+  test('toggling MUTE/UNMUTE repeatedly never clips a near-worst-case single-line HUD', async ({ page }) => {
+    // A borderline single-line viewport (empirically found: the
+    // single/stacked transition sits at 871-872px wide at this height with
+    // this fix applied — comfortable margin above that, not a razor's-edge
+    // pixel, for CI stability) reproducing the reviewer's report that a
+    // moderate desktop-class viewport, not just a narrow phone, clips once
+    // MUTE grows the HUD's non-text neighbor.
+    await page.setViewportSize({ width: 880, height: 700 });
+    // Start unmuted ("音声ON" in the report) — loadMuted() (src/storage/
+    // settings.ts) defaults to muted unless localStorage explicitly says
+    // 'false', and the bug only showed up going *from* the shorter "MUTE"
+    // label *to* the longer "UNMUTE" one (the direction that grows the
+    // button and steals width from the HUD text).
+    await page.addInitScript(() => localStorage.setItem('qixxx.muted', 'false'));
+    await page.goto(APP_URL);
+
+    const line1 = page.locator('#hud-line1');
+    await expect(line1).toBeVisible();
+    await expect(page.locator('#hud-line2')).toBeHidden(); // confirms this viewport is genuinely single-line
+
+    await setWorstCaseHudText(page);
+    expect(await isUnclipped(line1)).toBe(true);
+
+    const muteButton = page.locator('#mute-button');
+    for (let i = 0; i < 4; i++) {
+      await muteButton.click();
+      expect(await isUnclipped(line1)).toBe(true);
+    }
+  });
+
+  test('the DEBUG badge (?debug) does not clip the HUD once mounted', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto(`${APP_URL}?debug`);
+
+    const badge = page.locator('#debug-badge');
+    await expect(badge).toBeVisible();
+
+    // The badge's extra width pushes this particular viewport just past
+    // single-line eligibility (see main.ts's wouldSingleLineFit()), so the
+    // real regression check is that whichever mode main.ts landed on has
+    // every field visible, unclipped, even at the HUD_WORST_CASE_STATS_TEXT
+    // budget.
+    await setWorstCaseHudText(page);
+    await expectFullyReadableHud(page);
   });
 });

@@ -235,6 +235,7 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     button.id = 'mute-button';
     button.type = 'button';
     button.style.flex = '0 0 auto';
+    button.style.boxSizing = 'border-box'; // see the min-width reservation below
     button.style.font = HUD_FONT;
     button.style.color = HUD_ACCENT_COLOR;
     button.style.background = 'rgba(10, 14, 39, 0.7)';
@@ -253,6 +254,23 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
       (event.currentTarget as HTMLButtonElement).blur();
     });
     row.appendChild(button);
+
+    // Reserve the width of the longer label ("UNMUTE") up front (P2 fix,
+    // user review, 2026-08-13): toggleMute()/updateMuteButtonLabel() below
+    // swap this button's text between "MUTE" and "UNMUTE" without ever
+    // calling fitCanvasToViewport() again, so — before this fix — flipping
+    // to the wider "UNMUTE" label grew the button in place, silently
+    // invalidating measureNonHudRowWidth()'s already-computed single-line
+    // decision (a borderline viewport could clip only *after* the player
+    // muted). Sizing the button to its widest possible content from the
+    // start instead means neither label ever changes its rendered width, so
+    // toggling can't move anything else in the row and needs no re-layout
+    // of its own. Safe to measure here (rather than a hardcoded pixel
+    // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
+    // vw-based clamp(), so this button's natural width never depends on
+    // window size either.
+    button.textContent = 'UNMUTE';
+    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
   }
   return button;
 }
@@ -276,10 +294,6 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
-// Kept (not just created-and-discarded) so updateHudMode()'s single-line-fit
-// prediction can measure its actual on-screen width — see
-// measureNonHudRowWidth().
-let creditLink: HTMLAnchorElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -427,8 +441,8 @@ function init(): void {
   hudLine3 = getHudLineElement(hud, 'hud-line3');
   // Matches `hudTwoLineMode`'s own `false` initial value (module scope)
   // until the real, geometry-based decision runs — see updateHudMode() —
-  // from the fitCanvasToViewport() call below (which needs creditLink/
-  // muteButton to already exist to measure them, so it can't run any
+  // from the fitCanvasToViewport() call below (which needs the credit
+  // link/muteButton to already exist to measure them, so it can't run any
   // earlier than this point in init()).
   hudLine2.style.display = 'none';
   hudLine3.style.display = 'none';
@@ -436,7 +450,7 @@ function init(): void {
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
-  creditLink = getCreditLinkElement(hudRow);
+  getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
@@ -459,7 +473,18 @@ function init(): void {
   // dead code that Vite's build strips entirely — see the module comment in
   // src/debug/panel.ts and the "no debug code in dist/" build check.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
-    void import('./debug/panel').then(({ initDebugPanel }) => initDebugPanel(() => session, hudRow));
+    void import('./debug/panel').then(({ initDebugPanel }) => {
+      initDebugPanel(() => session, hudRow);
+      // The DEBUG badge initDebugPanel() just mounted into hudRow is
+      // another non-#hud sibling measureNonHudRowWidth() now has to account
+      // for (P2 fix, user review, 2026-08-13) — it mounts asynchronously,
+      // well after the fitCanvasToViewport() call above already ran, so
+      // without this the single-line decision/HUD sizing would silently
+      // keep using its pre-badge width until the next resize/
+      // orientationchange. A single one-shot re-run right after mount (not
+      // a recurring poll) picks it up immediately.
+      fitCanvasToViewport();
+    });
   }
 
   renderFrame();
@@ -490,15 +515,29 @@ function predictCanvasScale(hudRowHeightPx: number): number {
   return Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
 }
 
-// The width hudRow's non-#hud children (the credit link + the mute button +
-// #hud-row's own flex gaps) take up, regardless of hudRow's own width: none
-// of the three stretch or shrink (getCreditLinkElement()/
-// getMuteButtonElement() both set `flex: 0 0 auto`), so measuring them at
-// *whatever* width they currently happen to be rendered at is exactly as
-// accurate as measuring them at any candidate hudRow width would be — no
-// need to actually lay hudRow out at that width first.
+// The width hudRow's non-#hud children (the credit link, the mute button,
+// and — only when `?debug` mounted it, see init() — the DEBUG badge) plus
+// #hud-row's own flex gaps between them all take up, regardless of hudRow's
+// own width. Sums *every* current child of hudRow except #hud itself,
+// rather than naming each sibling individually (P2 fix, user review,
+// 2026-08-13: a hardcoded credit-link + mute-button sum silently went stale
+// the moment the DEBUG badge was appended after this module's own initial
+// layout pass), so any element hudRow ever gains automatically counts here
+// too, with no further changes needed here. Safe to measure each child at
+// *whatever* width it currently happens to be rendered at, regardless of
+// hudRow's own current width: every non-#hud child sets `flex: 0 0 auto`
+// (getCreditLinkElement()/getMuteButtonElement()/debug/panel.ts's
+// buildDebugBadge()), so none of them stretch or shrink to fit hudRow — no
+// need to actually lay hudRow out at a candidate width first.
 function measureNonHudRowWidth(): number {
-  return creditLink.getBoundingClientRect().width + muteButton.getBoundingClientRect().width + HUD_ROW_GAP_PX * 2;
+  let width = 0;
+  let gapCount = 0;
+  for (const child of hudRow.children) {
+    if (child === hud) continue;
+    width += child.getBoundingClientRect().width;
+    gapCount++;
+  }
+  return width + gapCount * HUD_ROW_GAP_PX;
 }
 
 // The natural (unclipped) on-screen width of the single-line HUD text at
