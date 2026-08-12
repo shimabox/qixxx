@@ -19,7 +19,7 @@ import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
-  HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX,
+  HUD_WORST_CASE_STATS_TEXT,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -39,6 +39,12 @@ declare global {
 // height calculation stays in sync with the actual flex `gap` applied to
 // #game-root below.
 const HUD_GAP_PX = 6;
+
+// #hud-row's own internal flex `gap` (between #hud, the credit link, and the
+// mute button — see getHudRowElement() below). Kept as a constant, like
+// HUD_GAP_PX above, so measureNonHudRowWidth()'s single-line-fit prediction
+// (updateHudMode()) stays in sync with the actual CSS value.
+const HUD_ROW_GAP_PX = 8;
 
 // Get or create the responsive root that hosts the HUD row + canvas
 // (docs/plan.md §5.3/§12.1): a flex child that grows/shrinks to fill
@@ -78,7 +84,7 @@ function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
     row.style.display = 'flex';
     row.style.alignItems = 'center';
     row.style.justifyContent = 'space-between';
-    row.style.gap = '8px';
+    row.style.gap = `${HUD_ROW_GAP_PX}px`;
     row.style.boxSizing = 'border-box';
     root.appendChild(row);
   }
@@ -270,6 +276,10 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
+// Kept (not just created-and-discarded) so updateHudMode()'s single-line-fit
+// prediction can measure its actual on-screen width — see
+// measureNonHudRowWidth().
+let creditLink: HTMLAnchorElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -415,14 +425,18 @@ function init(): void {
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
   hudLine3 = getHudLineElement(hud, 'hud-line3');
-  hudTwoLineMode = window.innerWidth <= HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX;
-  hudLine2.style.display = hudTwoLineMode ? 'block' : 'none';
-  hudLine3.style.display = hudTwoLineMode ? 'block' : 'none';
+  // Matches `hudTwoLineMode`'s own `false` initial value (module scope)
+  // until the real, geometry-based decision runs — see updateHudMode() —
+  // from the fitCanvasToViewport() call below (which needs creditLink/
+  // muteButton to already exist to measure them, so it can't run any
+  // earlier than this point in init()).
+  hudLine2.style.display = 'none';
+  hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
-  getCreditLinkElement(hudRow);
+  creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
@@ -461,18 +475,116 @@ function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
 }
 
-// Re-derive the HUD's line mode from window.innerWidth alone (never from
-// hudRow/canvas width — see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX's comment in
-// config.ts for why that would be circular). Called from fitCanvasToViewport()
-// itself, which already runs on init + every resize/orientationchange, so no
-// separate listener is needed. On an actual mode flip, invalidates the
-// lastHud* cache (so the next updateHud() call unconditionally rewrites the
-// DOM into the new line layout instead of skipping a no-op-looking value
-// comparison) and immediately reflects the new mode into the DOM/cache via
-// updateHud(), so hudRow's height already accounts for it by the time
-// fitCanvasToViewport() measures hudRow.offsetHeight right after this call.
+// The scale factor fitCanvasToViewport() would apply to CANVAS_WIDTH x
+// CANVAS_HEIGHT for a HUD row of the given height — i.e. the same
+// width<->height letterboxing math fitCanvasToViewport() itself uses below,
+// factored out so wouldSingleLineFit() can *predict* a candidate mode's
+// resulting canvas/HUD width before committing to it, without the two
+// copies of this formula ever being able to drift apart. Returns 0 (an
+// otherwise-impossible scale) when there's no usable space, matching
+// fitCanvasToViewport()'s own early-return guard.
+function predictCanvasScale(hudRowHeightPx: number): number {
+  const availW = gameRoot.clientWidth;
+  const availH = gameRoot.clientHeight - hudRowHeightPx - HUD_GAP_PX;
+  if (availW <= 0 || availH <= 0) return 0;
+  return Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
+}
+
+// The width hudRow's non-#hud children (the credit link + the mute button +
+// #hud-row's own flex gaps) take up, regardless of hudRow's own width: none
+// of the three stretch or shrink (getCreditLinkElement()/
+// getMuteButtonElement() both set `flex: 0 0 auto`), so measuring them at
+// *whatever* width they currently happen to be rendered at is exactly as
+// accurate as measuring them at any candidate hudRow width would be — no
+// need to actually lay hudRow out at that width first.
+function measureNonHudRowWidth(): number {
+  return creditLink.getBoundingClientRect().width + muteButton.getBoundingClientRect().width + HUD_ROW_GAP_PX * 2;
+}
+
+// The natural (unclipped) on-screen width of the single-line HUD text at
+// #hud's *current* font-size — itself a function of window.innerWidth alone
+// (the clamp(10px, 3.2vw, 16px) in getHudElement()), never of hudRow's own
+// width, so this is safe to measure before hudRow has been sized for real.
+// Combines config.ts's HUD_WORST_CASE_STATS_TEXT (a deliberately generous
+// worst-case STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN digit budget — see that
+// constant's doc comment) with the mode prefix (runMode.ts's
+// resolveHudModePrefix()) at its own real, already-fixed-for-the-page-load
+// value: a 'seeded' run's `SEED <n>  ` can be measured exactly here rather
+// than guessed at some hypothetical worst case, since unlike SCORE/HI it can
+// never change again once `?seed=` is parsed in init().
+function measureRequiredSingleLineWidth(): number {
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  const probe = document.createElement('span');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.whiteSpace = 'nowrap';
+  probe.style.font = window.getComputedStyle(hud).font;
+  probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  document.body.appendChild(probe);
+  const width = probe.getBoundingClientRect().width;
+  document.body.removeChild(probe);
+  return width;
+}
+
+// Whether switching to the single-line layout right now would actually fit
+// without clipping (P2 fix, user review, 2026-08-12: a *viewport-width-only*
+// threshold, this function's predecessor, can't account for a short
+// viewport shrinking the canvas — and with it hudRow, which
+// fitCanvasToViewport() keeps in sync with the canvas's own on-screen width
+// — via *height* rather than width; a wide-but-short window could then still
+// clip a single line the old fixed cutoff assumed would fit).
+//
+// Predicts the single-line layout's own HUD row height first — temporarily
+// toggling hudLine2/hudLine3 off to measure hudRow.offsetHeight, then
+// restoring whatever display they had (harmless to do speculatively: the
+// caller, updateHudMode(), always overwrites their real final display state
+// right after based on the actual decision below). A single-line row's
+// height depends only on font-size, which — as measureRequiredSingleLineWidth()
+// documents — depends only on window.innerWidth, never on the row's own
+// width, so this measurement is valid regardless of whatever hudRow.style.width
+// currently holds (stale from a previous call, or not yet set at all on the
+// very first one). Feeding that height into predictCanvasScale() (the exact
+// math fitCanvasToViewport() itself uses) gives the width a single-line
+// hudRow would actually end up with; measureNonHudRowWidth()'s fixed-size
+// siblings are subtracted to get #hud's own share, then compared against
+// measureRequiredSingleLineWidth().
+//
+// Cannot oscillate: this is a one-shot, self-consistent calculation purely
+// from the current (window.innerWidth, window.innerHeight, #game-root size)
+// — it never reads `hudTwoLineMode` or any other previous-decision state, so
+// repeated calls during a continuous resize always converge to the same
+// answer for the same viewport geometry rather than flip-flopping on their
+// own. (Verified live by dragging a browser window's edge across every
+// threshold below — see this change's PR notes for the exact viewports
+// checked.)
+function wouldSingleLineFit(): boolean {
+  const prevLine2Display = hudLine2.style.display;
+  const prevLine3Display = hudLine3.style.display;
+  hudLine2.style.display = 'none';
+  hudLine3.style.display = 'none';
+  const singleLineRowHeight = hudRow.offsetHeight;
+  hudLine2.style.display = prevLine2Display;
+  hudLine3.style.display = prevLine3Display;
+
+  const scale = predictCanvasScale(singleLineRowHeight);
+  if (scale <= 0) return false;
+  const candidateCssWidth = Math.max(1, Math.floor(CANVAS_WIDTH * scale));
+
+  const availableHudWidth = candidateCssWidth - measureNonHudRowWidth();
+  return availableHudWidth >= measureRequiredSingleLineWidth();
+}
+
+// Re-derive the HUD's line mode (see wouldSingleLineFit() above for the
+// decision itself). Called from fitCanvasToViewport() itself, which already
+// runs on init + every resize/orientationchange, so no separate listener is
+// needed. On an actual mode flip, invalidates the lastHud* cache (so the
+// next updateHud() call unconditionally rewrites the DOM into the new line
+// layout instead of skipping a no-op-looking value comparison) and
+// immediately reflects the new mode into the DOM/cache via updateHud(), so
+// hudRow's height already accounts for it by the time fitCanvasToViewport()
+// measures hudRow.offsetHeight right after this call.
 function updateHudMode(): void {
-  const twoLine = window.innerWidth <= HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX;
+  const twoLine = !wouldSingleLineFit();
   if (twoLine === hudTwoLineMode) return;
 
   hudTwoLineMode = twoLine;
@@ -553,23 +665,23 @@ function updateHud(): void {
 // The HUD row's height is measured directly (rather than assumed as a
 // constant) so it stays correct if its font-size clamp() resolves
 // differently at a given viewport width, or if the HUD is currently in
-// two-line mode (see updateHudMode()); since neither #hud's lines nor its
-// line *count* ever depends on the row's own *width* — which this same
+// stacked-lines mode (see updateHudMode()); since neither #hud's lines nor
+// its line *count* ever depends on the row's own *width* — which this same
 // function sets below — a single measure-then-layout pass is sufficient and
-// there's no risk of it oscillating.
+// there's no risk of it oscillating (see wouldSingleLineFit()'s doc comment
+// for why updateHudMode()'s own mode *decision*, called first below, can't
+// oscillate either, despite now itself depending on a *predicted* width).
 function fitCanvasToViewport(): void {
   // Resolve the HUD's line mode (and, if it just changed, its DOM content)
-  // from window.innerWidth *before* measuring hudRow's height below, so a
-  // mode flip's new line count is already reflected in that measurement
-  // rather than lagging a frame behind.
+  // before measuring hudRow's real height below, so a mode flip's new line
+  // count is already reflected in that measurement rather than lagging a
+  // frame behind.
   updateHudMode();
 
-  const availW = gameRoot.clientWidth;
   const hudRowHeight = hudRow.offsetHeight;
-  const availH = gameRoot.clientHeight - hudRowHeight - HUD_GAP_PX;
-  if (availW <= 0 || availH <= 0) return;
+  const scale = predictCanvasScale(hudRowHeight);
+  if (scale <= 0) return;
 
-  const scale = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
   const cssWidth = Math.max(1, Math.floor(CANVAS_WIDTH * scale));
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;

@@ -178,30 +178,49 @@ export const COLOR_EMBER_BLAZE = '#a4133c';
 export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
-// Below this window.innerWidth (CSS px), the HUD switches from its single
-// nowrap+ellipsis line to its stacked-lines layout (main.ts's
-// updateHudMode(), hudLine2/hudLine3) so STAGE/SCORE/HI/TIME/OCCUPANCY/
-// LIVES/xN all stay visible on narrower viewports instead of being clipped
-// by the ellipsis. Deliberately keyed off window.innerWidth alone, never
-// hudRow/canvas width — those are themselves derived from the HUD row's
-// height in fitCanvasToViewport(), so measuring them here would create a
-// width<->height layout circularity.
+// The HUD switches from its single nowrap+ellipsis line to its
+// stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
+// STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
+// clipped by the ellipsis. See main.ts's updateHudMode()/wouldSingleLineFit()
+// doc comments for the decision itself (P2 fix, user review, 2026-08-12):
+// a *viewport-width-only* threshold (this constant's previous form) can't
+// account for a short viewport shrinking the canvas — and with it the HUD
+// row it's kept in sync with — via height rather than width, so a wide-but-
+// short window could still clip a "should fit" single line. The decision is
+// now geometry-based (predicts the single-line row's actual on-screen
+// width, the same way fitCanvasToViewport() itself sizes the canvas) rather
+// than a fixed cutoff, so this constant is only the *text* half of that
+// calculation — see below.
 //
-// 601-727px P2 fix (user review, 2026-08-12): the single-line layout's
-// natural text width grew once TIME was added, so the old 600px cutoff left
-// a band (~601-727px) where the single line no longer actually fit and
-// OCCUPANCY/LIVES got ellipsis-clipped. Raised to 960 from an empirical
-// measurement of #hud's clientWidth against window.innerWidth (offset ~152px
-// for the credit link/mute button/gaps, in the common width-limited-scale
-// regime — i.e. any viewport with reasonable height headroom for its width)
-// plus the single line's own natural (unclipped) text width for a
-// deliberately generous worst case — 3-digit STAGE, 7-8-digit SCORE/HI,
-// 3-digit-minute TIME, 100% OCCUPANCY, and x9 (SPLIT_MULTIPLIER_CAP)
-// measures ~730-770px at the HUD's 16px-capped font — leaving >=40px of
-// margin at the 960px cutoff itself. Normal-mode 390px (stacked) and
-// desktop widths like 1280px (single line) keep their existing behavior;
-// only the previously-broken 601-960px band changes.
-export const HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX = 960;
+// Deliberately generous worst-case single-line stats text (main.ts's
+// measureRequiredSingleLineWidth()) used to size that decision: 3-digit
+// STAGE, 6-digit SCORE/HI (just under 1,000,000), 2-digit-minute TIME (up to
+// 99:59.9, i.e. ~1h39m in a single stage), 100% OCCUPANCY, and x9
+// (SPLIT_MULTIPLIER_CAP — LIVES never exceeds a single digit; nothing in
+// core/ grants extra lives past INITIAL_LIVES) — measures ~720px at the
+// HUD's 16px-capped font. A 'seeded' run's `SEED <n>  ` prefix (runMode.ts's
+// resolveHudModePrefix()) is measured on top of this at its own actual
+// (already-fixed-for-the-page-load) value, not re-guessed here, since
+// unlike SCORE/HI it can't change after `?seed=` is parsed.
+//
+// Tighter than a truly unbounded worst case (e.g. an 8-digit SCORE, or a
+// 3-digit-minute TIME from an AFK stage) would be, because this also has to
+// leave the existing 1280x720 desktop baseline in single-line mode — its
+// true available HUD width (~762px there, height-limited — see
+// wouldSingleLineFit()) has no room for a fully unbounded budget. An
+// extremely long single stage (>99:59) or a 7+-digit cumulative score is
+// accepted as a residual, deliberately out-of-budget edge case rather than
+// one this sizing protects against.
+export const HUD_WORST_CASE_STATS_TEXT =
+  'STAGE 999  SCORE: 999999  HI: 999999  TIME 99:59.9  OCCUPANCY: 100%  LIVES: 9  x9';
+
+// #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
+// #hud / the credit link / the mute button. Kept as a constant — like
+// HUD_GAP_PX above — so main.ts's single-line-fit prediction
+// (measureNonHudRowWidth()) stays in sync with the actual CSS value instead
+// of re-deriving it via a live layout measurement that would require the
+// row to already be at its final width.
+export const HUD_ROW_GAP_PX = 8;
 
 // Neon glow (docs/plan.md §1/§6 M5). Applied only to a handful of
 // small/bounded-count draw calls per frame (marker, Wisp head, Igniter,
