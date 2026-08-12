@@ -108,26 +108,29 @@ function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
 // competition entirely, at every viewport width — #hud-row's own layout is
 // now completely unaffected by whether the DAILY UI exists at all.
 //
-// Uses `visibility: hidden` (not `display: none`) when hidden outside the
-// Title screen (see main.ts's updateDailyUiVisibility()) specifically so
-// this row keeps occupying the *same* box in #game-root's flex column at
-// all times: fitCanvasToViewport()'s available-height math (which reads
-// this row's height, exactly like #hud-row's) never needs to be
-// recalculated on every Title <-> Playing transition — only on
-// resize/orientationchange, like everything else already does. The small,
-// constant vertical space this reserves even during play is an accepted
-// tradeoff for that simplicity.
+// Hidden via `display: none` (a second P2 user-review fix, 2026-08-12 — an
+// earlier version of this used `visibility: hidden`, which keeps the row
+// occupying its box in #game-root's flex column even while hidden: that
+// permanently shrank the canvas during ordinary play, e.g. 1280x720's HUD-
+// to-canvas gap growing from 6px to ~40px and canvas height shrinking from
+// 686px to 652px — a real, unintended change to normal mode's *appearance*,
+// not just an "accepted tradeoff"). `display: none` removes it from
+// #game-root's flex layout entirely while hidden, so ordinary play is
+// byte-for-byte the pre-DAILY-feature layout again. The cost: main.ts's
+// updateDailyUiVisibility() must now call fitCanvasToViewport() itself
+// right after toggling this row's display, so the canvas/HUD row resize to
+// match immediately on every Title <-> Playing transition instead of
+// staying stale until the next resize/orientationchange.
 function getTitleUiRowElement(root: HTMLDivElement): HTMLDivElement {
   let row = document.getElementById('title-ui-row') as HTMLDivElement | null;
   if (!row) {
     row = document.createElement('div');
     row.id = 'title-ui-row';
-    row.style.display = 'flex';
+    row.style.display = 'none';
     row.style.alignItems = 'center';
     row.style.justifyContent = 'flex-start';
     row.style.gap = '8px';
     row.style.boxSizing = 'border-box';
-    row.style.visibility = 'hidden';
     root.appendChild(row);
   }
   return row;
@@ -689,14 +692,19 @@ function maybeStartFreshRunFromTitle(input: SessionInput): void {
  * DAILY best, refreshed on every Title-screen frame in case another tab/
  * session just updated it — cheap: a small string comparison gates the
  * actual DOM write, same pattern as every other cached HUD field). Toggles
- * `visibility` (not `display`) on the row itself — see
- * getTitleUiRowElement()'s doc comment for why.
+ * `display` (not `visibility`) on the row itself — see
+ * getTitleUiRowElement()'s doc comment for why — which means an actual
+ * Title <-> Playing transition changes #game-root's flex layout (the row
+ * is added/removed from flow entirely), so fitCanvasToViewport() is
+ * re-run right here, on the spot, rather than staying stale until the
+ * next resize/orientationchange.
  */
 function updateDailyUiVisibility(status: SessionStatus): void {
   const showDailyUi = status === 'title';
   if (showDailyUi !== dailyUiVisible) {
     dailyUiVisible = showDailyUi;
-    titleUiRow.style.visibility = showDailyUi ? 'visible' : 'hidden';
+    titleUiRow.style.display = showDailyUi ? 'flex' : 'none';
+    fitCanvasToViewport();
   }
   if (!showDailyUi) return;
 
@@ -771,8 +779,9 @@ function init(): void {
   // attack request task 4) live in their own #title-ui-row, not #hud-row
   // (P2 user-review fix, 2026-08-11 — see getTitleUiRowElement()'s doc
   // comment for why). Reads left-to-right as [DAILY <date> BEST N] [DAILY
-  // button]. Hidden (visibility, not display) outside the Title screen —
-  // see updateDailyUiVisibility(), called every renderFrame().
+  // button]. Hidden (`display: none`, dropped from flow entirely) outside
+  // the Title screen — see updateDailyUiVisibility(), called every
+  // renderFrame().
   dailyBestLabel = getDailyBestLabelElement(titleUiRow);
   getDailyButtonElement(titleUiRow, onDailyButtonClick);
   getCreditLinkElement(hudRow);
@@ -917,13 +926,16 @@ function updateHud(): void {
 
 // Keeps the canvas's CSS box letterboxed at the fixed 4:3 (CANVAS_WIDTH x
 // CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
-// once the HUD row *and* #title-ui-row above it are accounted for
-// (docs/plan.md §5.3/§12.1) — the canvas's internal resolution never
-// changes here, only its on-screen size. Re-run on resize/orientation
-// change; #game-root's own flex-computed size already accounts for the
-// touch controls' height (docs/plan.md's "縦持ちレイアウト: フィールド上
-// 部・コントロール下部") without this function needing to know whether
-// they're visible.
+// once the HUD row — and #title-ui-row, only while it's actually in flow
+// (Title screen only, see below) — above it are accounted for (docs/plan.md
+// §5.3/§12.1) — the canvas's internal resolution never changes here, only
+// its on-screen size. Re-run on resize/orientation change (and, since
+// #title-ui-row toggles via `display` — see getTitleUiRowElement()'s doc
+// comment — every Title <-> Playing transition too, from
+// updateDailyUiVisibility()); #game-root's own flex-computed size already
+// accounts for the touch controls' height (docs/plan.md's "縦持ちレイアウ
+// ト: フィールド上部・コントロール下部") without this function needing to
+// know whether they're visible.
 //
 // Both rows' heights are measured directly (rather than assumed as
 // constants) so they stay correct if font-size clamp()/content resolves
@@ -931,10 +943,7 @@ function updateHud(): void {
 // two-line mode (see updateHudMode()); since neither row's height ever
 // depends on its own *width* — which this same function sets below — a
 // single measure-then-layout pass is sufficient and there's no risk of it
-// oscillating. #title-ui-row's height stays constant across Title <->
-// Playing transitions (see getTitleUiRowElement()'s doc comment on why it
-// uses `visibility` rather than `display` to hide), so this function never
-// needs to re-run on a status change, only on an actual resize/rotation.
+// oscillating.
 function fitCanvasToViewport(): void {
   // Resolve the HUD's line mode (and, if it just changed, its DOM content)
   // from window.innerWidth *before* measuring hudRow's height below, so a
@@ -944,10 +953,18 @@ function fitCanvasToViewport(): void {
 
   const availW = gameRoot.clientWidth;
   const hudRowHeight = hudRow.offsetHeight;
+  // 0 while #title-ui-row is `display: none` (every status except Title —
+  // see getTitleUiRowElement()'s doc comment for why `display`, not
+  // `visibility`, is used: this must genuinely drop out of #game-root's
+  // flex layout during ordinary play, restoring the exact pre-DAILY-feature
+  // HUD-to-canvas gap/canvas size).
   const titleUiRowHeight = titleUiRow.offsetHeight;
-  // #game-root's flex `gap` applies between every adjacent child pair — now
-  // 2 gaps (hudRow<->titleUiRow, titleUiRow<->canvasWrap) instead of 1.
-  const availH = gameRoot.clientHeight - hudRowHeight - titleUiRowHeight - HUD_GAP_PX * 2;
+  // #game-root's flex `gap` only applies between children actually in flow
+  // — a `display: none` child contributes neither height nor a gap. 2 gaps
+  // (hudRow<->titleUiRow, titleUiRow<->canvasWrap) when #title-ui-row is
+  // showing, else the original single gap (hudRow<->canvasWrap).
+  const gapCount = titleUiRowHeight > 0 ? 2 : 1;
+  const availH = gameRoot.clientHeight - hudRowHeight - titleUiRowHeight - HUD_GAP_PX * gapCount;
   if (availW <= 0 || availH <= 0) return;
 
   const scale = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
