@@ -256,17 +256,32 @@ export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElemen
   // by pushing a borderline single-line HUD into stacked/3-line mode) and
   // before main.ts's own post-mount fitCanvasToViewport() re-run (see
   // main.ts's init(), right after this function's caller) had a chance to
-  // relay it out again. A ResizeObserver on hudRow — firing only when its
-  // box actually changes, never every frame — keeps `panel.style.top` (and
-  // its `maxHeight`, which depends on the same value) correct through that
-  // followup layout pass and through every later resize/orientationchange or
-  // single/stacked HUD mode flip, without polling.
+  // relay it out again.
   const repositionPanel = (): void => {
     const top = hudRow.getBoundingClientRect().bottom + 8;
     panel.style.top = `${top}px`;
     panel.style.maxHeight = `calc(100vh - ${top + 8}px)`;
   };
-  repositionPanel(); // best-effort immediate placement — the observer below catches any layout pass this misses
+  repositionPanel(); // best-effort immediate placement — the listeners below catch any layout pass this misses
+
+  // A ResizeObserver on hudRow fires whenever hudRow's own *box* changes
+  // (a single/stacked HUD mode flip, the DEBUG badge or MUTE label changing
+  // hudRow's width) — but a height-only viewport resize (P3 follow-up review
+  // fix) can move hudRow's on-screen *position* without changing hudRow's
+  // own size at all: #game-root re-centers its flex children vertically
+  // (main.ts's getGameRootElement()) as the canvas shrinks/grows to fit the
+  // new height, sliding hudRow up or down while its box stays the same
+  // size — a case the ResizeObserver alone never fires for. window's own
+  // resize/orientationchange events (the same ones main.ts's own
+  // fitCanvasToViewport() already listens for, see init()) catch that: by
+  // the time this listener runs, main.ts's — registered first, during
+  // init(), before this dynamically-imported module ever loads — has
+  // already re-laid out the canvas/hudRow for the new size, so hudRow's
+  // rect read here is already the final one. Neither listener alone is
+  // sufficient (each catches a case the other doesn't) and neither ever
+  // polls every frame.
+  window.addEventListener('resize', repositionPanel);
+  window.addEventListener('orientationchange', repositionPanel);
   new ResizeObserver(repositionPanel).observe(hudRow);
 
   return { refresh: sync };
