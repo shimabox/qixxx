@@ -136,8 +136,18 @@ const FIELDS: SliderField[] = [
  * single 1:1 config constant (stage-dependent counts, dynamic Ember count)
  * use the closest/most-descriptive name plus a `_notes` explanation instead,
  * exactly as the plan permits ("対応する config 定数名か注記付きキー").
+ *
+ * `timeLimitTicks` (docs/plans/2026-08-13-time-limit-mode P3 review fix) is
+ * threaded in as its own parameter, separately from `params`
+ * (EffectiveDebugParams) — the run's time budget is a GameSession-level
+ * concern (GameSession.getTimeLimitTicks()), not one of Game's own
+ * EffectiveDebugParams, exactly like the time-limit slider itself (see
+ * buildPanel()'s `timeLimit` row) — but it still needs to end up in this
+ * same EXPORT payload, under the exact `TIME_LIMIT_TICKS` name, so the
+ * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
+ * other slider here.
  */
-function buildExportPayload(params: EffectiveDebugParams): Record<string, unknown> {
+function buildExportPayload(params: EffectiveDebugParams, timeLimitTicks: number): Record<string, unknown> {
   return {
     WISP_COUNT: params.wispCount,
     WISP_SPEED_MULTIPLIER: params.wispSpeedMultiplier,
@@ -146,6 +156,7 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
     EMBER_SPAWN_INTERVAL_SEC: params.emberSpawnIntervalSec,
     EMBER_BRANCH_CHASE_PROBABILITY: params.emberBranchChaseProbability,
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
+    TIME_LIMIT_TICKS: timeLimitTicks,
     _notes: {
       WISP_COUNT:
         'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
@@ -155,6 +166,8 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
         'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
       DEFAULT_REQUIRED_OCCUPANCY:
         'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
+      TIME_LIMIT_TICKS:
+        "The run's current effective time budget, in ticks (60 tick = 1s at TICK_RATE) — matches config.ts's TIME_LIMIT_TICKS constant exactly (name and unit), unlike this payload's other stage-dependent keys. Reflects the time-limit slider above, whether or not it's been touched from its config.ts default.",
     },
   };
 }
@@ -212,13 +225,6 @@ export interface DebugPanelHandle {
  * free should session-swapping ever be reintroduced.
  */
 export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElement): DebugPanelHandle {
-  // Positioned below the HUD row (rather than a fixed pixel guess) so the
-  // floating panel never covers the "DEBUG" badge or the MUTE button that
-  // also live in the HUD row, regardless of how tall it renders at a given
-  // viewport width (docs/plan.md's HUD row height is itself responsive,
-  // see main.ts's fitCanvasToViewport()).
-  const panelTop = hudRow.getBoundingClientRect().bottom + 8;
-
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
   // open/close toggle — one click re-opens a collapsed panel just as easily
@@ -237,10 +243,31 @@ export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElemen
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const { panel, sync } = buildPanel(getSession, panelTop, () => setOpen(false));
+  const { panel, sync } = buildPanel(getSession, () => setOpen(false));
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
+
+  // Position tracking (P3 review fix, docs/plans/2026-08-13-time-limit-mode:
+  // user-measured overlap at both 1280x720 and 880x700 — panel top 36-39px
+  // vs. the actual HUD row bottom at 54px). The panel used to be positioned
+  // once, synchronously, right here — using hudRow's rect from *before* the
+  // badge above was even appended to it (which can itself grow hudRow, e.g.
+  // by pushing a borderline single-line HUD into stacked/3-line mode) and
+  // before main.ts's own post-mount fitCanvasToViewport() re-run (see
+  // main.ts's init(), right after this function's caller) had a chance to
+  // relay it out again. A ResizeObserver on hudRow — firing only when its
+  // box actually changes, never every frame — keeps `panel.style.top` (and
+  // its `maxHeight`, which depends on the same value) correct through that
+  // followup layout pass and through every later resize/orientationchange or
+  // single/stacked HUD mode flip, without polling.
+  const repositionPanel = (): void => {
+    const top = hudRow.getBoundingClientRect().bottom + 8;
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `calc(100vh - ${top + 8}px)`;
+  };
+  repositionPanel(); // best-effort immediate placement — the observer below catches any layout pass this misses
+  new ResizeObserver(repositionPanel).observe(hudRow);
 
   return { refresh: sync };
 }
@@ -266,17 +293,18 @@ function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
 
 function buildPanel(
   getSession: () => GameSession,
-  top: number,
   onClose: () => void
 ): { panel: HTMLDivElement; sync: () => void } {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
-  panel.style.top = `${top}px`;
+  // `top`/`maxHeight` are deliberately left unset here — they depend on
+  // hudRow's on-screen bottom edge, which isn't stable yet at build time
+  // (docs/plans/2026-08-13-time-limit-mode P3 review fix); initDebugPanel()
+  // sets both, and keeps them in sync afterward, via its repositionPanel().
   panel.style.right = '8px';
   panel.style.zIndex = '1000';
   panel.style.width = '260px';
-  panel.style.maxHeight = `calc(100vh - ${top + 8}px)`;
   panel.style.overflowY = 'auto';
   panel.style.background = 'rgba(10, 14, 39, 0.92)';
   panel.style.border = '1px solid #ffe066';
@@ -400,7 +428,8 @@ function buildPanel(
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
-    const payload = buildExportPayload(getSession().getEffectiveDebugParams());
+    const session = getSession();
+    const payload = buildExportPayload(session.getEffectiveDebugParams(), session.getTimeLimitTicks());
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
     void copyToClipboard(json);
