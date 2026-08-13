@@ -1,12 +1,11 @@
-import { GameSession, SessionInput, SessionStatus } from './core/session';
+import { GameSession, SessionInput } from './core/session';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
 import { TouchControls, attachTapToConfirm } from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
-import { loadBestTime, saveBestTimeIfBetter } from './storage/bestTimes';
-import { RunMode, shouldPersistHighScore, shouldPersistBestTime, resolveHudModePrefix } from './runMode';
+import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import {
@@ -20,6 +19,8 @@ import {
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
   HUD_WORST_CASE_STATS_TEXT,
+  HUD_TIME_WARNING_TICKS,
+  HUD_TIME_WARNING_COLOR,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -327,6 +328,10 @@ let lastHudMultiplier = -1;
 // comparison above stays a single strict-equality check per field, same
 // shape as every other lastHud* cache.
 let lastHudTime = '';
+// Whether the last-30-seconds warning color (docs/plans/2026-08-13-time-
+// limit-mode) was applied on the previous write — see updateHud()'s doc
+// comment for why this is tracked separately from lastHudTime.
+let lastHudTimeWarning = false;
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -350,39 +355,22 @@ let lastScreenText: string | null = null;
 // state (e.g. mid-fetch "POSTING..."/"FAILED - RETRY") each render.
 let gameOverModalShown = false;
 
-// SEEDED RUNS / TIME ATTACK. `explicitSeedParam` is read once at init()
-// from `?seed=`; when present the whole page load runs as `runMode ===
-// 'seeded'` — see runMode.ts's module comment for exactly what that gates
-// (qixxx.highScore / qixxx.bestTimes write suppression, the HUD's `SEED
-// <n>` prefix). `runMode` and `seededRunSeed` are therefore fixed for the
-// entire page load (set once in init(), never reassigned afterward):
-// GameSession's own internal reset (triggered by its 'gameover' case)
-// already reuses the same seed, or lack thereof, across every retry on its
-// own, so main.ts never needs to swap `session` for a new instance.
+// SEEDED RUNS. `explicitSeedParam` is read once at init() from `?seed=`;
+// when present the whole page load runs as `runMode === 'seeded'` — see
+// runMode.ts's module comment for exactly what that gates (qixxx.highScore
+// write suppression, the HUD's `SEED <n>` prefix). `runMode` and
+// `seededRunSeed` are therefore fixed for the entire page load (set once in
+// init(), never reassigned afterward): GameSession's own internal reset
+// (triggered by its 'gameover' case) already reuses the same seed, or lack
+// thereof, across every retry on its own, so main.ts never needs to swap
+// `session` for a new instance.
 let explicitSeedParam: number | undefined;
 let runMode: RunMode = 'normal';
 // The seed value for a 'seeded' run, shown as `SEED <n>` in the HUD
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
-// StageClear TIME/BEST/NEW RECORD. Populated once, edge-triggered on the
-// tick the session's status first becomes 'stageclear' (see `prevStatus`
-// below, mirroring gameOverModalShown's own edge-trigger) — screenText()
-// then just reads these cached strings every frame instead of
-// re-formatting/re-saving on every render.
-let stageClearTimeStr = '';
-let stageClearBestStr = '';
-let stageClearIsNewRecord = false;
-// False for a 'seeded' run (the board isn't the normal one, so a "best"
-// isn't meaningful) — screenText() omits the "/ BEST ..." suffix entirely
-// when this is false.
-let stageClearShowsBest = false;
-// Tracks the previous tick's session status purely to edge-detect the
-// title/playing/stageclear/gameover transitions above (getStatus() itself
-// has no "did it just change" signal of its own).
-let prevStatus: SessionStatus = 'title';
-
-// SEEDED RUNS / TIME ATTACK helpers.
+// SEEDED RUNS helpers.
 
 /**
  * Formats a tick count as `M:SS.D` (minutes:seconds.deciseconds) — no
@@ -651,10 +639,18 @@ function updateHud(): void {
   const hi = session.getHighScore();
   const lives = session.getLives();
   const multiplier = session.getMultiplier();
-  // TIME: the *current stage's* elapsed tick count — matches what
-  // qixxx.bestTimes records per stage (see handleStageClearEntered()), not
-  // the run total.
-  const timeStr = formatTicks(session.getStageTicks());
+  // TIME: the run's remaining time budget, counting down from
+  // GameSession.getTimeLimitTicks() to 0 (docs/plans/2026-08-13-time-limit-
+  // mode) — a run-wide countdown, not a per-stage elapsed count.
+  const remainingTicks = session.getRemainingTicks();
+  const timeStr = formatTicks(remainingTicks);
+  // Last-30-seconds warning (docs/plans/2026-08-13-time-limit-mode): tracked
+  // as its own boolean, separately from `timeStr === lastHudTime` below,
+  // because the crossing tick doesn't always land on a decisecond-bucket
+  // boundary (formatTicks() only changes its displayed string once every 6
+  // ticks) — without this, the color flip could lag up to 5 ticks behind
+  // the instant remainingTicks actually crosses the threshold.
+  const timeWarning = remainingTicks <= HUD_TIME_WARNING_TICKS;
 
   if (
     stage === lastHudStage &&
@@ -663,7 +659,8 @@ function updateHud(): void {
     occupancyPercent === lastHudOccupancy &&
     lives === lastHudLives &&
     multiplier === lastHudMultiplier &&
-    timeStr === lastHudTime
+    timeStr === lastHudTime &&
+    timeWarning === lastHudTimeWarning
   ) {
     return;
   }
@@ -674,21 +671,32 @@ function updateHud(): void {
   lastHudLives = lives;
   lastHudMultiplier = multiplier;
   lastHudTime = timeStr;
+  lastHudTimeWarning = timeWarning;
 
   // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
-  // (byte-identical to before TIME ATTACK/seeded-run support existed,
-  // including in two-line mode's lines 1-2 — never touched here at all —
-  // which the mobile-viewport E2E test asserts stays unclipped), `SEED <n>`
-  // for a `?seed=` run.
+  // (byte-identical to before seeded-run support existed, including in
+  // two-line mode's lines 1-2 — never touched here at all — which the
+  // mobile-viewport E2E test asserts stays unclipped), `SEED <n>` for a
+  // `?seed=` run.
   const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  // Reset every line's color to its inherited default first (docs/plans/
+  // 2026-08-13-time-limit-mode), then apply the warning color only to
+  // whichever line actually carries TIME this frame — necessary because a
+  // HUD-mode flip (updateHudMode()) can move TIME from hudLine1 to hudLine3
+  // (or back) between one write and the next, and a stale inline color left
+  // on the line that *used* to carry TIME would otherwise persist.
+  hudLine1.style.color = '';
+  hudLine3.style.color = '';
   if (hudTwoLineMode) {
     hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
     hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
     hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
+    if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
   } else {
     hudLine1.textContent =
       `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
       `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+    if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
   }
 }
 
@@ -745,18 +753,6 @@ function update(): void {
     renderer.spawnEmberDespawnEffect(position);
   }
 
-  // StageClear TIME/BEST/NEW RECORD: edge-triggered exactly once, the tick
-  // status first becomes 'stageclear', so the recorded/displayed values
-  // stay fixed for as long as the StageClear screen is up (not
-  // re-evaluated every tick — getStageTicks() is frozen anyway once the
-  // stage leaves 'playing', but saveBestTimeIfBetter() itself must run
-  // only once per clear).
-  const status = session.getStatus();
-  if (status === 'stageclear' && prevStatus !== 'stageclear') {
-    handleStageClearEntered();
-  }
-  prevStatus = status;
-
   // Persistence: only a 'normal' run may write qixxx.highScore (runMode.ts's
   // shouldPersistHighScore()) — a 'seeded' run still *reads* it for display
   // (see updateHud()'s `hi` value), just never persists to it, since its
@@ -770,33 +766,6 @@ function update(): void {
       saveHighScore(currentHighScore);
     }
   }
-}
-
-/**
- * Records (normal mode only — see shouldPersistBestTime()) and formats this
- * stage's just-finished clear time. Called exactly once per stage clear —
- * see its only call site in update().
- */
-function handleStageClearEntered(): void {
-  const ticks = session.getStageTicks();
-  stageClearTimeStr = formatTicks(ticks);
-
-  // A 'seeded' run doesn't record a best time (runMode.ts's
-  // shouldPersistBestTime()): its board isn't the fixed, comparable one a
-  // "best" is meaningful against.
-  if (!shouldPersistBestTime(runMode)) {
-    stageClearShowsBest = false;
-    return;
-  }
-
-  stageClearShowsBest = true;
-  const stage = session.getStage();
-  // Read-but-don't-write while a debug override is active, exactly like the
-  // highscore guard above: never taints the persisted record, but a
-  // previously-recorded best is still shown.
-  const isNewRecord = session.hasActiveDebugOverrides() ? false : saveBestTimeIfBetter(stage, ticks);
-  stageClearIsNewRecord = isNewRecord;
-  stageClearBestStr = formatTicks(isNewRecord ? ticks : loadBestTime(stage) ?? ticks);
 }
 
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
@@ -835,7 +804,15 @@ function renderFrame(): void {
   if (status === 'gameover') {
     if (!gameOverModalShown) {
       gameOverModalShown = true;
-      gameOverModal.show({ score: session.getScore(), stage: session.getStage(), hiScore: session.getHighScore() });
+      gameOverModal.show({
+        score: session.getScore(),
+        stage: session.getStage(),
+        hiScore: session.getHighScore(),
+        // TIME UP! (docs/plans/2026-08-13-time-limit-mode): distinguishes a
+        // time-budget-expired gameover from an ordinary life-loss one — see
+        // GameSession.getGameOverReason()'s doc comment for the two causes.
+        reason: session.getGameOverReason() ?? undefined,
+      });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
@@ -861,18 +838,17 @@ function renderFrame(): void {
 function screenText(status: ReturnType<GameSession['getStatus']>): string {
   switch (status) {
     case 'title':
-      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
+      // The "5 MINUTES" line (docs/plans/2026-08-13-time-limit-mode) tells a
+      // first-time player up front that every run is a fixed time budget,
+      // not a survive-until-you-die score attack — the whole point of the
+      // "5分で1本" reframing.
+      return (
+        `QIXXX\n\n5 MINUTES — HOW MUCH CAN YOU CLAIM?\n\n` +
+        `HI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`
+      );
     case 'stageclear': {
       const splitNote = session.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
-      // TIME/BEST/NEW RECORD: populated once by handleStageClearEntered()
-      // the tick this StageClear screen appeared — see its doc comment. A
-      // 'seeded' run never shows a BEST (stageClearShowsBest is false
-      // there).
-      const recordSuffix = stageClearIsNewRecord ? '  NEW RECORD!' : '';
-      const timeLine = stageClearShowsBest
-        ? `\nTIME ${stageClearTimeStr} / BEST ${stageClearBestStr}${recordSuffix}`
-        : `\nTIME ${stageClearTimeStr}`;
-      return `STAGE ${session.getStage()} CLEAR!${splitNote}${timeLine}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
+      return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
     }
     case 'gameover':
       // Score info + the "press any key" hint both live inside the

@@ -1,9 +1,9 @@
 // Pure decision logic for which "run mode" the current game session is in.
 // Distinguishes an ordinary run from a `?seed=<n>` run: a seeded run's
 // board is a fixed, arbitrary layout (not the day-to-day varying normal
-// one), so its score/clear-times shouldn't be able to corrupt the normal
-// mode's persisted records — the seed exists purely as a reproducible-board
-// tool (e.g. the E2E claim scenario's fixed layout), not a "second" scoring
+// one), so its score shouldn't be able to corrupt the normal mode's
+// persisted record — the seed exists purely as a reproducible-board tool
+// (e.g. the E2E claim scenario's fixed layout), not a "second" scoring
 // track worth recording.
 //
 // Kept as a standalone, DOM-free module — unlike the rest of src/main.ts,
@@ -12,24 +12,13 @@
 // needing a jsdom environment.
 
 /**
- * - 'normal': an ordinary, unseeded run. Reads/writes `qixxx.highScore` and
- *   `qixxx.bestTimes` normally.
- * - 'seeded': a `?seed=<n>` run. Reads (but never writes) `qixxx.highScore`;
- *   never touches `qixxx.bestTimes` — the board isn't the normal one.
+ * - 'normal': an ordinary, unseeded run. Reads/writes `qixxx.highScore` normally.
+ * - 'seeded': a `?seed=<n>` run. Reads (but never writes) `qixxx.highScore`.
  */
 export type RunMode = 'normal' | 'seeded';
 
 /** Whether `qixxx.highScore` may be *written* for a run in this mode. Reading/displaying it is always fine regardless of mode (main.ts calls session.getHighScore() directly). */
 export function shouldPersistHighScore(mode: RunMode): boolean {
-  return mode === 'normal';
-}
-
-/**
- * Whether `qixxx.bestTimes` may be written for a stage clear in this mode.
- * A 'seeded' board isn't the normal one, so it doesn't produce a
- * comparable "best".
- */
-export function shouldPersistBestTime(mode: RunMode): boolean {
   return mode === 'normal';
 }
 

@@ -8,7 +8,7 @@ import { GameSession, SessionInput } from './session';
 import { Game } from './game';
 import { Field } from './field';
 import { Wisp } from './enemy';
-import { MISS_GRACE_TICKS } from '../config';
+import { MISS_GRACE_TICKS, INITIAL_LIVES, TIME_LIMIT_TICKS } from '../config';
 
 // A field width chosen so that session.ts's buildWisps() anti-exploit push
 // (WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN = 15, config.ts) always overflows
@@ -312,5 +312,204 @@ describe('GameSession — playing-only tick timer (docs/plans/2026-08-11-daily-s
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
     expect(session.getStageTicks()).toBe(1);
     expect(session.getTotalTicks()).toBe(1);
+  });
+});
+
+describe('GameSession — time limit (docs/plans/2026-08-13-time-limit-mode)', () => {
+  type Carry = { score: number; lives: number; multiplier: number };
+
+  // A stage that never claims or misses on its own: the marker idles at the
+  // border corner (0,0), well away from the Wisp, and every test in this
+  // block only ever feeds it idle (dx:0, dy:0, drawHeld:false) input — so
+  // `status` would stay 'playing' forever if not for the time limit itself.
+  // Isolates the time-up transition from any claim/miss logic.
+  function neverEndingGame(_stage: number, carry: Carry): Game {
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 5, y: 2 }, () => 0.5, 0);
+    return new Game(field, { x: 0, y: 0 }, wisp, undefined, {
+      score: carry.score,
+      lives: carry.lives,
+      multiplier: carry.multiplier,
+    });
+  }
+
+  function idle(session: GameSession, ticks: number): void {
+    for (let i = 0; i < ticks; i++) {
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+    }
+  }
+
+  it('getGameOverReason() is null before any run has ever ended', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame });
+    expect(session.getGameOverReason()).toBe(null);
+  });
+
+  it('getTimeLimitTicks() defaults to config.ts\'s TIME_LIMIT_TICKS', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame });
+    expect(session.getTimeLimitTicks()).toBe(TIME_LIMIT_TICKS);
+    expect(session.getRemainingTicks()).toBe(TIME_LIMIT_TICKS); // no ticks spent yet
+  });
+
+  it("SessionOptions.timeLimitTicks overrides config.ts's TIME_LIMIT_TICKS default (test hook)", () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 5 });
+    expect(session.getTimeLimitTicks()).toBe(5);
+    expect(session.getRemainingTicks()).toBe(5);
+  });
+
+  it('forces gameover the instant the time budget reaches 0, regardless of lives remaining', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 5 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // Title -> Playing
+    idle(session, 4);
+    expect(session.getStatus()).toBe('playing'); // budget not yet exhausted
+    expect(session.getRemainingTicks()).toBe(1);
+
+    idle(session, 1); // the 5th playing tick exhausts the budget
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('time');
+    expect(session.getLives()).toBe(INITIAL_LIVES); // full lives — never lost one
+    expect(session.getRemainingTicks()).toBe(0);
+  });
+
+  it('clamps getRemainingTicks() at 0 rather than going negative once time is up', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 3 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    idle(session, 3);
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getRemainingTicks()).toBe(0);
+
+    // Confirming out of GameOver resets to a fresh run (Title), where
+    // totalTicks is 0 again — getRemainingTicks() reads back the full
+    // (still-3) budget, not a leftover negative value.
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Title
+    expect(session.getStatus()).toBe('title');
+    expect(session.getRemainingTicks()).toBe(3);
+  });
+
+  it('does not consume the time budget while sitting on the Title screen', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 1000 });
+    idle(session, 50); // still on Title — confirm never pressed
+    expect(session.getStatus()).toBe('title');
+    expect(session.getRemainingTicks()).toBe(1000); // untouched
+  });
+
+  it('does not consume the time budget while sitting on the StageClear screen', () => {
+    function clearableGame(_stage: number, carry: Carry): Game {
+      const field = new Field(10, 5);
+      const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+      return new Game(field, { x: 7, y: 0 }, wisp, undefined, {
+        score: carry.score,
+        lives: carry.lives,
+        multiplier: carry.multiplier,
+      });
+    }
+
+    const session = new GameSession({ gameFactory: clearableGame, timeLimitTicks: 1000 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // Title -> Playing
+    for (let tick = 0; tick < 4; tick++) {
+      session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // clears stage 1
+    }
+    expect(session.getStatus()).toBe('stageclear');
+    const remainingAtClear = session.getRemainingTicks();
+
+    idle(session, 50); // sitting on StageClear — confirm never pressed
+    expect(session.getStatus()).toBe('stageclear'); // still there
+    expect(session.getRemainingTicks()).toBe(remainingAtClear); // frozen, unchanged
+  });
+
+  it(
+    "reports 'time' (not 'life') when the time budget and a life-ending miss would " +
+      'both resolve on the same tick',
+    () => {
+      function missGame(_stage: number, carry: Carry): Game {
+        const field = new Field(6, 5);
+        const wisp = new Wisp({ x: 2, y: 1 }, () => 0.5, 0);
+        return new Game(field, { x: 2, y: 0 }, wisp, undefined, {
+          score: carry.score,
+          lives: carry.lives,
+          multiplier: carry.multiplier,
+        });
+      }
+
+      function driveToNaturalGameOver(session: GameSession): void {
+        while (session.getStatus() === 'playing') {
+          session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false }); // steps onto the Wisp -> miss
+          for (let tick = 0; tick < MISS_GRACE_TICKS && session.getStatus() === 'playing'; tick++) {
+            session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+          }
+        }
+      }
+
+      // First, find the natural (unlimited-time) tick count at which the
+      // last life is lost — fully deterministic (missGame's Wisp uses a
+      // fixed rng and heading), so replaying the identical input sequence
+      // below reproduces this exactly.
+      const natural = new GameSession({ gameFactory: missGame });
+      natural.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+      driveToNaturalGameOver(natural);
+      expect(natural.getStatus()).toBe('gameover');
+      expect(natural.getGameOverReason()).toBe('life');
+      const totalTicksAtNaturalGameOver = natural.getTotalTicks();
+
+      // Replay the identical sequence with the time budget set to expire on
+      // that exact same tick: lives genuinely also hit 0 this tick, but
+      // 'time' must win the precedence (docs/plan's "残機・状態に関係なく").
+      const timed = new GameSession({ gameFactory: missGame, timeLimitTicks: totalTicksAtNaturalGameOver });
+      timed.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+      driveToNaturalGameOver(timed);
+      expect(timed.getStatus()).toBe('gameover');
+      expect(timed.getGameOverReason()).toBe('time');
+      expect(timed.getLives()).toBe(0); // lives did also reach 0 this same tick
+    }
+  );
+
+  it('getGameOverReason() resets to null once a fresh run starts (GameOver -> Title)', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 2 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    idle(session, 2);
+    expect(session.getGameOverReason()).toBe('time');
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Title
+    expect(session.getStatus()).toBe('title');
+    expect(session.getGameOverReason()).toBe(null);
+  });
+
+  it("setDebugTimeLimitTicks() overrides the run's time budget and marks debug overrides active", () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 1000 });
+    expect(session.hasActiveDebugOverrides()).toBe(false);
+
+    session.setDebugTimeLimitTicks(5);
+    expect(session.getTimeLimitTicks()).toBe(5);
+    expect(session.hasActiveDebugOverrides()).toBe(true);
+
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // Title -> Playing
+    idle(session, 5);
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('time');
+  });
+
+  it('resetDebugOverrides() clears a debug time-limit override, restoring the original budget', () => {
+    const session = new GameSession({ gameFactory: neverEndingGame, timeLimitTicks: 1000 });
+    session.setDebugTimeLimitTicks(5);
+    expect(session.getTimeLimitTicks()).toBe(5);
+
+    session.resetDebugOverrides();
+    expect(session.getTimeLimitTicks()).toBe(1000);
+    expect(session.hasActiveDebugOverrides()).toBe(false);
+  });
+
+  it('a timeLimitTicks override does not disturb a seeded run\'s deterministic Wisp spawn', () => {
+    const withOverride = new GameSession({ seed: 123, timeLimitTicks: 5, fieldWidth: 40, fieldHeight: 20 });
+    const withoutOverride = new GameSession({ seed: 123, fieldWidth: 40, fieldHeight: 20 });
+    expect(withOverride.getGame().getWisps()[0].getPosition()).toEqual(
+      withoutOverride.getGame().getWisps()[0].getPosition()
+    );
+  });
+
+  it('a seeded run still times up exactly like a normal run', () => {
+    const session = new GameSession({ seed: 456, timeLimitTicks: 4, fieldWidth: 40, fieldHeight: 20 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // Title -> Playing
+    idle(session, 4);
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('time');
   });
 });

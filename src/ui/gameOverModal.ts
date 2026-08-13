@@ -8,12 +8,23 @@
 // DOM-only module — src/core/ is never imported here (docs/plan.md's "core
 // purity" invariant), matching input/keyboard.ts and input/touch.ts's
 // existing DOM-touching exemption.
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
+import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, HUD_TIME_WARNING_COLOR } from '../config';
 
 export interface GameOverScoreInfo {
   score: number;
   stage: number;
   hiScore: number;
+  /**
+   * Why this run ended (docs/plans/2026-08-13-time-limit-mode — mirrors
+   * GameSession.getGameOverReason()): 'time' shows an extra "TIME UP!" line
+   * beneath the GAME OVER heading so a time-budget-expired run reads
+   * distinctly from an ordinary life-loss one. Omitted/undefined and 'life'
+   * both render identically (no extra line) — this modal's pre-existing
+   * "GAME OVER" heading and SCORE/STAGE/HI SCORE lines are unchanged either
+   * way, so a life-loss run (including this file's own E2E coverage) looks
+   * exactly as it did before this option existed.
+   */
+  reason?: 'life' | 'time';
 }
 
 // Edge-triggered "return to Title" signal, reusing input/touch.ts's
@@ -54,6 +65,7 @@ function tweetIntentUrl(info: GameOverScoreInfo, id: string): string {
 
 export class GameOverModal {
   private readonly container: HTMLDivElement;
+  private readonly reasonLine: HTMLDivElement;
   private readonly scoreLine: HTMLDivElement;
   private readonly stageLine: HTMLDivElement;
   private readonly hiLine: HTMLDivElement;
@@ -95,6 +107,20 @@ export class GameOverModal {
     heading.style.fontWeight = 'bold';
     heading.style.marginBottom = '4px';
     this.container.appendChild(heading);
+
+    // TIME UP! (docs/plans/2026-08-13-time-limit-mode): hidden by default,
+    // shown only for a `reason: 'time'` gameover (see show() below) — an
+    // ordinary life-loss gameover (this file's own E2E coverage) never
+    // populates this, so the modal's heading/SCORE/STAGE/HI SCORE lines stay
+    // byte-identical to before this feature existed.
+    this.reasonLine = document.createElement('div');
+    this.reasonLine.id = 'gameover-reason';
+    this.reasonLine.style.fontSize = '1em';
+    this.reasonLine.style.fontWeight = 'bold';
+    this.reasonLine.style.color = HUD_TIME_WARNING_COLOR;
+    this.reasonLine.style.marginBottom = '4px';
+    this.reasonLine.style.display = 'none';
+    this.container.appendChild(this.reasonLine);
 
     this.scoreLine = document.createElement('div');
     this.stageLine = document.createElement('div');
@@ -143,6 +169,13 @@ export class GameOverModal {
     this.scoreLine.textContent = `SCORE: ${info.score}`;
     this.stageLine.textContent = `STAGE: ${info.stage}`;
     this.hiLine.textContent = `HI SCORE: ${info.hiScore}`;
+    if (info.reason === 'time') {
+      this.reasonLine.textContent = 'TIME UP!';
+      this.reasonLine.style.display = 'block';
+    } else {
+      this.reasonLine.textContent = '';
+      this.reasonLine.style.display = 'none';
+    }
     this.resetShareButton();
     this.container.style.display = 'flex';
   }

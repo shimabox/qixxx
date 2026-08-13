@@ -27,6 +27,19 @@ export const MAX_FRAME_DELTA = 0.25;
 export const STAGE_MAX_DIFFICULTY = 10;
 export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
 
+// Time limit (docs/plans/2026-08-13-time-limit-mode): every run is capped at
+// a fixed time *budget* instead of running until lives run out — the whole
+// point of the "5分で1本" reframing (see that request's background). 18000
+// ticks = 300s (5 minutes) at TICK_RATE=60. core/session.ts's GameSession
+// counts this down from getTotalTicks() (playing-only, same rule as the
+// tick counters it already tracked) and forces a 'gameover' the instant it
+// hits 0, regardless of lives remaining — see GameSession.getGameOverReason()
+// and GameSession.getRemainingTicks(). SessionOptions.timeLimitTicks (a test
+// hook) and the debug panel's own time-limit slider
+// (GameSession.setDebugTimeLimitTicks(), src/debug/panel.ts) can both
+// override this per-session; this constant is only the real-play default.
+export const TIME_LIMIT_TICKS = 18000;
+
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
 // Grace period after a miss (ticks) during which no further miss can be
@@ -178,6 +191,17 @@ export const COLOR_EMBER_BLAZE = '#a4133c';
 export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
+
+// TIME countdown warning (docs/plans/2026-08-13-time-limit-mode): the HUD
+// line carrying TIME switches to this color once
+// GameSession.getRemainingTicks() drops to/below HUD_TIME_WARNING_TICKS
+// (30s), in both the single-line and stacked-lines HUD layouts (main.ts's
+// updateHud()) — a last-30-seconds cue that the run is about to hard-cut off
+// regardless of lives remaining. Reuses the same neon-red hue as
+// COLOR_IGNITER (already the palette's "danger" color) rather than
+// introducing a fourth alarm color.
+export const HUD_TIME_WARNING_TICKS = 30 * TICK_RATE;
+export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // The HUD switches from its single nowrap+ellipsis line to its
 // stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
 // STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
@@ -194,25 +218,28 @@ export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, r
 //
 // Deliberately generous worst-case single-line stats text (main.ts's
 // measureRequiredSingleLineWidth()) used to size that decision: 3-digit
-// STAGE, 6-digit SCORE/HI (just under 1,000,000), 2-digit-minute TIME (up to
-// 99:59.9, i.e. ~1h39m in a single stage), 100% OCCUPANCY, and x9
-// (SPLIT_MULTIPLIER_CAP — LIVES never exceeds a single digit; nothing in
-// core/ grants extra lives past INITIAL_LIVES) — measures ~720px at the
-// HUD's 16px-capped font. A 'seeded' run's `SEED <n>  ` prefix (runMode.ts's
-// resolveHudModePrefix()) is measured on top of this at its own actual
-// (already-fixed-for-the-page-load) value, not re-guessed here, since
-// unlike SCORE/HI it can't change after `?seed=` is parsed.
+// STAGE, 6-digit SCORE/HI (just under 1,000,000), TIME (docs/plans/
+// 2026-08-13-time-limit-mode: a run-total countdown from TIME_LIMIT_TICKS
+// down to 0, so its on-screen width is fixed at "D:SS.D" — single-digit
+// minutes, since TIME_LIMIT_TICKS's default 300s never reaches a 2-digit
+// minute — for the entire run, not just a worst case; 5:00.0 is simply its
+// starting/maximum value), 100% OCCUPANCY, and x9 (SPLIT_MULTIPLIER_CAP —
+// LIVES never exceeds a single digit; nothing in core/ grants extra lives
+// past INITIAL_LIVES) — measures comfortably under the previous (pre-time-
+// limit, unbounded-per-stage-clock) budget at the HUD's 16px-capped font. A
+// 'seeded' run's `SEED <n>  ` prefix (runMode.ts's resolveHudModePrefix())
+// is measured on top of this at its own actual (already-fixed-for-the-page-
+// load) value, not re-guessed here, since unlike SCORE/HI it can't change
+// after `?seed=` is parsed.
 //
-// Tighter than a truly unbounded worst case (e.g. an 8-digit SCORE, or a
-// 3-digit-minute TIME from an AFK stage) would be, because this also has to
-// leave the existing 1280x720 desktop baseline in single-line mode — its
-// true available HUD width (~762px there, height-limited — see
-// wouldSingleLineFit()) has no room for a fully unbounded budget. An
-// extremely long single stage (>99:59) or a 7+-digit cumulative score is
-// accepted as a residual, deliberately out-of-budget edge case rather than
-// one this sizing protects against.
+// The debug panel's own time-limit slider (src/debug/panel.ts) can push
+// TIME_LIMIT_TICKS past this budget's single-digit-minute assumption (e.g.
+// a 10-minute override) — a deliberately out-of-budget edge case for that
+// dev-only tool, exactly like a 7+-digit cumulative score, rather than one
+// this sizing protects against. A 7+-digit cumulative score remains the
+// other accepted residual.
 export const HUD_WORST_CASE_STATS_TEXT =
-  'STAGE 999  SCORE: 999999  HI: 999999  TIME 99:59.9  OCCUPANCY: 100%  LIVES: 9  x9';
+  'STAGE 999  SCORE: 999999  HI: 999999  TIME 5:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
 
 // #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
 // #hud / the credit link / the mute button. Kept as a constant — like

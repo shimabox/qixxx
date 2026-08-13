@@ -9,6 +9,7 @@
 // as it was before M10.
 import { GameSession } from '../core/session';
 import type { DebugOverrides, EffectiveDebugParams } from '../core/game';
+import { TICK_RATE } from '../config';
 
 /**
  * Slider ranges per docs/plan.md §12.4's "調整項目（初期セット）" list.
@@ -41,6 +42,13 @@ const RANGES = {
   emberSpawnIntervalSec: { min: 1, max: 60, step: 1 },
   emberBranchChaseProbability: { min: 0, max: 1, step: 0.05 },
   requiredOccupancyPercent: { min: 10, max: 99, step: 1 },
+  // Time limit (docs/plans/2026-08-13-time-limit-mode), in seconds: mainly
+  // for pulling the run's time budget way down (e.g. 5s) so a tester can
+  // reach TIME UP! without waiting out the real 300s (5min) default — the
+  // upper end (10min) is there for symmetry/tuning but isn't the primary
+  // use case. 5s step keeps the slider's range of motion manageable at
+  // either end.
+  timeLimitSec: { min: 5, max: 600, step: 5 },
 } as const;
 
 interface SliderField {
@@ -345,7 +353,41 @@ function buildPanel(
     panel.appendChild(row);
   }
 
-  syncFromEffectiveParams();
+  // Time limit (docs/plans/2026-08-13-time-limit-mode): a session-level
+  // concern (GameSession.setDebugTimeLimitTicks()), not one of Game's own
+  // EffectiveDebugParams — kept out of the FIELDS/rows machinery above
+  // (which is keyed off EffectiveDebugParams) and wired up directly instead.
+  // Displayed/entered in whole seconds; converted to/from ticks (TICK_RATE)
+  // at the boundary.
+  const timeLimit = buildRawSliderRow(
+    'Time limit (s)',
+    RANGES.timeLimitSec,
+    (v) => `${v}s`,
+    (sliderValueSec) => {
+      getSession().setDebugTimeLimitTicks(sliderValueSec * TICK_RATE);
+      timeLimit.readout.textContent = `${sliderValueSec}s`;
+    }
+  );
+  // Stable id (docs/plans/2026-08-13-time-limit-mode) so E2E coverage can
+  // locate this specific slider directly — the other FIELDS-driven sliders
+  // above have no id of their own (nothing has previously needed to target
+  // one individually), but this one's the E2E suite's fastest real-time path
+  // to a TIME UP! gameover (shrinking the budget down from its 5s minimum).
+  timeLimit.input.id = 'debug-time-limit-input';
+  panel.appendChild(timeLimit.row);
+
+  const syncTimeLimitRow = (): void => {
+    const seconds = Math.round(getSession().getTimeLimitTicks() / TICK_RATE);
+    timeLimit.input.value = String(seconds);
+    timeLimit.readout.textContent = `${seconds}s`;
+  };
+
+  const syncAll = (): void => {
+    syncFromEffectiveParams();
+    syncTimeLimitRow();
+  };
+
+  syncAll();
 
   const buttonRow = document.createElement('div');
   buttonRow.style.display = 'flex';
@@ -354,7 +396,7 @@ function buildPanel(
 
   const resetButton = buildButton('RESET', () => {
     getSession().resetDebugOverrides();
-    syncFromEffectiveParams();
+    syncAll();
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
@@ -382,11 +424,27 @@ function buildPanel(
   exportOutput.style.resize = 'vertical';
   panel.appendChild(exportOutput);
 
-  return { panel, sync: syncFromEffectiveParams };
+  return { panel, sync: syncAll };
 }
 
 function buildSliderRow(
   field: SliderField,
+  onChange: (sliderValue: number) => void
+): { row: HTMLDivElement; input: HTMLInputElement; readout: HTMLSpanElement } {
+  return buildRawSliderRow(field.label, field.range, (v) => field.format(field.fromSlider(v)), onChange);
+}
+
+/**
+ * Lower-level slider-row builder underlying buildSliderRow() above, taking a
+ * plain label/range/format instead of a `SliderField` — used directly by the
+ * time-limit slider (docs/plans/2026-08-13-time-limit-mode), which has no
+ * `EffectiveDebugParams` key to key a `SliderField` off (it's a session-level
+ * concern, see buildPanel()'s `timeLimit` row).
+ */
+function buildRawSliderRow(
+  label: string,
+  range: { min: number; max: number; step: number },
+  format: (sliderValue: number) => string,
   onChange: (sliderValue: number) => void
 ): { row: HTMLDivElement; input: HTMLInputElement; readout: HTMLSpanElement } {
   const row = document.createElement('div');
@@ -395,23 +453,23 @@ function buildSliderRow(
   const labelRow = document.createElement('div');
   labelRow.style.display = 'flex';
   labelRow.style.justifyContent = 'space-between';
-  const label = document.createElement('span');
-  label.textContent = field.label;
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
   const readout = document.createElement('span');
   readout.style.color = '#00ff41';
-  labelRow.appendChild(label);
+  labelRow.appendChild(labelEl);
   labelRow.appendChild(readout);
   row.appendChild(labelRow);
 
   const input = document.createElement('input');
   input.type = 'range';
-  input.min = String(field.range.min);
-  input.max = String(field.range.max);
-  input.step = String(field.range.step);
+  input.min = String(range.min);
+  input.max = String(range.max);
+  input.step = String(range.step);
   input.style.width = '100%';
   input.addEventListener('input', () => {
     const value = Number(input.value);
-    readout.textContent = field.format(field.fromSlider(value));
+    readout.textContent = format(value);
     onChange(value);
   });
   row.appendChild(input);
