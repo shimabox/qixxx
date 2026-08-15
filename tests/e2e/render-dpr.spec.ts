@@ -48,22 +48,19 @@ const CLAIMED_FAST = 1;
 // Mirrors src/config.ts's RENDER_SCALE (logical canvas px per grid cell).
 const RENDER_SCALE = 4;
 
+type ClaimedRect = { x0: number; x1: number; y0: number; y1: number };
+
 // Pokes a solid interior rectangle of CLAIMED_FAST cells directly onto the
 // live Field (rows/cols 5..24 x 5..54 — comfortably inside the field's
-// BORDER ring on every side), waits a frame for the render loop to pick it
-// up, then samples the *interior* of that rectangle's rendered pixels (a
-// 1-cell margin in from the rectangle's own edges, to dodge the legitimate
-// color change at the claimed/unclaimed boundary — the seam bug this guards
-// against only ever appeared *between same-color adjacent cells*, i.e.
-// strictly inside a fill, never at its outer edge). Returns the count of
-// distinct RGBA colors found in that sample: 1 means a clean, seamless
-// fill; >1 means the fractional-DPR seam bug has regressed.
-async function claimedFillDistinctColorCount(page: import('@playwright/test').Page): Promise<number> {
+// BORDER ring on every side) and returns its bounds. Doesn't itself wait for
+// a render — callers do that (see waitForNextRender()/sampleDistinctColorCount()
+// below) since how long that takes isn't fixed (see their comments).
+async function claimAndGetRect(page: import('@playwright/test').Page): Promise<ClaimedRect> {
   await page.goto(APP_URL);
   await page.keyboard.press('Space'); // Title -> Playing
   await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
 
-  const rect = await page.evaluate((claimedFast) => {
+  return page.evaluate((claimedFast) => {
     const field = window.__game__!.session.getGame().getField();
     const width = field.getWidth();
     const height = field.getHeight();
@@ -78,13 +75,37 @@ async function claimedFillDistinctColorCount(page: import('@playwright/test').Pa
     }
     return { x0, x1, y0, y1 };
   }, CLAIMED_FAST);
+}
 
-  // One rendered frame is enough: main.ts's rAF loop redraws the whole
-  // field (drawImage of the background layer + a full drawField() scan)
-  // every frame regardless of what changed, so the very next frame after
-  // the Field mutation above already reflects it.
-  await page.waitForTimeout(100);
+// Waits for two animation frames (2026-08-15 review fix: a fixed
+// waitForTimeout() here previously risked reading a stale/background-color
+// frame under CI load or throttled rAF, producing a false failure). A
+// single rAF isn't enough to *guarantee* main.ts's own gameLoop rAF
+// callback — which is what actually redraws the field — has run since our
+// Field mutation above, because there's no defined ordering between our
+// freshly-scheduled rAF callback and one the game loop may or may not have
+// already queued for the same upcoming frame. Waiting for a second,
+// nested rAF guarantees at least one full browser frame has elapsed after
+// the first one fired, so the game loop's own rAF (re-armed every frame)
+// is certain to have run — and drawn the mutated field — by then. This is
+// the standard "double rAF" idiom for "wait until the next real paint".
+async function waitForNextRender(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      })
+  );
+}
 
+// Samples the *interior* of the claimed rectangle's rendered pixels (a
+// 1-cell margin in from the rectangle's own edges, to dodge the legitimate
+// color change at the claimed/unclaimed boundary — the seam bug this guards
+// against only ever appeared *between same-color adjacent cells*, i.e.
+// strictly inside a fill, never at its outer edge). Returns the count of
+// distinct RGBA colors found in that sample: 1 means a clean, seamless
+// fill; >1 means the fractional-DPR seam bug has regressed.
+function sampleDistinctColorCount(page: import('@playwright/test').Page, rect: ClaimedRect): Promise<number> {
   return page.evaluate(
     ({ x0, x1, y0, y1, renderScale }) => {
       const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -125,7 +146,19 @@ for (const dpr of [1.875, 2.2, 2.0]) {
     test.use({ deviceScaleFactor: dpr });
 
     test('claimed-area fill interior renders as a single solid color (no seam)', async ({ page }) => {
-      expect(await claimedFillDistinctColorCount(page)).toBe(1);
+      const rect = await claimAndGetRect(page);
+      await waitForNextRender(page);
+
+      // Belt-and-suspenders on top of waitForNextRender() above (2026-08-15
+      // review fix): re-sample under expect.poll() rather than reading
+      // once, so an unusually slow paint under heavy CI load still gets a
+      // few more short retries instead of an immediate false failure. A
+      // real regression (the seam bug back) never converges to 1, so this
+      // still fails — just after this bounded extra wait rather than
+      // instantly. In the passing case the first read already reflects the
+      // rendered frame, so this resolves on the first attempt and costs
+      // nothing.
+      await expect.poll(() => sampleDistinctColorCount(page, rect), { timeout: 3_000 }).toBe(1);
     });
   });
 }
