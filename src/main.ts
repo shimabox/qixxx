@@ -233,7 +233,14 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     button.style.cursor = 'pointer';
     button.style.pointerEvents = 'auto';
     button.style.userSelect = 'none';
-    button.addEventListener('click', onToggle);
+    button.addEventListener('click', (event) => {
+      onToggle();
+      // Return keyboard focus to the game after toggling. Otherwise the
+      // persistent HUD button remains focused after a click/tap, and Enter
+      // on Title/StageClear both confirms the screen and activates the
+      // focused button again, silently undoing the mute at the transition.
+      (event.currentTarget as HTMLButtonElement).blur();
+    });
     row.appendChild(button);
   }
   return button;
