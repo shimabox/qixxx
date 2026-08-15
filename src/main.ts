@@ -838,14 +838,7 @@ function renderFrame(): void {
 function screenText(status: ReturnType<GameSession['getStatus']>): string {
   switch (status) {
     case 'title':
-      // The "5 MINUTES" line (docs/plans/2026-08-13-time-limit-mode) tells a
-      // first-time player up front that every run is a fixed time budget,
-      // not a survive-until-you-die score attack — the whole point of the
-      // "5分で1本" reframing.
-      return (
-        `QIXXX\n\n5 MINUTES — HOW MUCH CAN YOU CLAIM?\n\n` +
-        `HI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`
-      );
+      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
     case 'stageclear': {
       const splitNote = session.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
       return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
