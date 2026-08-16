@@ -77,6 +77,11 @@ export class Renderer {
   // once-per-rendered-frame cadence, so an effect is never dropped even if
   // several Embers despawn within the ticks between two rendered frames.
   private emberDespawnEffects: DespawnEffect[] = [];
+  // Per-cell-edge physical-pixel boundaries, snapped for the constructor's
+  // `dpr` and precomputed once so drawField()/drawWisp() never allocate or
+  // call Math.round() in their per-cell hot loops (see buildCellBoundaries()
+  // below for why this exists and how it's indexed at each call site).
+  private readonly cellBoundaries: Float64Array;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -95,6 +100,7 @@ export class Renderer {
     }
     ctx.scale(dpr, dpr);
     this.ctx = ctx;
+    this.cellBoundaries = buildCellBoundaries(dpr);
 
     // Pre-render the static background (fill + subtle grid pattern) once.
     // Per-frame rendering becomes a single drawImage instead of ~19k strokeRect calls.
@@ -226,7 +232,11 @@ export class Renderer {
     this.ctx.shadowColor = COLOR_LINE;
     this.ctx.shadowBlur = GLOW_BLUR_LINE;
     for (let y = 0; y < height; y++) {
-      const py = y * RENDER_SCALE;
+      // Physical-pixel-snapped span for this row (see buildCellBoundaries's
+      // comment on why this prevents seams at fractional devicePixelRatio
+      // values) — computed once per row, not per cell.
+      const py = this.cellBoundaries[y];
+      const ch = this.cellBoundaries[y + 1] - py;
       for (let x = 0; x < width; x++) {
         const state: CellState = field.getAt(x, y);
         if (state === UNCLAIMED) continue;
@@ -252,7 +262,9 @@ export class Renderer {
           default:
             continue;
         }
-        this.ctx.fillRect(x * RENDER_SCALE, py, RENDER_SCALE, RENDER_SCALE);
+        const px = this.cellBoundaries[x];
+        const cw = this.cellBoundaries[x + 1] - px;
+        this.ctx.fillRect(px, py, cw, ch);
       }
     }
     this.ctx.restore();
@@ -277,7 +289,14 @@ export class Renderer {
       const t = trail.length > 2 ? (i - 1) / (trail.length - 2) : 0;
       const alpha = WISP_TRAIL_ALPHA_NEAR + (WISP_TRAIL_ALPHA_FAR - WISP_TRAIL_ALPHA_NEAR) * t;
       this.ctx.globalAlpha = alpha;
-      this.ctx.fillRect(p.x * RENDER_SCALE, p.y * RENDER_SCALE, RENDER_SCALE, RENDER_SCALE);
+      // Physical-pixel-snapped span, same as drawField()'s cell fills and
+      // for the same reason (fractional devicePixelRatio seams) — this is
+      // also a grid of adjacent single-cell fillRect() calls.
+      const px = this.cellBoundaries[p.x];
+      const py = this.cellBoundaries[p.y];
+      const cw = this.cellBoundaries[p.x + 1] - px;
+      const ch = this.cellBoundaries[p.y + 1] - py;
+      this.ctx.fillRect(px, py, cw, ch);
     }
     this.ctx.globalAlpha = 1;
 
@@ -452,4 +471,65 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
     g: parseInt(match[2], 16),
     b: parseInt(match[3], 16),
   };
+}
+
+// Precomputes, once per Renderer instance, a lookup table of cell-grid-line
+// positions snapped to physical-pixel boundaries under `dpr` — the fix for
+// the dark grid-like seams reported inside occupied-area fills at
+// fractional devicePixelRatio values (e.g. 1.875, 2.2 — real values seen
+// under Windows display scaling and on some Android devices; confirmed via
+// getImageData() to *not* occur at integer dpr like 1.0/2.0).
+//
+// Why this happens: the constructor's `ctx.scale(dpr, dpr)` means every
+// draw call's logical coordinates get multiplied by `dpr` before the
+// browser rasterizes them. drawField()/drawWisp() paint the grid one cell
+// at a time via `fillRect(x * RENDER_SCALE, y * RENDER_SCALE, RENDER_SCALE,
+// RENDER_SCALE)`. At an integer dpr, `x * RENDER_SCALE * dpr` is always a
+// whole physical pixel, so every cell's edges land exactly on pixel
+// boundaries and adjacent same-color cells butt together with no seam. At a
+// fractional dpr (1.875, 2.2, ...), that product is usually *not* a whole
+// pixel, so each fillRect's edge gets a half-covered, anti-aliased fringe
+// pixel; two adjacent cells each contribute their own independent fringe
+// along the shared edge, and those two partial-alpha fringes composite into
+// a visibly darker seam line — even though both cells are filled with the
+// exact same opaque color.
+//
+// The fix: instead of deriving each cell's rectangle from its own edge
+// only, derive both the cell's start-edge *and* the next cell's start-edge
+// by rounding each to the nearest physical pixel independently, then use
+// the *difference* between those two rounded values as the width/height.
+// Adjacent cells then always share the exact same rounded boundary
+// coordinate (there's only one rounded value for any given edge, however
+// many cells touch it), so there is neither a gap nor an overlap between
+// them, and no fractional-pixel fringe is ever drawn on an *interior*
+// shared edge.
+//
+// `boundaries[i]` is a *logical* (pre-ctx.scale) coordinate chosen so that
+// `boundaries[i] * dpr` is exactly (modulo an epsilon far smaller than a
+// physical pixel) the physical pixel at index `Math.round(i * RENDER_SCALE
+// * dpr)` — i.e. dividing back by `dpr` after rounding, so the existing
+// `ctx.scale(dpr, dpr)` transform (left untouched, along with every other
+// draw call in this file) reproduces that exact physical pixel again when
+// it re-multiplies by `dpr`.
+//
+// Built once per Renderer instance (dpr is fixed for the instance's
+// lifetime) as a flat Float64Array indexed by cell coordinate, so
+// drawField()'s and drawWisp()'s per-cell, every-frame hot loops do plain
+// array lookups + a subtraction instead of calling Math.round() (or
+// allocating an object) per cell, per frame — consistent with this
+// project's earlier per-frame-allocation cleanup (docs/plan.md §13.3 M13).
+//
+// One table serves both the x and y axes: RENDER_SCALE is the same for
+// both, so `boundaries[i]` is valid as either a column or a row index.
+// Sized to `max(grid width, grid height) + 1` so index `i + 1` is always
+// valid for the largest cell index either axis ever draws.
+function buildCellBoundaries(dpr: number): Float64Array {
+  const gridWidth = CANVAS_WIDTH / RENDER_SCALE;
+  const gridHeight = CANVAS_HEIGHT / RENDER_SCALE;
+  const count = Math.max(gridWidth, gridHeight) + 1;
+  const boundaries = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    boundaries[i] = Math.round(i * RENDER_SCALE * dpr) / dpr;
+  }
+  return boundaries;
 }

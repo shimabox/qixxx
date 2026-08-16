@@ -9,6 +9,7 @@
 // as it was before M10.
 import { GameSession } from '../core/session';
 import type { DebugOverrides, EffectiveDebugParams } from '../core/game';
+import { TICK_RATE } from '../config';
 
 /**
  * Slider ranges per docs/plan.md §12.4's "調整項目（初期セット）" list.
@@ -41,6 +42,13 @@ const RANGES = {
   emberSpawnIntervalSec: { min: 1, max: 60, step: 1 },
   emberBranchChaseProbability: { min: 0, max: 1, step: 0.05 },
   requiredOccupancyPercent: { min: 10, max: 99, step: 1 },
+  // Time limit (docs/plans/2026-08-13-time-limit-mode), in seconds: mainly
+  // for pulling the run's time budget way down (e.g. 5s) so a tester can
+  // reach TIME UP! without waiting out the real 180s (3min) default — the
+  // upper end (10min) is there for symmetry/tuning but isn't the primary
+  // use case. 5s step keeps the slider's range of motion manageable at
+  // either end.
+  timeLimitSec: { min: 5, max: 600, step: 5 },
 } as const;
 
 interface SliderField {
@@ -128,8 +136,18 @@ const FIELDS: SliderField[] = [
  * single 1:1 config constant (stage-dependent counts, dynamic Ember count)
  * use the closest/most-descriptive name plus a `_notes` explanation instead,
  * exactly as the plan permits ("対応する config 定数名か注記付きキー").
+ *
+ * `timeLimitTicks` (docs/plans/2026-08-13-time-limit-mode P3 review fix) is
+ * threaded in as its own parameter, separately from `params`
+ * (EffectiveDebugParams) — the run's time budget is a GameSession-level
+ * concern (GameSession.getTimeLimitTicks()), not one of Game's own
+ * EffectiveDebugParams, exactly like the time-limit slider itself (see
+ * buildPanel()'s `timeLimit` row) — but it still needs to end up in this
+ * same EXPORT payload, under the exact `TIME_LIMIT_TICKS` name, so the
+ * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
+ * other slider here.
  */
-function buildExportPayload(params: EffectiveDebugParams): Record<string, unknown> {
+function buildExportPayload(params: EffectiveDebugParams, timeLimitTicks: number): Record<string, unknown> {
   return {
     WISP_COUNT: params.wispCount,
     WISP_SPEED_MULTIPLIER: params.wispSpeedMultiplier,
@@ -138,6 +156,7 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
     EMBER_SPAWN_INTERVAL_SEC: params.emberSpawnIntervalSec,
     EMBER_BRANCH_CHASE_PROBABILITY: params.emberBranchChaseProbability,
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
+    TIME_LIMIT_TICKS: timeLimitTicks,
     _notes: {
       WISP_COUNT:
         'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
@@ -147,8 +166,34 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
         'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
       DEFAULT_REQUIRED_OCCUPANCY:
         'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
+      TIME_LIMIT_TICKS:
+        "The run's current effective time budget, in ticks (60 tick = 1s at TICK_RATE) — matches config.ts's TIME_LIMIT_TICKS constant exactly (name and unit), unlike this payload's other stage-dependent keys. Reflects the time-limit slider above, whether or not it's been touched from its config.ts default.",
     },
   };
+}
+
+/**
+ * Handle returned by initDebugPanel() for a caller to re-sync the panel's
+ * sliders if it ever swaps the `GameSession` instance the `getSession`
+ * getter passed to initDebugPanel() resolves to (P2 user-review fix,
+ * 2026-08-11 — see initDebugPanel()'s doc comment for the full rationale).
+ * No current caller does this (main.ts builds `session` once in init() and
+ * never reconstructs it), so `refresh` currently goes unused, but the hook
+ * stays correct for free if session-swapping is ever reintroduced.
+ */
+export interface DebugPanelHandle {
+  /**
+   * Re-syncs every slider's displayed value (and readout text) from
+   * whatever `getSession()` currently returns. Would need to be called
+   * right after a caller swaps the session `getSession()` resolves to, for
+   * a new GameSession instance — the panel's own slider *actions* already
+   * always affect whatever `getSession()` currently returns (see
+   * initDebugPanel()'s doc comment), but the displayed positions would
+   * otherwise still show the previous session's last values until the
+   * player touches a slider again. Currently unused, since no caller swaps
+   * sessions today.
+   */
+  refresh: () => void;
 }
 
 /**
@@ -156,15 +201,30 @@ function buildExportPayload(params: EffectiveDebugParams): Record<string, unknow
  * row (docs/plan.md §6 M10: "パネル表示中は HUD などに「DEBUG」表示を出す")
  * and a floating, collapsible control panel with one slider per tunable,
  * plus RESET/EXPORT.
+ *
+ * Takes a `getSession` *getter*, not a `GameSession` instance directly (P2
+ * user-review fix, 2026-08-11). At the time, main.ts could swap its own
+ * `session` module variable out for a brand-new GameSession mid-page-load
+ * (the since-removed DAILY-challenge feature's Title button, plus `?seed=`
+ * / falling back to a fresh normal run — see commit 58f2f3a, which dropped
+ * that swapping machinery entirely). A plain `session: GameSession`
+ * parameter here would have closed over whichever instance existed at
+ * `?debug` load time and kept operating on it forever — every slider drag
+ * after a swap would silently apply to (and read
+ * `hasActiveDebugOverrides()` from) a discarded session, never reaching the
+ * real, currently-playing one, and — because the *real* session's
+ * `hasActiveDebugOverrides()` would then always read false — never
+ * suppressing high-score persistence the way active overrides are supposed
+ * to. Calling `getSession()` fresh every time instead means every panel
+ * action always targets whatever session is actually live right now.
+ *
+ * That session-swapping no longer happens today — main.ts now constructs
+ * `session` exactly once in init() and never reconstructs it — so the
+ * getter is currently equivalent to a plain captured reference. It's kept
+ * as a getter anyway since it's harmless either way and stays correct for
+ * free should session-swapping ever be reintroduced.
  */
-export function initDebugPanel(session: GameSession, hudRow: HTMLElement): void {
-  // Positioned below the HUD row (rather than a fixed pixel guess) so the
-  // floating panel never covers the "DEBUG" badge or the MUTE button that
-  // also live in the HUD row, regardless of how tall it renders at a given
-  // viewport width (docs/plan.md's HUD row height is itself responsive,
-  // see main.ts's fitCanvasToViewport()).
-  const panelTop = hudRow.getBoundingClientRect().bottom + 8;
-
+export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElement): DebugPanelHandle {
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
   // open/close toggle — one click re-opens a collapsed panel just as easily
@@ -183,10 +243,48 @@ export function initDebugPanel(session: GameSession, hudRow: HTMLElement): void 
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const panel = buildPanel(session, panelTop, () => setOpen(false));
+  const { panel, sync } = buildPanel(getSession, () => setOpen(false));
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
+
+  // Position tracking (P3 review fix, docs/plans/2026-08-13-time-limit-mode:
+  // user-measured overlap at both 1280x720 and 880x700 — panel top 36-39px
+  // vs. the actual HUD row bottom at 54px). The panel used to be positioned
+  // once, synchronously, right here — using hudRow's rect from *before* the
+  // badge above was even appended to it (which can itself grow hudRow, e.g.
+  // by pushing a borderline single-line HUD into stacked/3-line mode) and
+  // before main.ts's own post-mount fitCanvasToViewport() re-run (see
+  // main.ts's init(), right after this function's caller) had a chance to
+  // relay it out again.
+  const repositionPanel = (): void => {
+    const top = hudRow.getBoundingClientRect().bottom + 8;
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `calc(100vh - ${top + 8}px)`;
+  };
+  repositionPanel(); // best-effort immediate placement — the listeners below catch any layout pass this misses
+
+  // A ResizeObserver on hudRow fires whenever hudRow's own *box* changes
+  // (a single/stacked HUD mode flip, the DEBUG badge or MUTE label changing
+  // hudRow's width) — but a height-only viewport resize (P3 follow-up review
+  // fix) can move hudRow's on-screen *position* without changing hudRow's
+  // own size at all: #game-root re-centers its flex children vertically
+  // (main.ts's getGameRootElement()) as the canvas shrinks/grows to fit the
+  // new height, sliding hudRow up or down while its box stays the same
+  // size — a case the ResizeObserver alone never fires for. window's own
+  // resize/orientationchange events (the same ones main.ts's own
+  // fitCanvasToViewport() already listens for, see init()) catch that: by
+  // the time this listener runs, main.ts's — registered first, during
+  // init(), before this dynamically-imported module ever loads — has
+  // already re-laid out the canvas/hudRow for the new size, so hudRow's
+  // rect read here is already the final one. Neither listener alone is
+  // sufficient (each catches a case the other doesn't) and neither ever
+  // polls every frame.
+  window.addEventListener('resize', repositionPanel);
+  window.addEventListener('orientationchange', repositionPanel);
+  new ResizeObserver(repositionPanel).observe(hudRow);
+
+  return { refresh: sync };
 }
 
 function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
@@ -208,15 +306,20 @@ function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
   return badge;
 }
 
-function buildPanel(session: GameSession, top: number, onClose: () => void): HTMLDivElement {
+function buildPanel(
+  getSession: () => GameSession,
+  onClose: () => void
+): { panel: HTMLDivElement; sync: () => void } {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
-  panel.style.top = `${top}px`;
+  // `top`/`maxHeight` are deliberately left unset here — they depend on
+  // hudRow's on-screen bottom edge, which isn't stable yet at build time
+  // (docs/plans/2026-08-13-time-limit-mode P3 review fix); initDebugPanel()
+  // sets both, and keeps them in sync afterward, via its repositionPanel().
   panel.style.right = '8px';
   panel.style.zIndex = '1000';
   panel.style.width = '260px';
-  panel.style.maxHeight = `calc(100vh - ${top + 8}px)`;
   panel.style.overflowY = 'auto';
   panel.style.background = 'rgba(10, 14, 39, 0.92)';
   panel.style.border = '1px solid #ffe066';
@@ -261,8 +364,18 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
 
   const rows = new Map<keyof EffectiveDebugParams, { input: HTMLInputElement; readout: HTMLSpanElement }>();
 
+  // Reads from `getSession()` fresh every call (not a captured `session`)
+  // so a session swap would be picked up automatically if one were ever
+  // reintroduced — see initDebugPanel()'s doc comment. Exported as this
+  // panel's `sync` (DebugPanelHandle.refresh(), currently unused since no
+  // caller swaps sessions today — see that interface's doc comment), for a
+  // future caller to invoke right after swapping sessions so the sliders'
+  // *displayed* values would catch up to the new session's own (fresh,
+  // override-free) defaults immediately, rather than silently showing the
+  // discarded session's last values until the player happens to touch a
+  // slider again.
   const syncFromEffectiveParams = (): void => {
-    const params = session.getEffectiveDebugParams();
+    const params = getSession().getEffectiveDebugParams();
     for (const field of FIELDS) {
       const row = rows.get(field.key);
       if (!row) continue;
@@ -274,14 +387,50 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
 
   for (const field of FIELDS) {
     const { row, input, readout } = buildSliderRow(field, (sliderValue) => {
-      session.applyDebugOverrides({ [field.overrideKey]: field.fromSlider(sliderValue) } as Partial<DebugOverrides>);
+      getSession().applyDebugOverrides({
+        [field.overrideKey]: field.fromSlider(sliderValue),
+      } as Partial<DebugOverrides>);
       readout.textContent = field.format(field.fromSlider(sliderValue));
     });
     rows.set(field.key, { input, readout });
     panel.appendChild(row);
   }
 
-  syncFromEffectiveParams();
+  // Time limit (docs/plans/2026-08-13-time-limit-mode): a session-level
+  // concern (GameSession.setDebugTimeLimitTicks()), not one of Game's own
+  // EffectiveDebugParams — kept out of the FIELDS/rows machinery above
+  // (which is keyed off EffectiveDebugParams) and wired up directly instead.
+  // Displayed/entered in whole seconds; converted to/from ticks (TICK_RATE)
+  // at the boundary.
+  const timeLimit = buildRawSliderRow(
+    'Time limit (s)',
+    RANGES.timeLimitSec,
+    (v) => `${v}s`,
+    (sliderValueSec) => {
+      getSession().setDebugTimeLimitTicks(sliderValueSec * TICK_RATE);
+      timeLimit.readout.textContent = `${sliderValueSec}s`;
+    }
+  );
+  // Stable id (docs/plans/2026-08-13-time-limit-mode) so E2E coverage can
+  // locate this specific slider directly — the other FIELDS-driven sliders
+  // above have no id of their own (nothing has previously needed to target
+  // one individually), but this one's the E2E suite's fastest real-time path
+  // to a TIME UP! gameover (shrinking the budget down from its 5s minimum).
+  timeLimit.input.id = 'debug-time-limit-input';
+  panel.appendChild(timeLimit.row);
+
+  const syncTimeLimitRow = (): void => {
+    const seconds = Math.round(getSession().getTimeLimitTicks() / TICK_RATE);
+    timeLimit.input.value = String(seconds);
+    timeLimit.readout.textContent = `${seconds}s`;
+  };
+
+  const syncAll = (): void => {
+    syncFromEffectiveParams();
+    syncTimeLimitRow();
+  };
+
+  syncAll();
 
   const buttonRow = document.createElement('div');
   buttonRow.style.display = 'flex';
@@ -289,12 +438,13 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
   buttonRow.style.marginTop = '8px';
 
   const resetButton = buildButton('RESET', () => {
-    session.resetDebugOverrides();
-    syncFromEffectiveParams();
+    getSession().resetDebugOverrides();
+    syncAll();
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
-    const payload = buildExportPayload(session.getEffectiveDebugParams());
+    const session = getSession();
+    const payload = buildExportPayload(session.getEffectiveDebugParams(), session.getTimeLimitTicks());
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
     void copyToClipboard(json);
@@ -318,11 +468,27 @@ function buildPanel(session: GameSession, top: number, onClose: () => void): HTM
   exportOutput.style.resize = 'vertical';
   panel.appendChild(exportOutput);
 
-  return panel;
+  return { panel, sync: syncAll };
 }
 
 function buildSliderRow(
   field: SliderField,
+  onChange: (sliderValue: number) => void
+): { row: HTMLDivElement; input: HTMLInputElement; readout: HTMLSpanElement } {
+  return buildRawSliderRow(field.label, field.range, (v) => field.format(field.fromSlider(v)), onChange);
+}
+
+/**
+ * Lower-level slider-row builder underlying buildSliderRow() above, taking a
+ * plain label/range/format instead of a `SliderField` — used directly by the
+ * time-limit slider (docs/plans/2026-08-13-time-limit-mode), which has no
+ * `EffectiveDebugParams` key to key a `SliderField` off (it's a session-level
+ * concern, see buildPanel()'s `timeLimit` row).
+ */
+function buildRawSliderRow(
+  label: string,
+  range: { min: number; max: number; step: number },
+  format: (sliderValue: number) => string,
   onChange: (sliderValue: number) => void
 ): { row: HTMLDivElement; input: HTMLInputElement; readout: HTMLSpanElement } {
   const row = document.createElement('div');
@@ -331,23 +497,23 @@ function buildSliderRow(
   const labelRow = document.createElement('div');
   labelRow.style.display = 'flex';
   labelRow.style.justifyContent = 'space-between';
-  const label = document.createElement('span');
-  label.textContent = field.label;
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
   const readout = document.createElement('span');
   readout.style.color = '#00ff41';
-  labelRow.appendChild(label);
+  labelRow.appendChild(labelEl);
   labelRow.appendChild(readout);
   row.appendChild(labelRow);
 
   const input = document.createElement('input');
   input.type = 'range';
-  input.min = String(field.range.min);
-  input.max = String(field.range.max);
-  input.step = String(field.range.step);
+  input.min = String(range.min);
+  input.max = String(range.max);
+  input.step = String(range.step);
   input.style.width = '100%';
   input.addEventListener('input', () => {
     const value = Number(input.value);
-    readout.textContent = field.format(field.fromSlider(value));
+    readout.textContent = format(value);
     onChange(value);
   });
   row.appendChild(input);

@@ -12,6 +12,7 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
+import { mulberry32, deriveStageSeed } from './rng';
 import {
   INITIAL_LIVES,
   DEFAULT_SCORE_MULTIPLIER,
@@ -21,9 +22,21 @@ import {
   WISP_SPAWN_MARGIN_X_RATIO,
   WISP_SPAWN_MARGIN_Y_RATIO,
   WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN,
+  TIME_LIMIT_TICKS,
 } from '../config';
 
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
+
+/**
+ * Why the current (or most recent) run ended in 'gameover'
+ * (docs/plans/2026-08-13-time-limit-mode): 'life' when lives reached 0
+ * (core/game.ts's own gameover), 'time' when GameSession's own run-wide
+ * time budget (see `timeLimitTicks`/getRemainingTicks() below) hit 0 first —
+ * the latter always wins regardless of lives remaining, even if a stage
+ * clear or a life-loss gameover happened on that exact same tick (see
+ * update()'s 'playing' case). `null` before any run has ever ended.
+ */
+export type GameOverReason = 'life' | 'time' | null;
 
 export interface SessionInput extends GameInput {
   /**
@@ -43,6 +56,18 @@ export interface SessionInput extends GameInput {
 export interface SessionOptions {
   /** Random source threaded into every stage's Wisps. Defaults to Math.random. */
   rng?: Rng;
+  /**
+   * Deterministic seed for a fully reproducible run (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2: `?seed=`). When set, every stage
+   * builds its own rng from `deriveStageSeed(seed, stage)` (core/rng.ts)
+   * rather than sharing one continuous stream — see that function's doc
+   * comment for why (a stage's starting layout must not depend on how many
+   * rng calls the *previous* stage's simulation happened to consume). Takes
+   * priority over `rng` above when both are supplied — `rng` remains
+   * available on its own for tests that want to inject an arbitrary
+   * generator directly instead of going through a numeric seed.
+   */
+  seed?: number;
   /** Field size used for every stage (test hook). Defaults to config GRID_WIDTH/GRID_HEIGHT. */
   fieldWidth?: number;
   fieldHeight?: number;
@@ -63,6 +88,15 @@ export interface SessionOptions {
    * movement/line-drawing through a full-size field.
    */
   gameFactory?: (stage: number, carry: { score: number; lives: number; multiplier: number }) => Game;
+  /**
+   * Test hook (docs/plans/2026-08-13-time-limit-mode): overrides the run's
+   * time budget, in ticks, in place of config.ts's TIME_LIMIT_TICKS —
+   * lets unit tests exercise the time-up transition without waiting out
+   * 10800 real ticks. The debug panel applies its own override the same way
+   * production code would (see setDebugTimeLimitTicks() below), separately
+   * from this constructor-time option.
+   */
+  timeLimitTicks?: number;
 }
 
 export class GameSession {
@@ -92,22 +126,59 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
-  private readonly rng?: Rng;
+  private readonly seed?: number;
+  private readonly baseRng?: Rng;
+  // The rng actually in effect for the stage currently being built — either
+  // a fresh `mulberry32(deriveStageSeed(seed, stage))` (seeded runs) or
+  // `baseRng` (the test-hook rng, unseeded runs). Recomputed by
+  // buildStageGame() every time a stage's Game is (re)built; buildWisps()
+  // and buildDefaultStageGame() read it from here rather than a single
+  // session-lifetime rng field, since a seeded run's rng source is itself
+  // per-stage (see `seed` above).
+  private currentStageRng?: Rng;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
+  // Tick counters (docs/plans/2026-08-11-daily-seed-time-attack request task
+  // 2): both count only ticks spent with status === 'playing' (including
+  // post-miss grace ticks — the stage is still 'playing' throughout grace,
+  // see game.ts's handleMiss()); title/stageclear/gameover ticks never
+  // advance either counter. `stageTicks` resets to 0 every time a stage's
+  // Game is (re)built (buildStageGame(), called by both resetToFreshRun()
+  // and advanceStage()) — freezing at its final value once the stage leaves
+  // 'playing' (stageclear/gameover) makes it double as "how long that stage
+  // took", read by main.ts for the StageClear TIME/BEST display.
+  // `totalTicks` only resets on a brand-new run (resetToFreshRun()).
+  private stageTicks = 0;
+  private totalTicks = 0;
   // Debug-panel overrides (docs/plan.md §6 M10 / §12.4), kept here — not just
   // on `this.game` — so they survive advanceStage() replacing `this.game`
   // with a fresh per-stage instance ("オーバーライドはステージをまたいで
   // 維持"): buildStageGame() re-applies this to every newly-built Game.
   private debugOverrides: DebugOverrides = {};
+  // The run's time budget, in ticks (docs/plans/2026-08-13-time-limit-mode).
+  // `baseTimeLimitTicks` is fixed for the session's lifetime (constructor
+  // option or config.ts's TIME_LIMIT_TICKS default); `debugTimeLimitTicks`
+  // — undefined unless the debug panel has touched it — takes priority over
+  // it when set, mirroring `debugOverrides` above but kept as its own field
+  // since a time budget isn't one of Game's own EffectiveDebugParams (it's a
+  // session-level concept, not a per-stage Game one). See getTimeLimitTicks()
+  // / setDebugTimeLimitTicks() / resetDebugOverrides().
+  private readonly baseTimeLimitTicks: number;
+  private debugTimeLimitTicks: number | undefined;
+  // Set the instant a run ends (docs/plans/2026-08-13-time-limit-mode) —
+  // see the GameOverReason type doc comment above for the two causes and
+  // their precedence. Reset to null by resetToFreshRun().
+  private gameOverReason: GameOverReason = null;
 
   constructor(options: SessionOptions = {}) {
-    this.rng = options.rng;
+    this.seed = options.seed;
+    this.baseRng = options.rng;
     this.fieldWidth = options.fieldWidth ?? GRID_WIDTH;
     this.fieldHeight = options.fieldHeight ?? GRID_HEIGHT;
     this.highScore = options.highScore ?? 0;
     this.gameFactory = options.gameFactory;
+    this.baseTimeLimitTicks = options.timeLimitTicks ?? TIME_LIMIT_TICKS;
     this.resetToFreshRun();
   }
 
@@ -146,6 +217,79 @@ export class GameSession {
   }
 
   /**
+   * Ticks elapsed since the current stage started (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2), counting only while
+   * `status === 'playing'`. Resets to 0 on every stage transition (fresh run
+   * or advanceStage()) and freezes at its final value once the stage leaves
+   * 'playing'. No longer surfaced in the UI as of docs/plans/2026-08-13-
+   * time-limit-mode (the StageClear screen's TIME/BEST display was removed
+   * along with `qixxx.bestTimes`) — kept for tests/future use. Format as
+   * `ticks / TICK_RATE` seconds (60 tick = 1s) — no wall-clock time involved.
+   */
+  getStageTicks(): number {
+    return this.stageTicks;
+  }
+
+  /**
+   * Ticks elapsed since the current run started (docs/plans/2026-08-11-
+   * daily-seed-time-attack request task 2), counting only while
+   * `status === 'playing'`, summed across every stage of the run. Resets to
+   * 0 only on a brand-new run (resetToFreshRun()), not on a per-stage
+   * advance.
+   */
+  getTotalTicks(): number {
+    return this.totalTicks;
+  }
+
+  /**
+   * The run's current time budget, in ticks (docs/plans/2026-08-13-time-
+   * limit-mode): the debug panel's override (setDebugTimeLimitTicks()) when
+   * one is active, else the constructor's `timeLimitTicks` option/config.ts's
+   * TIME_LIMIT_TICKS default. Exposed mainly for the debug panel's own
+   * slider readout — most callers want getRemainingTicks() instead.
+   */
+  getTimeLimitTicks(): number {
+    return this.debugTimeLimitTicks ?? this.baseTimeLimitTicks;
+  }
+
+  /**
+   * Ticks left before the run's time budget expires (docs/plans/2026-08-13-
+   * time-limit-mode), counting down from getTimeLimitTicks() as
+   * getTotalTicks() advances — so, like getTotalTicks(), only while
+   * `status === 'playing'`; frozen otherwise. Clamped at 0 (never negative).
+   * Reaching 0 forces a 'gameover' regardless of lives remaining — see
+   * update()'s 'playing' case.
+   */
+  getRemainingTicks(): number {
+    return Math.max(0, this.getTimeLimitTicks() - this.totalTicks);
+  }
+
+  /**
+   * Why the run most recently ended in 'gameover' (docs/plans/2026-08-13-
+   * time-limit-mode) — 'life' (lives reached 0), 'time' (the run's time
+   * budget reached 0 first, regardless of lives), or `null` before any run
+   * has ended. Lets callers (main.ts's GameOverModal) show a distinct
+   * "TIME UP!" message instead of the ordinary life-loss GAME OVER.
+   */
+  getGameOverReason(): GameOverReason {
+    return this.gameOverReason;
+  }
+
+  /**
+   * Debug-panel-only override (docs/plan.md §6 M10 / §12.4 pattern,
+   * docs/plans/2026-08-13-time-limit-mode's own tuning item) for the run's
+   * time budget, in ticks — takes priority over the constructor's
+   * `timeLimitTicks` option/config.ts's TIME_LIMIT_TICKS default until
+   * resetDebugOverrides() clears it. Like every other debug override, an
+   * active one here also makes hasActiveDebugOverrides() true, so main.ts
+   * skips high-score persistence while it's in effect — see that method's
+   * doc comment.
+   */
+  setDebugTimeLimitTicks(ticks: number): void {
+    this.debugTimeLimitTicks = ticks;
+  }
+
+  /**
    * The current stage's `Game` instance — exposed so the render layer can
    * keep drawing the field/marker/enemies while a StageClear/GameOver
    * overlay is shown (the last-played stage's board stays on screen behind
@@ -175,7 +319,26 @@ export class GameSession {
         }
         break;
       case 'playing':
+        // Tick counters (see the field comments above) only ever advance
+        // here — the one branch where status was already 'playing' at the
+        // start of this tick, including the tick that itself ends the stage
+        // (a stage/split clear or the final miss into gameover), so that
+        // tick's own gameplay still counts toward its time.
+        this.stageTicks++;
+        this.totalTicks++;
         this.updatePlaying(input);
+        // Time-up (docs/plans/2026-08-13-time-limit-mode): checked *after*
+        // updatePlaying() so it can override whatever that call just decided
+        // — including a life-loss gameover or even a stage clear landing on
+        // this exact same tick — the instant the run's time budget hits 0,
+        // "残機・状態に関係なく" (regardless of lives/other state) per that
+        // request's completion criteria. 'time' always wins over 'life' on a
+        // tick where both would otherwise apply.
+        if (this.getRemainingTicks() <= 0) {
+          this.status = 'gameover';
+          this.gameOverReason = 'time';
+          this.highScore = this.getHighScore();
+        }
         break;
       case 'stageclear':
         if (input.confirm) {
@@ -201,6 +364,8 @@ export class GameSession {
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
+    this.totalTicks = 0;
+    this.gameOverReason = null;
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
   }
 
@@ -236,9 +401,16 @@ export class GameSession {
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 
-  /** Drops every active debug override, in the current stage and every future one, restoring stage defaults. */
+  /**
+   * Drops every active debug override, in the current stage and every
+   * future one, restoring stage defaults — including the time-limit
+   * override set via setDebugTimeLimitTicks() (docs/plans/2026-08-13-time-
+   * limit-mode), so a single RESET button clears every debug-tunable
+   * dimension at once.
+   */
   resetDebugOverrides(): void {
     this.debugOverrides = {};
+    this.debugTimeLimitTicks = undefined;
     this.game.resetDebugOverrides();
   }
 
@@ -251,9 +423,13 @@ export class GameSession {
    * True while at least one debug override is active — gates high-score
    * persistence (docs/plan.md §6 M10: main.ts skips `saveHighScore` while
    * this is true, so a debug-tuned run never taints the stored high score).
+   * Also true while a debug time-limit override is active (docs/plans/
+   * 2026-08-13-time-limit-mode's setDebugTimeLimitTicks()) — a run played
+   * under a tuned time budget is exactly as untrustworthy for a stored
+   * record as one played under any other tuned parameter.
    */
   hasActiveDebugOverrides(): boolean {
-    return this.game.hasActiveDebugOverrides();
+    return this.game.hasActiveDebugOverrides() || this.debugTimeLimitTicks !== undefined;
   }
 
   /** The actually-in-effect value of every debug-tunable parameter right now (docs/plan.md §6 M10). */
@@ -286,6 +462,7 @@ export class GameSession {
     const stageStatus = this.game.getStatus();
     if (stageStatus === 'gameover') {
       this.status = 'gameover';
+      this.gameOverReason = 'life';
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {
@@ -308,6 +485,14 @@ export class GameSession {
   }
 
   private buildStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
+    this.stageTicks = 0;
+    // Seeded runs get a fresh per-stage rng derived from (seed, stage) —
+    // never a stream shared/continued across stages — see `seed`'s field
+    // comment and core/rng.ts's deriveStageSeed() doc comment for why.
+    // Unseeded runs keep using whatever `baseRng` test hook was injected
+    // (or undefined, i.e. Math.random downstream) for every stage, exactly
+    // as before this feature existed.
+    this.currentStageRng = this.seed !== undefined ? mulberry32(deriveStageSeed(this.seed, stage)) : this.baseRng;
     const game = this.gameFactory ? this.gameFactory(stage, carry) : this.buildDefaultStageGame(stage, carry);
 
     // Debug overrides persist across stages (docs/plan.md §6 M10): a fresh
@@ -325,7 +510,7 @@ export class GameSession {
     const markerStart: Point = { x: Math.floor(field.getWidth() / 2), y: 0 };
     const wisps = this.buildWisps(field, config);
 
-    return new Game(field, markerStart, undefined, this.rng, {
+    return new Game(field, markerStart, undefined, this.currentStageRng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
       emberMoveTicks: config.emberMoveTicks,
@@ -355,7 +540,7 @@ export class GameSession {
   private buildWisps(field: Field, config: StageConfig): Wisp[] {
     const width = field.getWidth();
     const height = field.getHeight();
-    const rng = this.rng ?? Math.random;
+    const rng = this.currentStageRng ?? Math.random;
     const spacing = 3;
 
     // Marker always starts at { x: floor(width/2), y: 0 } — see
@@ -395,7 +580,7 @@ export class GameSession {
       // the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
-      wisps.push(new Wisp({ x, y: cy }, this.rng, undefined, config.wispSpeedMultiplier));
+      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, config.wispSpeedMultiplier));
     }
     return wisps;
   }

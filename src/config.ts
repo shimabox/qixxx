@@ -27,6 +27,20 @@ export const MAX_FRAME_DELTA = 0.25;
 export const STAGE_MAX_DIFFICULTY = 10;
 export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
 
+// Time limit (docs/plans/2026-08-13-time-limit-mode): every run is capped at
+// a fixed time *budget* instead of running until lives run out — the whole
+// point of the "5分で1本" reframing (see that request's background), later
+// shortened to 3 minutes (2026-08-16 playtest decision). 10800 ticks = 180s
+// (3 minutes) at TICK_RATE=60. core/session.ts's GameSession counts this down
+// from getTotalTicks() (playing-only, same rule as the tick counters it
+// already tracked) and forces a 'gameover' the instant it hits 0, regardless
+// of lives remaining — see GameSession.getGameOverReason() and
+// GameSession.getRemainingTicks(). SessionOptions.timeLimitTicks (a test
+// hook) and the debug panel's own time-limit slider
+// (GameSession.setDebugTimeLimitTicks(), src/debug/panel.ts) can both
+// override this per-session; this constant is only the real-play default.
+export const TIME_LIMIT_TICKS = 10800;
+
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
 // Grace period after a miss (ticks) during which no further miss can be
@@ -178,14 +192,63 @@ export const COLOR_EMBER_BLAZE = '#a4133c';
 export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
-// Below this window.innerWidth (CSS px), the HUD switches from its single
-// nowrap+ellipsis line to two explicit stacked lines (main.ts's
-// updateHudMode()) so OCCUPANCY/LIVES/the multiplier stay visible on narrow
-// phones instead of being clipped by the ellipsis. Deliberately keyed off
-// window.innerWidth alone, never hudRow/canvas width — those are themselves
-// derived from the HUD row's height in fitCanvasToViewport(), so measuring
-// them here would create a width<->height layout circularity.
-export const HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX = 600;
+
+// TIME countdown warning (docs/plans/2026-08-13-time-limit-mode): the HUD
+// line carrying TIME switches to this color once
+// GameSession.getRemainingTicks() drops to/below HUD_TIME_WARNING_TICKS
+// (30s), in both the single-line and stacked-lines HUD layouts (main.ts's
+// updateHud()) — a last-30-seconds cue that the run is about to hard-cut off
+// regardless of lives remaining. Reuses the same neon-red hue as
+// COLOR_IGNITER (already the palette's "danger" color) rather than
+// introducing a fourth alarm color.
+export const HUD_TIME_WARNING_TICKS = 30 * TICK_RATE;
+export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
+// The HUD switches from its single nowrap+ellipsis line to its
+// stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
+// STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
+// clipped by the ellipsis. See main.ts's updateHudMode()/wouldSingleLineFit()
+// doc comments for the decision itself (P2 fix, user review, 2026-08-12):
+// a *viewport-width-only* threshold (this constant's previous form) can't
+// account for a short viewport shrinking the canvas — and with it the HUD
+// row it's kept in sync with — via height rather than width, so a wide-but-
+// short window could still clip a "should fit" single line. The decision is
+// now geometry-based (predicts the single-line row's actual on-screen
+// width, the same way fitCanvasToViewport() itself sizes the canvas) rather
+// than a fixed cutoff, so this constant is only the *text* half of that
+// calculation — see below.
+//
+// Deliberately generous worst-case single-line stats text (main.ts's
+// measureRequiredSingleLineWidth()) used to size that decision: 3-digit
+// STAGE, 6-digit SCORE/HI (just under 1,000,000), TIME (docs/plans/
+// 2026-08-13-time-limit-mode: a run-total countdown from TIME_LIMIT_TICKS
+// down to 0, so its on-screen width is fixed at "D:SS.D" — single-digit
+// minutes, since TIME_LIMIT_TICKS's default 180s never reaches a 2-digit
+// minute — for the entire run, not just a worst case; 3:00.0 is simply its
+// starting/maximum value), 100% OCCUPANCY, and x9 (SPLIT_MULTIPLIER_CAP —
+// LIVES never exceeds a single digit; nothing in core/ grants extra lives
+// past INITIAL_LIVES) — measures comfortably under the previous (pre-time-
+// limit, unbounded-per-stage-clock) budget at the HUD's 16px-capped font. A
+// 'seeded' run's `SEED <n>  ` prefix (runMode.ts's resolveHudModePrefix())
+// is measured on top of this at its own actual (already-fixed-for-the-page-
+// load) value, not re-guessed here, since unlike SCORE/HI it can't change
+// after `?seed=` is parsed.
+//
+// The debug panel's own time-limit slider (src/debug/panel.ts) can push
+// TIME_LIMIT_TICKS past this budget's single-digit-minute assumption (e.g.
+// a 10-minute override) — a deliberately out-of-budget edge case for that
+// dev-only tool, exactly like a 7+-digit cumulative score, rather than one
+// this sizing protects against. A 7+-digit cumulative score remains the
+// other accepted residual.
+export const HUD_WORST_CASE_STATS_TEXT =
+  'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+
+// #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
+// #hud / the credit link / the mute button. Kept as a constant — like
+// HUD_GAP_PX above — so main.ts's single-line-fit prediction
+// (measureNonHudRowWidth()) stays in sync with the actual CSS value instead
+// of re-deriving it via a live layout measurement that would require the
+// row to already be at its final width.
+export const HUD_ROW_GAP_PX = 8;
 
 // Neon glow (docs/plan.md §1/§6 M5). Applied only to a handful of
 // small/bounded-count draw calls per frame (marker, Wisp head, Igniter,

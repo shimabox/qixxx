@@ -85,7 +85,19 @@ test('MUTE releases focus so the next Enter confirms without unmuting', async ({
 });
 
 test('claims an area via a scripted movement sequence, increasing occupancy from 0%', async ({ page }) => {
-  await page.goto(APP_URL);
+  // Fixed seed (docs/plans/2026-08-11-daily-seed-time-attack request task 5):
+  // this scenario's scripted movement previously raced an unseeded Wisp
+  // spawn/wander, occasionally landing in the script's own path (a walk
+  // along the top border, then a small down/right/up box) and eating a
+  // miss — flaky depending on that run's random draw. `?seed=1` reuses
+  // core/session.ts's seeded-run path (same one DAILY/`?seed=` uses in the
+  // app itself) so every run takes the identical, verified-non-interfering
+  // Wisp spawn/path, making this scenario fully deterministic. Chosen by
+  // simulating this exact scripted sequence against every seed 1-200 with
+  // the real GameSession (no browser) and picking one with zero misses and
+  // a large surrounding margin (198/200 seeds in that range already worked
+  // — 1 was simply the first, not narrowly special).
+  await page.goto(`${APP_URL}?seed=1`);
   await page.keyboard.press('Space'); // Title -> Playing
 
   await expect
