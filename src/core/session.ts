@@ -92,7 +92,7 @@ export interface SessionOptions {
    * Test hook (docs/plans/2026-08-13-time-limit-mode): overrides the run's
    * time budget, in ticks, in place of config.ts's TIME_LIMIT_TICKS —
    * lets unit tests exercise the time-up transition without waiting out
-   * 18000 real ticks. The debug panel applies its own override the same way
+   * 10800 real ticks. The debug panel applies its own override the same way
    * production code would (see setDebugTimeLimitTicks() below), separately
    * from this constructor-time option.
    */

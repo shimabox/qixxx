@@ -90,8 +90,8 @@ async function expectFullyReadableHud(page: import('@playwright/test').Page): Pr
  * textContent assignment) — without touching layout/mode.
  *
  * TIME's own worst case (docs/plans/2026-08-13-time-limit-mode) is now a
- * fixed-width run-total countdown from the 5-minute default time limit
- * (`5:00.0`, single-digit minutes for the entire run) rather than an
+ * fixed-width run-total countdown from the 3-minute default time limit
+ * (`3:00.0`, single-digit minutes for the entire run) rather than an
  * unbounded per-stage elapsed clock (`99:59.9`) — see
  * HUD_WORST_CASE_STATS_TEXT's own doc comment in src/config.ts.
  */
@@ -103,9 +103,9 @@ async function setWorstCaseHudText(page: import('@playwright/test').Page): Promi
     if (l2.style.display === 'block') {
       l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999';
       l2.textContent = 'OCCUPANCY: 100%  LIVES: 9  x9';
-      l3.textContent = 'TIME 5:00.0';
+      l3.textContent = 'TIME 3:00.0';
     } else {
-      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999  TIME 5:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
     }
   });
 }

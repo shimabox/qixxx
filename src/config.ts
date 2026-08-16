@@ -29,16 +29,17 @@ export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates t
 
 // Time limit (docs/plans/2026-08-13-time-limit-mode): every run is capped at
 // a fixed time *budget* instead of running until lives run out — the whole
-// point of the "5分で1本" reframing (see that request's background). 18000
-// ticks = 300s (5 minutes) at TICK_RATE=60. core/session.ts's GameSession
-// counts this down from getTotalTicks() (playing-only, same rule as the
-// tick counters it already tracked) and forces a 'gameover' the instant it
-// hits 0, regardless of lives remaining — see GameSession.getGameOverReason()
-// and GameSession.getRemainingTicks(). SessionOptions.timeLimitTicks (a test
+// point of the "5分で1本" reframing (see that request's background), later
+// shortened to 3 minutes (2026-08-16 playtest decision). 10800 ticks = 180s
+// (3 minutes) at TICK_RATE=60. core/session.ts's GameSession counts this down
+// from getTotalTicks() (playing-only, same rule as the tick counters it
+// already tracked) and forces a 'gameover' the instant it hits 0, regardless
+// of lives remaining — see GameSession.getGameOverReason() and
+// GameSession.getRemainingTicks(). SessionOptions.timeLimitTicks (a test
 // hook) and the debug panel's own time-limit slider
 // (GameSession.setDebugTimeLimitTicks(), src/debug/panel.ts) can both
 // override this per-session; this constant is only the real-play default.
-export const TIME_LIMIT_TICKS = 18000;
+export const TIME_LIMIT_TICKS = 10800;
 
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
@@ -221,8 +222,8 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // STAGE, 6-digit SCORE/HI (just under 1,000,000), TIME (docs/plans/
 // 2026-08-13-time-limit-mode: a run-total countdown from TIME_LIMIT_TICKS
 // down to 0, so its on-screen width is fixed at "D:SS.D" — single-digit
-// minutes, since TIME_LIMIT_TICKS's default 300s never reaches a 2-digit
-// minute — for the entire run, not just a worst case; 5:00.0 is simply its
+// minutes, since TIME_LIMIT_TICKS's default 180s never reaches a 2-digit
+// minute — for the entire run, not just a worst case; 3:00.0 is simply its
 // starting/maximum value), 100% OCCUPANCY, and x9 (SPLIT_MULTIPLIER_CAP —
 // LIVES never exceeds a single digit; nothing in core/ grants extra lives
 // past INITIAL_LIVES) — measures comfortably under the previous (pre-time-
@@ -239,7 +240,7 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // this sizing protects against. A 7+-digit cumulative score remains the
 // other accepted residual.
 export const HUD_WORST_CASE_STATS_TEXT =
-  'STAGE 999  SCORE: 999999  HI: 999999  TIME 5:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+  'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
 
 // #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
 // #hud / the credit link / the mute button. Kept as a constant — like

@@ -44,7 +44,7 @@ const RANGES = {
   requiredOccupancyPercent: { min: 10, max: 99, step: 1 },
   // Time limit (docs/plans/2026-08-13-time-limit-mode), in seconds: mainly
   // for pulling the run's time budget way down (e.g. 5s) so a tester can
-  // reach TIME UP! without waiting out the real 300s (5min) default — the
+  // reach TIME UP! without waiting out the real 180s (3min) default — the
   // upper end (10min) is there for symmetry/tuning but isn't the primary
   // use case. 5s step keeps the slider's range of motion manageable at
   // either end.
