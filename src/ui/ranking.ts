@@ -53,6 +53,31 @@ export interface RunSubmissionSnapshot {
   tainted: boolean;
 }
 
+/**
+ * Whether a fetched replay payload is one *this build* can faithfully replay.
+ *
+ * The server already refuses to serve a mismatched row (410 from
+ * GET /api/ranking/:id/replay), but that filter is written from the server's
+ * point of view. The dangerous case is the reverse: a tab left open across a
+ * deploy holds an *old* core, and a payload the new server considers current
+ * is one this bundle would resimulate under the wrong ruleset — producing a
+ * plausible-looking but wrong run rather than any error. So the versions are
+ * checked again here, against the constants this bundle was built with.
+ *
+ * Also shape-checks `seed` (the uint32 the server stores, mirroring
+ * functions/_lib/ranking/seedValidation.ts) and `rleBase64`, so a malformed
+ * payload is reported as unplayable instead of reaching the decoder.
+ */
+export function isReplayPayloadPlayable(payload: unknown, rulesetVersion: number, replayFormatVersion: number): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Partial<ReplayPayload>;
+  if (typeof p.seed !== 'number' || !Number.isInteger(p.seed) || p.seed < 0 || p.seed > 0xffffffff) return false;
+  if (typeof p.rleBase64 !== 'string' || p.rleBase64.length === 0) return false;
+  if (p.rulesetVersion !== rulesetVersion) return false;
+  if (p.replayFormatVersion !== replayFormatVersion) return false;
+  return true;
+}
+
 /** Why decideSubmissionOffer() did (or did not) open the name field — 'show' is the only affirmative outcome. */
 export type SubmissionOfferDecision =
   | 'show'
@@ -107,7 +132,7 @@ export function decideSubmissionOffer(args: {
   return inRange ? 'show' : 'out-of-range';
 }
 
-interface ReplayPayload {
+export interface ReplayPayload {
   seed: number;
   rleBase64: string;
   rulesetVersion: number;
@@ -285,26 +310,43 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     browsingGeneration++;
   }
 
+  /** Replaces the list body with a single status line (LOADING/error). */
+  function showListStatus(text: string): void {
+    listBody.textContent = '';
+    const line = document.createElement('div');
+    line.textContent = text;
+    listBody.appendChild(line);
+  }
+
+  function clearListStatus(): void {
+    listBody.textContent = '';
+  }
+
   async function showList(): Promise<void> {
     if (!browsingAllowed()) return;
     browsingGeneration++;
-    listBody.textContent = '';
-    const loading = document.createElement('div');
-    loading.textContent = 'LOADING...';
-    listBody.appendChild(loading);
+    const requestGeneration = browsingGeneration;
+    showListStatus('LOADING...');
     listOverlay.style.display = 'flex';
 
-    let entries: RankingEntry[] = [];
+    let entries: RankingEntry[] | null = null;
     try {
       const res = await fetch('/api/ranking');
       if (!res.ok) throw new Error(`ranking fetch failed: ${res.status}`);
       const data = (await res.json()) as { entries: RankingEntry[] };
       entries = data.entries ?? [];
     } catch {
-      listBody.textContent = '';
-      const err = document.createElement('div');
-      err.textContent = 'FAILED TO LOAD RANKING';
-      listBody.appendChild(err);
+      entries = null;
+    }
+
+    // Same generation guard startReplayFor() uses, and for the same reason:
+    // close-then-reopen leaves two GETs racing, and without this the slower
+    // (older) one repaints its stale rows over the newer result — or paints
+    // an error over a list that has since loaded fine.
+    if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
+
+    if (entries === null) {
+      showListStatus('FAILED TO LOAD RANKING');
       return;
     }
 
@@ -406,12 +448,36 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       showTransientMessage('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.');
       return;
     }
-    if (!payload) {
-      showTransientMessage('FAILED TO LOAD REPLAY.');
+    if (!payload || !isReplayPayloadPlayable(payload, options.getRulesetVersion(), options.getReplayFormatVersion())) {
+      // A version the *client* can't honour is the mirror image of the
+      // server's own 410: an old tab left open across a deploy would
+      // otherwise resimulate a new-ruleset replay with its old core and
+      // silently render a wrong run. Checked here rather than trusting the
+      // server's filter alone, because the stale party is this bundle.
+      showTransientMessage(payload ? 'THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.' : 'FAILED TO LOAD REPLAY.');
       return;
     }
 
-    const engine = new ReplayEngine(payload.seed, base64ToBytes(payload.rleBase64));
+    // Decoding and the pre-pass both run inside the try: base64 or RLE bytes
+    // that don't decode used to throw out of this handler as an unhandled
+    // rejection, leaving the player staring at an unchanged list.
+    let engine: ReplayEngine;
+    showListStatus('LOADING REPLAY...');
+    try {
+      engine = await ReplayEngine.create(payload.seed, base64ToBytes(payload.rleBase64));
+    } catch {
+      clearListStatus();
+      if (browsingAllowed() && browsingGeneration === requestGeneration) {
+        showTransientMessage('THIS REPLAY COULD NOT BE PLAYED BACK.');
+      }
+      return;
+    }
+    clearListStatus();
+
+    // ReplayEngine.create() is itself an await (a chunked pre-pass), so the
+    // same "did the player move on?" question applies again here.
+    if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
+
     hideList();
     mountReplayControls();
     options.onReplayStart(engine);
@@ -422,15 +488,17 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const messageText = document.createElement('div');
   messageOverlay.appendChild(messageText);
   const messageCloseButton = styledButton('OK');
-  messageCloseButton.addEventListener('click', () => {
-    messageOverlay.style.display = 'none';
-  });
+  messageCloseButton.addEventListener('click', () => hideTransientMessage());
   messageOverlay.appendChild(messageCloseButton);
   anchor.appendChild(messageOverlay);
 
   function showTransientMessage(text: string): void {
     messageText.textContent = text;
     messageOverlay.style.display = 'flex';
+  }
+
+  function hideTransientMessage(): void {
+    messageOverlay.style.display = 'none';
   }
 
   // ---- GAME OVER submission flow ----
@@ -683,8 +751,21 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     void showList();
   });
 
+  let skipping = false;
   skipToFinalButton.addEventListener('click', () => {
-    if (activeReplayEngine) activeReplayEngine.skipToFinalStage();
+    const engine = activeReplayEngine;
+    if (!engine || skipping) return;
+    skipping = true;
+    // Chunked (see ReplayEngine.skipToFinalStage()): the label doubles as the
+    // progress indicator, which only means anything because the skip now
+    // yields to the event loop instead of blocking it.
+    skipToFinalButton.disabled = true;
+    skipToFinalButton.textContent = 'SKIPPING...';
+    void engine.skipToFinalStage().finally(() => {
+      skipping = false;
+      skipToFinalButton.disabled = false;
+      skipToFinalButton.textContent = 'SKIP TO FINAL STAGE';
+    });
   });
 
   // Track the currently-viewed engine (main.ts hands it back via
@@ -707,11 +788,17 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (allowed === lastBrowsingAllowed) return;
     lastBrowsingAllowed = allowed;
     if (titleButton) titleButton.style.display = allowed ? 'block' : 'none';
-    // Also close a list that's already open: the Title screen's "press any
-    // key to start" confirm still fires while the overlay is up, so a player
+    // Also close anything already on screen: the Title screen's "press any
+    // key to start" confirm still fires while an overlay is up, so a player
     // can start a run out from under an open list — which would otherwise
-    // leave a live 3-minute run ticking away behind it.
-    if (!allowed) hideList();
+    // leave a live 3-minute run ticking away behind it. The transient
+    // message overlay needs the same treatment: a 410/"failed to load"
+    // message dismissed only by its own OK button would otherwise sit across
+    // the board for the whole run.
+    if (!allowed) {
+      hideList();
+      hideTransientMessage();
+    }
   }
 
   function mountTitleButton(): void {

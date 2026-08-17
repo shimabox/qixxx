@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   decideSubmissionOffer,
   isSnapshotEligible,
+  isReplayPayloadPlayable,
   formatRankingDate,
   type RankingEntry,
   type RunSubmissionSnapshot,
@@ -134,6 +135,51 @@ describe('decideSubmissionOffer: races against the response', () => {
     // reopen the form for a run that no longer exists.
     const snap = snapshot({ runId: 7, score: 10_000 });
     expect(decide({ snapshot: snap, currentRunId: 9, currentStatus: 'title', entries: [] })).toBe('stale-run');
+  });
+});
+
+describe('isReplayPayloadPlayable', () => {
+  const RULESET = 3;
+  const FORMAT = 2;
+  const good = { seed: 1264, rleBase64: 'AAE=', rulesetVersion: RULESET, replayFormatVersion: FORMAT };
+
+  it('accepts a payload matching this build exactly', () => {
+    expect(isReplayPayloadPlayable(good, RULESET, FORMAT)).toBe(true);
+  });
+
+  it('rejects a ruleset this build does not implement (the stale-tab-across-a-deploy case)', () => {
+    // The dangerous direction: the server considers this row current, but
+    // THIS bundle's core is old, so replaying it would render a wrong run
+    // rather than fail.
+    expect(isReplayPayloadPlayable({ ...good, rulesetVersion: RULESET + 1 }, RULESET, FORMAT)).toBe(false);
+    expect(isReplayPayloadPlayable({ ...good, rulesetVersion: RULESET - 1 }, RULESET, FORMAT)).toBe(false);
+  });
+
+  it('rejects a replay format this build cannot decode', () => {
+    expect(isReplayPayloadPlayable({ ...good, replayFormatVersion: FORMAT + 1 }, RULESET, FORMAT)).toBe(false);
+  });
+
+  it('rejects a seed outside uint32, mirroring the server-side check', () => {
+    for (const seed of [-1, 1.5, 2 ** 32, Number.NaN, Number.POSITIVE_INFINITY, '1264', null, undefined]) {
+      expect(isReplayPayloadPlayable({ ...good, seed }, RULESET, FORMAT)).toBe(false);
+    }
+    for (const seed of [0, 0xffffffff]) {
+      expect(isReplayPayloadPlayable({ ...good, seed }, RULESET, FORMAT)).toBe(true);
+    }
+  });
+
+  it('rejects a missing/empty/non-string rleBase64 before it can reach the decoder', () => {
+    for (const rleBase64 of ['', undefined, null, 42, {}]) {
+      expect(isReplayPayloadPlayable({ ...good, rleBase64 }, RULESET, FORMAT)).toBe(false);
+    }
+  });
+
+  it('rejects non-object payloads outright', () => {
+    for (const payload of [null, undefined, 'nope', 42, []]) {
+      // An array has no seed/rleBase64, so it fails the field checks too —
+      // the point is that none of these throw.
+      expect(isReplayPayloadPlayable(payload, RULESET, FORMAT)).toBe(false);
+    }
   });
 });
 

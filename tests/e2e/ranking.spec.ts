@@ -609,4 +609,123 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'OK' }).click();
     await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeHidden();
   });
+
+  test('an error message never survives into a live run', async ({ page }) => {
+    // The message overlay is dismissed by its own OK button, so before this
+    // it could sit across the whole board for an entire run — the Title
+    // "press any key" confirm starts the game right through it.
+    await mockRanking(page, [
+      { id: 'stale', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'STALE', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({ status: 410, contentType: 'application/json', body: JSON.stringify({ error: 'format mismatch' }) });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeVisible();
+
+    await page.keyboard.press('Space'); // start a run with the message still up
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+    await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeHidden();
+    await expect(page.getByRole('button', { name: 'OK' })).toBeHidden();
+  });
+
+  test('a replay payload this build cannot honour is refused instead of played back wrongly', async ({ page }) => {
+    // A stale tab across a deploy: the server considers the row current, but
+    // this bundle's core implements an older ruleset, so resimulating it
+    // would render a plausible-looking *wrong* run rather than fail.
+    const rleBase64 = recordShortReplay(2026, 4);
+    await mockRanking(page, [
+      { id: 'future', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'FUTURE', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          seed: 2026,
+          rleBase64,
+          rulesetVersion: RULESET_VERSION + 1, // newer than this build
+          replayFormatVersion: REPLAY_FORMAT_VERSION,
+        }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden(); // never entered replay mode
+  });
+
+  test('an undecodable replay payload fails with a message rather than an unhandled rejection', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+
+    await mockRanking(page, [
+      { id: 'corrupt', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'CORRUPT', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          // Valid base64, but not a valid RLE stream: 0xFF is not a legal
+          // sample code, so decoding throws (src/core/rle.ts).
+          seed: 2026,
+          rleBase64: '/wE=',
+          rulesetVersion: RULESET_VERSION,
+          replayFormatVersion: REPLAY_FORMAT_VERSION,
+        }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    await expect(page.getByText('THIS REPLAY COULD NOT BE PLAYED BACK.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('SKIP TO FINAL STAGE keeps the page responsive while it works', async ({ page }) => {
+    // The skip resimulates up to a whole replay. Done synchronously it froze
+    // the main thread outright; chunked, the page can still paint and answer
+    // input while it runs.
+    const rleBase64 = recordShortReplay(4242, 600);
+    await mockRanking(page, [
+      { id: 'long', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'LONG', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: 4242, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+    // The button returns to its idle label once the chunked skip completes —
+    // if the skip blocked the main thread, the intermediate state could never
+    // render at all.
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
+
+    // The page is still live and interactive afterwards.
+    await page.getByRole('button', { name: 'EXIT' }).click();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+  });
 });
