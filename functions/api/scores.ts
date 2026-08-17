@@ -29,6 +29,67 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+/** What readBodyWithLimit() decided about the request body. */
+export type BodyReadResult = { ok: true; text: string } | { ok: false; reason: 'too-large' | 'read-failed' };
+
+/**
+ * Reads the request body while counting bytes, aborting the moment the cap
+ * is passed.
+ *
+ * Deliberately NOT `await request.text()` followed by a length check: that
+ * buffers the entire body first, so a client that omits or lies about
+ * Content-Length can make this public endpoint materialize up to Cloudflare's
+ * 100 MB request ceiling inside a Worker with a 128 MB memory limit — an
+ * out-of-memory DoS reachable before a single validation runs. The
+ * Content-Length pre-check in the handler is only a cheap early-out for
+ * honest clients; this is the check that actually holds.
+ *
+ * Cancels the stream on overflow rather than draining it, so an abusive
+ * upload stops costing us anything as soon as it is recognized.
+ */
+export async function readBodyWithLimit(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<BodyReadResult> {
+  if (body === null) return { ok: true, text: '' };
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return { ok: false, reason: 'too-large' };
+      }
+      // `stream: true` so a multi-byte UTF-8 sequence split across chunk
+      // boundaries is carried over rather than turned into replacement
+      // characters.
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { ok: true, text };
+  } catch {
+    await reader.cancel().catch(() => {});
+    return { ok: false, reason: 'read-failed' };
+  }
+}
+
+/**
+ * True only for a D1/SQLite UNIQUE-constraint failure — here, always the
+ * `replay_hash` index (migrations/0001_create_scores.sql), i.e. a genuine
+ * re-submission of an already-ranked replay.
+ *
+ * Matched on the message because D1 surfaces SQLite errors as plain `Error`s
+ * without a structured code. Kept deliberately narrow: anything unrecognized
+ * falls through to a 500 rather than being optimistically called a duplicate.
+ */
+export function isUniqueConstraintViolation(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed/i.test(message);
+}
+
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
 
@@ -61,15 +122,15 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return jsonResponse({ error: 'rate limit exceeded' }, 429);
   }
 
-  let rawBody: string;
-  try {
-    rawBody = await request.text();
-  } catch {
-    return jsonResponse({ error: 'failed to read request body' }, 400);
+  // Streaming, byte-counted read — see readBodyWithLimit()'s doc comment for
+  // why the buffer-then-measure form was a memory-DoS hole.
+  const bodyRead = await readBodyWithLimit(request.body, MAX_BODY_BYTES);
+  if (!bodyRead.ok) {
+    return bodyRead.reason === 'too-large'
+      ? jsonResponse({ error: 'request body too large' }, 413)
+      : jsonResponse({ error: 'failed to read request body' }, 400);
   }
-  if (rawBody.length > MAX_BODY_BYTES) {
-    return jsonResponse({ error: 'request body too large' }, 413);
-  }
+  const rawBody = bodyRead.text;
 
   let body: unknown;
   try {
@@ -188,9 +249,19 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       ).bind(CURRENT_SEASON_ID, RULESET_VERSION),
     ]);
   } catch (err) {
-    // D1's UNIQUE constraint violation (replay_hash) is the only expected
-    // failure mode here — every other input was already validated above.
-    return jsonResponse({ error: 'duplicate replay', accepted: false, detail: String(err) }, 409);
+    // Only a UNIQUE violation means "this exact replay was already
+    // submitted". Everything else — an unapplied migration, a missing/
+    // misconfigured DB binding, a D1 outage — is a server fault, and
+    // reporting it as 409 "duplicate replay" both lies to the client and
+    // hides a real operational problem behind a success-adjacent status.
+    if (isUniqueConstraintViolation(err)) {
+      return jsonResponse({ error: 'duplicate replay', accepted: false }, 409);
+    }
+    // Logged server-side (visible in `wrangler tail` / the Cloudflare
+    // dashboard) but never echoed back: the raw D1 message carries table and
+    // column names, and this is an unauthenticated public endpoint.
+    console.error('POST /api/scores: D1 batch failed', err);
+    return jsonResponse({ error: 'internal error', accepted: false }, 500);
   }
 
   const top10Ids = (batchResults[2].results as { id: string }[]).map((r) => r.id);

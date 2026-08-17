@@ -40,6 +40,9 @@ export default [
         URLSearchParams: 'readonly',
         atob: 'readonly',
         btoa: 'readonly',
+        // Used by src/core/replayEngine.ts's chunked (viewer) simulation
+        // driver to hand control back to the event loop between chunks.
+        setTimeout: 'readonly',
       },
     },
     plugins: {
@@ -73,6 +76,11 @@ export default [
         Request: 'readonly',
         Headers: 'readonly',
         URL: 'readonly',
+        // Streaming request-body reading (functions/api/scores.ts's
+        // readBodyWithLimit()) and its tests.
+        ReadableStream: 'readonly',
+        TextDecoder: 'readonly',
+        RequestInit: 'readonly',
         // Ambient types from @cloudflare/workers-types (tsconfig.functions.json's
         // "types"), not real JS globals — declared here purely so eslint's
         // (type-unaware) `no-undef` rule doesn't flag them; tsc itself
