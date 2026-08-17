@@ -247,19 +247,59 @@ async function postOnce(env: ReturnType<typeof makeEnv>, seed: number, rleBase64
   return { ms, status: response.status, body };
 }
 
+/**
+ * What every single request in a series must produce. Checked per request,
+ * not merely recorded: a series whose replay silently stops early (or starts
+ * being rejected) would otherwise still yield a p99 and a verdict, which is
+ * exactly how a fixture that died after 715 ticks once got published as a
+ * 10800-tick result.
+ */
+interface SeriesExpectation {
+  status: number;
+  accepted: boolean;
+  /** Exact match against the handler's own reported durationTicks, when the response carries one. */
+  durationTicks?: number;
+  /** Exact match against the handler's error string, for the rejection series. */
+  error?: string;
+}
+
 interface SeriesSpec {
   name: string;
   description: string;
   seed: number;
   rleBase64: string;
   gameFactory?: NonNullable<SessionOptions['gameFactory']>;
-  expectTicks?: number;
+  expect: SeriesExpectation;
+}
+
+/** Throws (aborting the whole measurement) unless the response matches the series' expectation exactly. */
+function assertResponse(series: string, phase: string, index: number, expect: SeriesExpectation, actual: { status: number; body: Record<string, unknown> }): void {
+  const problems: string[] = [];
+  if (actual.status !== expect.status) problems.push(`status ${actual.status} != ${expect.status}`);
+  if (actual.body.accepted !== expect.accepted) problems.push(`accepted ${String(actual.body.accepted)} != ${String(expect.accepted)}`);
+  if (expect.durationTicks !== undefined && actual.body.durationTicks !== expect.durationTicks) {
+    problems.push(`durationTicks ${String(actual.body.durationTicks)} != ${expect.durationTicks}`);
+  }
+  if (expect.error !== undefined && actual.body.error !== expect.error) {
+    problems.push(`error ${JSON.stringify(actual.body.error)} != ${JSON.stringify(expect.error)}`);
+  }
+  if (problems.length > 0) {
+    throw new Error(`[${series}] ${phase} request #${index + 1} did not meet the series expectation: ${problems.join('; ')} (body=${JSON.stringify(actual.body)})`);
+  }
 }
 
 async function measureSeries(spec: SeriesSpec) {
   const env = makeEnv(spec.gameFactory);
+  let assertionsChecked = 0;
+
   progress(`[${spec.name}] warmup (${WARMUP} requests, serial)...`);
-  for (let i = 0; i < WARMUP; i++) await postOnce(env, spec.seed, spec.rleBase64);
+  for (let i = 0; i < WARMUP; i++) {
+    const r = await postOnce(env, spec.seed, spec.rleBase64);
+    // Asserted during warmup too: a misconfigured series should abort before
+    // it spends minutes producing numbers that will be thrown away.
+    assertResponse(spec.name, 'warmup', i, spec.expect, r);
+    assertionsChecked++;
+  }
 
   progress(`[${spec.name}] measuring (${MEASURED} requests, serial)...`);
   const samples: number[] = [];
@@ -267,12 +307,15 @@ async function measureSeries(spec: SeriesSpec) {
   const tickValues = new Set<number>();
   for (let i = 0; i < MEASURED; i++) {
     const { ms, status, body } = await postOnce(env, spec.seed, spec.rleBase64);
+    assertResponse(spec.name, 'measured', i, spec.expect, { status, body });
+    assertionsChecked++;
     samples.push(ms);
     const ticks = typeof body.durationTicks === 'number' ? body.durationTicks : -1;
     tickValues.add(ticks);
     outcomes.add(`status=${status} accepted=${body.accepted} ticks=${ticks}${body.error ? ` error=${body.error}` : ''}`);
     if ((i + 1) % 20 === 0) progress(`[${spec.name}] ${i + 1}/${MEASURED} done (last=${ms.toFixed(1)}ms, status=${status}, ticks=${ticks})`);
   }
+  progress(`[${spec.name}] all ${assertionsChecked} responses matched the series expectation ${JSON.stringify(spec.expect)}`);
 
   const p99 = nearestRankP99(samples);
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
@@ -284,6 +327,8 @@ async function measureSeries(spec: SeriesSpec) {
     description: spec.description,
     warmupCount: WARMUP,
     measuredCount: MEASURED,
+    expectation: spec.expect,
+    assertionsChecked,
     p99Ms: Number(p99.toFixed(2)),
     meanMs: Number(mean.toFixed(2)),
     minMs: Number(Math.min(...samples).toFixed(2)),
@@ -332,7 +377,7 @@ async function main(): Promise<void> {
         seed: RNG_SEED,
         rleBase64: bytesToBase64(a.rle),
         gameFactory: makeBenchGameFactory(false),
-        expectTicks: TIME_LIMIT_TICKS,
+        expect: { status: 200, accepted: true, durationTicks: TIME_LIMIT_TICKS },
       }),
       await measureSeries({
         name: 'Bsuccess',
@@ -340,7 +385,7 @@ async function main(): Promise<void> {
         seed: RNG_SEED,
         rleBase64: bytesToBase64(b100.rle),
         gameFactory: makeBenchGameFactory(true),
-        expectTicks: TIME_LIMIT_TICKS,
+        expect: { status: 200, accepted: true, durationTicks: TIME_LIMIT_TICKS },
       }),
       await measureSeries({
         name: 'Brejected',
@@ -348,12 +393,14 @@ async function main(): Promise<void> {
         seed: RNG_SEED,
         rleBase64: bytesToBase64(b101.rle),
         gameFactory: makeBenchGameFactory(true),
+        expect: { status: 422, accepted: false, error: 'max-verified-claims-exceeded' },
       }),
       await measureSeries({
         name: 'Realistic',
         description: 'Ordinary stage-1 run through the unmodified production path (no bench hook)',
         seed: 4242,
         rleBase64: bytesToBase64(r.rle),
+        expect: { status: 200, accepted: true, durationTicks: r.ticks },
       }),
     ];
 

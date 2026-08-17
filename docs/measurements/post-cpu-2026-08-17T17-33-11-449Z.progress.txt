@@ -1,0 +1,42 @@
+[2026-08-17T17:33:11.450Z] [pid 48694] START single-process serial full-path measurement (node v20.19.5)
+[2026-08-17T17:33:11.451Z] [pid 48694] building fixtures...
+[2026-08-17T17:33:14.189Z] [pid 48694] fixtures: A ticks=10800 reason=time | Bsuccess ticks=10800 claims=100 | Brejected claims=101 | Realistic ticks=3581
+[2026-08-17T17:33:14.190Z] [pid 48694] [A] warmup (10 requests, serial)...
+[2026-08-17T17:33:15.974Z] [pid 48694] [A] measuring (100 requests, serial)...
+[2026-08-17T17:33:19.339Z] [pid 48694] [A] 20/100 done (last=190.0ms, status=200, ticks=10800)
+[2026-08-17T17:33:22.804Z] [pid 48694] [A] 40/100 done (last=221.4ms, status=200, ticks=10800)
+[2026-08-17T17:33:26.376Z] [pid 48694] [A] 60/100 done (last=152.9ms, status=200, ticks=10800)
+[2026-08-17T17:33:29.942Z] [pid 48694] [A] 80/100 done (last=200.8ms, status=200, ticks=10800)
+[2026-08-17T17:33:33.701Z] [pid 48694] [A] 100/100 done (last=196.8ms, status=200, ticks=10800)
+[2026-08-17T17:33:33.702Z] [pid 48694] [A] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":10800}
+[2026-08-17T17:33:33.703Z] [pid 48694] [A] p99=251.49ms mean=177.06ms min=125.90ms max=312.82ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-17T17:33:33.703Z] [pid 48694] [Bsuccess] warmup (10 requests, serial)...
+[2026-08-17T17:33:44.713Z] [pid 48694] [Bsuccess] measuring (100 requests, serial)...
+[2026-08-17T17:34:07.082Z] [pid 48694] [Bsuccess] 20/100 done (last=1134.3ms, status=200, ticks=10800)
+[2026-08-17T17:34:28.881Z] [pid 48694] [Bsuccess] 40/100 done (last=1114.7ms, status=200, ticks=10800)
+[2026-08-17T17:34:51.201Z] [pid 48694] [Bsuccess] 60/100 done (last=1171.7ms, status=200, ticks=10800)
+[2026-08-17T17:35:13.236Z] [pid 48694] [Bsuccess] 80/100 done (last=1107.3ms, status=200, ticks=10800)
+[2026-08-17T17:35:40.021Z] [pid 48694] [Bsuccess] 100/100 done (last=1226.5ms, status=200, ticks=10800)
+[2026-08-17T17:35:40.023Z] [pid 48694] [Bsuccess] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":10800}
+[2026-08-17T17:35:40.023Z] [pid 48694] [Bsuccess] p99=1278.43ms mean=1112.43ms min=1033.38ms max=1608.23ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-17T17:35:40.027Z] [pid 48694] [Brejected] warmup (10 requests, serial)...
+[2026-08-17T17:35:50.578Z] [pid 48694] [Brejected] measuring (100 requests, serial)...
+[2026-08-17T17:36:11.701Z] [pid 48694] [Brejected] 20/100 done (last=1068.8ms, status=422, ticks=-1)
+[2026-08-17T17:36:32.294Z] [pid 48694] [Brejected] 40/100 done (last=1000.7ms, status=422, ticks=-1)
+[2026-08-17T17:36:53.260Z] [pid 48694] [Brejected] 60/100 done (last=1169.2ms, status=422, ticks=-1)
+[2026-08-17T17:37:14.133Z] [pid 48694] [Brejected] 80/100 done (last=1019.2ms, status=422, ticks=-1)
+[2026-08-17T17:37:35.015Z] [pid 48694] [Brejected] 100/100 done (last=1064.6ms, status=422, ticks=-1)
+[2026-08-17T17:37:35.017Z] [pid 48694] [Brejected] all 110 responses matched the series expectation {"status":422,"accepted":false,"error":"max-verified-claims-exceeded"}
+[2026-08-17T17:37:35.017Z] [pid 48694] [Brejected] p99=1169.19ms mean=1043.95ms min=971.71ms max=1228.92ms outcomes=status=422 accepted=false ticks=-1 error=max-verified-claims-exceeded
+[2026-08-17T17:37:35.017Z] [pid 48694] [Realistic] warmup (10 requests, serial)...
+[2026-08-17T17:37:35.188Z] [pid 48694] [Realistic] measuring (100 requests, serial)...
+[2026-08-17T17:37:35.460Z] [pid 48694] [Realistic] 20/100 done (last=8.8ms, status=200, ticks=3581)
+[2026-08-17T17:37:35.763Z] [pid 48694] [Realistic] 40/100 done (last=8.2ms, status=200, ticks=3581)
+[2026-08-17T17:37:36.140Z] [pid 48694] [Realistic] 60/100 done (last=10.8ms, status=200, ticks=3581)
+[2026-08-17T17:37:36.555Z] [pid 48694] [Realistic] 80/100 done (last=25.9ms, status=200, ticks=3581)
+[2026-08-17T17:37:36.867Z] [pid 48694] [Realistic] 100/100 done (last=20.2ms, status=200, ticks=3581)
+[2026-08-17T17:37:36.867Z] [pid 48694] [Realistic] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":3581}
+[2026-08-17T17:37:36.868Z] [pid 48694] [Realistic] p99=46.61ms mean=16.63ms min=7.67ms max=65.54ms outcomes=status=200 accepted=true ticks=3581
+[2026-08-17T17:37:36.869Z] [pid 48694] DONE combined p99 = 251.49 + max(1278.43, 1169.19) = 1529.92ms vs 1000ms -> FAIL
+[2026-08-17T17:37:36.869Z] [pid 48694] suggested cpu_ms = 4000
+[2026-08-17T17:37:36.869Z] [pid 48694] wrote post-cpu-2026-08-17T17-33-11-449Z.json and post-cpu-2026-08-17T17-33-11-449Z-summary.json

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-17T17:09:41.762Z",
+  "generatedAt": "2026-08-17T17:37:36.868Z",
   "node": "v20.19.5",
   "measures": "POST /api/scores onRequestPost() end to end, in-process, single-threaded, serial (D1/KV stubbed)",
   "warmupCount": 10,
@@ -12,12 +12,12 @@
     "bRejectedClaims": 101
   },
   "p99Ms": {
-    "A": 297.36,
-    "Bsuccess": 1321.45,
-    "Brejected": 1174.85,
-    "Realistic": 66.44
+    "A": 251.49,
+    "Bsuccess": 1278.43,
+    "Brejected": 1169.19,
+    "Realistic": 46.61
   },
-  "combinedP99Ms": 1618.81,
+  "combinedP99Ms": 1529.92,
   "thresholdMs": 1000,
   "verdict": "FAIL",
   "suggestedCpuMsLimit": 4000

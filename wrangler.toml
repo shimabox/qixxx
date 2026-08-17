@@ -40,9 +40,10 @@ database_id = "00000000-0000-0000-0000-000000000000"
 #
 # 4000 = ~2x the measured worst-case combination, per the plan's "実測 p99 の
 # 2倍程度" guidance. From docs/ranking-cpu-measurement.md §4.3 (single-process,
-# strictly serial, 2026-08-17, measuring the WHOLE onRequestPost path):
-# p99(A) 297.36ms + max(B-success 1,321.45ms, B-rejected 1,174.85ms)
-# = 1,618.81ms, doubled and rounded up.
+# strictly serial, 2026-08-17, measuring the WHOLE onRequestPost path, with
+# every request asserted against its series' expected status/accepted/tick
+# count): p99(A) 251.49ms + max(B-success 1,278.43ms, B-rejected 1,169.19ms)
+# = 1,529.92ms, doubled and rounded up.
 #
 # Three earlier values are superseded, all recorded in §3 of that document.
 # 2000 predates any full measurement. 6000 came from a local HTTP run in which
@@ -53,7 +54,7 @@ database_id = "00000000-0000-0000-0000-000000000000"
 # IMPORTANT: this is still a proxy. It is in-process wall-clock with D1/KV
 # stubbed, not the CPU time Cloudflare meters, and not this hardware. Note too
 # how far it sits above realistic traffic: an ordinary run completes the whole
-# request in 66.44ms p99, ~60x under this ceiling. Re-measure real CPU time on
+# request in 46.61ms p99, ~85x under this ceiling. Re-measure real CPU time on
 # a Paid preview and retighten to ~2x that p99. Deliberately generous rather
 # than tight: the failure mode of "too low" is rejecting real players' runs.
 #
