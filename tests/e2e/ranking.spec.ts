@@ -18,6 +18,7 @@ declare global {
       session: {
         getStatus: () => 'title' | 'playing' | 'stageclear' | 'gameover';
         getTotalTicks: () => number;
+        getScore: () => number;
         getGame: () => {
           getMarker: () => { getPosition: () => { x: number; y: number } };
           getWisps: () => { getPosition: () => { x: number; y: number } }[];
@@ -48,6 +49,49 @@ async function mockRanking(page: Page, entries: RankingEntry[]): Promise<void> {
       body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries }),
     });
   });
+}
+
+/**
+ * Mocks GET /api/ranking with a *full* (10-entry) board whose 10th-place
+ * score sits `tenthPlaceOffset` away from whatever score the live run holds
+ * at request time (read out of the page right then, so the boundary is exact
+ * no matter how the wall-clock-timed chase actually played out).
+ *
+ * This is what pins down src/ui/ranking.ts's provisional-in-range comparison
+ * at its exact boundary, which a `entries: []` mock cannot reach:
+ * - offset  0 -> the run merely *ties* 10th place. Must NOT be offered: ties
+ *   are broken by rank_seq ASC (first-come-first-served, functions/api/
+ *   ranking.ts's 順位規則), so an equal score always sorts behind the
+ *   incumbent — i.e. lands 11th and is deleted by POST's own trim step.
+ * - offset -1 -> the run strictly beats 10th place. Must be offered.
+ *
+ * Returns a getter for how many GETs were served, so a test asserting a
+ * *negative* (no overlay) can first prove the decision point was reached at
+ * all rather than passing vacuously.
+ */
+async function mockFullBoardRelativeToLiveScore(page: Page, tenthPlaceOffset: number): Promise<() => number> {
+  let getCount = 0;
+  await page.route('**/api/ranking', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const liveScore = await page.evaluate(() => window.__game__!.session.getScore());
+    const tenthScore = liveScore + tenthPlaceOffset;
+    const entries: RankingEntry[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `full${i}`,
+      createdAt: '2026-01-01T12:00:00Z',
+      score: tenthScore + (9 - i), // descending, so index 9 (10th place) === tenthScore
+      stage: 1,
+      name: `RIVAL${i}`,
+      xHandle: null,
+      replayAvailable: false,
+    }));
+    getCount++;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries }),
+    });
+  });
+  return () => getCount;
 }
 
 // Fixes normal mode's internal per-run seed (src/main.ts's
@@ -221,13 +265,17 @@ function recordShortReplay(seed: number, timeLimitTicks: number): string {
 }
 
 test.describe('ranking display', () => {
-  test('shows entries, an X-handle link, a disabled REPLAY for unavailable rows, and renders an HTML-metacharacter name as inert text', async ({ page }) => {
+  test('shows entries with their dates, an X-handle link, a disabled REPLAY for unavailable rows, and renders an HTML-metacharacter name as inert text', async ({ page }) => {
+    // Distinct dates per row (so each assertion below is unambiguous), all at
+    // 12:00 UTC — src/ui/ranking.ts's formatRankingDate() renders in the
+    // viewer's local timezone, and midday UTC lands on the same calendar day
+    // in every timezone a CI/dev machine realistically runs in.
     const entries: RankingEntry[] = [
-      { id: 'a', createdAt: '2026-01-01T00:00:00Z', score: 999, stage: 3, name: 'PLAIN', xHandle: null, replayAvailable: true },
-      { id: 'b', createdAt: '2026-01-01T00:00:00Z', score: 500, stage: 2, name: 'HANDLED', xHandle: 'e2e_handle', replayAvailable: true },
+      { id: 'a', createdAt: '2026-01-02T12:00:00Z', score: 999, stage: 3, name: 'PLAIN', xHandle: null, replayAvailable: true },
+      { id: 'b', createdAt: '2026-02-03T12:00:00Z', score: 500, stage: 2, name: 'HANDLED', xHandle: 'e2e_handle', replayAvailable: true },
       {
         id: 'c',
-        createdAt: '2026-01-01T00:00:00Z',
+        createdAt: '2026-03-04T12:00:00Z',
         score: 1,
         stage: 1,
         name: '<img src=x onerror=alert(1)>',
@@ -242,6 +290,11 @@ test.describe('ranking display', () => {
     await expect(page.getByText('X handles are self-reported')).toBeVisible();
     await expect(page.getByText('#1  999  STAGE 3')).toBeVisible();
     await expect(page.getByText('#2  500  STAGE 2')).toBeVisible();
+
+    // Date (task 4's "日付・スコア・ステージ・名前") — one per row.
+    await expect(page.getByText('2026-01-02')).toBeVisible();
+    await expect(page.getByText('2026-02-03')).toBeVisible();
+    await expect(page.getByText('2026-03-04')).toBeVisible();
 
     const handleLink = page.locator('a', { hasText: '@e2e_handle' });
     await expect(handleLink).toHaveAttribute('href', 'https://x.com/e2e_handle');
@@ -274,10 +327,13 @@ test.describe('name-input submission flow', () => {
   // chaseIntoWisp() budget is itself 90s.
   test.setTimeout(240_000);
 
-  test('a real (non-tainted, non-seeded) gameover offers submission, and SUBMIT posts and shows the server-confirmed rank', async ({ page }) => {
+  test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission, and SUBMIT posts and shows the server-confirmed rank', async ({ page }) => {
     let scoresPostCount = 0;
     let lastPostedBody: Record<string, unknown> | undefined;
-    await mockRanking(page, []); // entries: [] forces provisionalInRange = true regardless of the real achieved score
+    // A full 10-entry board whose 10th place is exactly one point *below*
+    // the achieved score: the strictly-better side of the boundary, which
+    // an `entries: []` mock (see the SKIP test below) never exercises.
+    await mockFullBoardRelativeToLiveScore(page, -1);
     await page.route('**/api/scores', (route) => {
       if (route.request().method() !== 'POST') return route.fallback();
       scoresPostCount++;
@@ -329,6 +385,29 @@ test.describe('name-input submission flow', () => {
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     expect(scoresPostCount).toBe(0);
   });
+
+  test('a gameover that merely TIES the 10th place of a full board is not offered submission (first-come-first-served)', async ({ page }) => {
+    let scoresPostCount = 0;
+    const rankingGetCount = await mockFullBoardRelativeToLiveScore(page, 0); // exact tie with 10th place
+    await page.route('**/api/scores', (route) => {
+      scoresPostCount++;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+
+    // Not vacuous: the provisional-rank GET really was served (i.e. the
+    // gameover flow reached the in-range decision, and the sibling test
+    // above proves the overlay *does* appear when the score strictly beats
+    // that same full board) — it simply decided "out of range" this time.
+    await expect.poll(rankingGetCount).toBeGreaterThanOrEqual(1);
+    await page.waitForTimeout(500); // let any (incorrect) overlay reveal settle before asserting its absence
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
+    await expect(page.getByPlaceholder('NAME')).toBeHidden();
+    expect(scoresPostCount).toBe(0);
+  });
 });
 
 test.describe('replay viewing', () => {
@@ -362,8 +441,17 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
 
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+
+    // Before EXIT the list is closed (startReplayFor() hid it on the way in).
+    await expect(page.getByText('#1  42  STAGE 1')).toBeHidden();
+
     await page.getByRole('button', { name: 'EXIT' }).click();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+
+    // "終了して一覧へ戻る" (task 4): EXIT reopens the ranking list rather
+    // than just dropping back to the live screen.
+    await expect(page.getByText('#1  42  STAGE 1')).toBeVisible();
+    await expect(page.getByText('X handles are self-reported')).toBeVisible();
 
     expect(scoresPostCount).toBe(0); // no persistence/POST side effects during replay viewing
     const highScoreAfter = await page.evaluate(() => localStorage.getItem('qixxx.highScore'));

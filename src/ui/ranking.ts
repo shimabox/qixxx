@@ -44,6 +44,24 @@ export interface RankingUIOptions {
   onReplayExit: () => void;
 }
 
+/**
+ * Formats GET /api/ranking's ISO-8601 `createdAt` as a plain `YYYY-MM-DD`
+ * in the *viewer's* local timezone (docs/plans/2026-08-16-score-ranking task
+ * 4's "日付・スコア・ステージ・名前"). Built from the Date's local parts by
+ * hand rather than `toLocaleDateString()`, whose output shape varies by
+ * locale and would make the row width — and the E2E assertions — unstable.
+ * A malformed/absent timestamp degrades to an empty string rather than
+ * rendering "Invalid Date" or "NaN-NaN-NaN".
+ */
+export function formatRankingDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
@@ -204,16 +222,30 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       rankLine.appendChild(nameSpan);
       left.appendChild(rankLine);
 
+      // Secondary line: the entry's date (task 4's required 日付) and, when
+      // present, the X-handle link. Kept off the rank line itself so the
+      // primary "#N score STAGE n name" reading order stays uncluttered.
+      const metaLine = document.createElement('div');
+      metaLine.style.display = 'flex';
+      metaLine.style.alignItems = 'center';
+      metaLine.style.gap = '8px';
+      metaLine.style.fontSize = '0.7em';
+      metaLine.style.opacity = '0.75';
+      const dateSpan = document.createElement('span');
+      dateSpan.textContent = formatRankingDate(entry.createdAt);
+      metaLine.appendChild(dateSpan);
+
       if (entry.xHandle) {
         const handleLink = document.createElement('a');
         handleLink.href = `https://x.com/${encodeURIComponent(entry.xHandle)}`;
         handleLink.target = '_blank';
         handleLink.rel = 'noopener noreferrer';
         handleLink.style.color = HUD_ACCENT_COLOR;
-        handleLink.style.fontSize = '0.85em';
+        handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
         handleLink.textContent = `@${entry.xHandle}`;
-        left.appendChild(handleLink);
+        metaLine.appendChild(handleLink);
       }
+      left.appendChild(metaLine);
       row.appendChild(left);
 
       const replayButton = styledButton('REPLAY');
@@ -409,7 +441,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         if (res.ok) {
           const data = (await res.json()) as { entries: RankingEntry[] };
           const entries = data.entries ?? [];
-          provisionalInRange = entries.length < 10 || scoreInfo.score >= entries[entries.length - 1].score;
+          // Strictly greater once the board is full: ties are broken by
+          // rank_seq ASC (first-come-first-served — functions/api/ranking.ts's
+          // 順位規則), so a score merely *equal* to the current 10th place
+          // always sorts behind it, i.e. lands at 11th and gets deleted by
+          // POST's own trim step. Offering the name field in that case would
+          // promise a slot that cannot exist. Below 10 entries there is a
+          // free slot regardless of the score, so no comparison applies.
+          provisionalInRange = entries.length < 10 || scoreInfo.score > entries[entries.length - 1].score;
         }
       } catch {
         provisionalInRange = false;
@@ -462,6 +501,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     replayControls.style.display = 'none';
     activeReplayEngine = null;
     options.onReplayExit();
+    // "終了して一覧へ戻る" (task 4): EXIT returns to the ranking list the
+    // replay was launched from, not just to the live screen — startReplayFor()
+    // closed the list on the way in, so this reopens (and refetches) it.
+    void showList();
   });
 
   skipToFinalButton.addEventListener('click', () => {
