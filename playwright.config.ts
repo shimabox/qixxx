@@ -12,21 +12,30 @@ export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   fullyParallel: true,
-  // Capped (not left at the CPU-count-based default, which measured 4 on an
-  // 8-core dev machine) after diagnosing an intermittent full-suite flake
-  // (docs/plans/2026-08-16-score-ranking task 5 stabilization): several
-  // specs drive real, wall-clock-timed gameplay with tight-ish timing
-  // margins (tests/e2e/gameover-share.spec.ts's 8s post-miss window,
-  // tests/e2e/smoke.spec.ts's 10s claim window) — confirmed via repeated
-  // full-suite runs that *both* intermittently miss their own budget under
-  // 4-way parallel CPU contention even independent of any other spec (this
-  // reproduces with only the suite's pre-existing files, before
-  // tests/e2e/ranking.spec.ts's own real-gameplay-driven tests are even
-  // added to the mix — not a defect introduced by either). 2 keeps
-  // meaningful parallelism while giving each real-time-sensitive test
-  // enough headroom; verified stable across repeated full-suite runs at
-  // this value where 4 was not.
-  workers: 2,
+  // Serialized (not left at the CPU-count-based default, which measured 4 on
+  // an 8-core dev machine) because several specs drive real, wall-clock-timed
+  // gameplay against budgets that CPU contention can blow:
+  // tests/e2e/gameover-share.spec.ts polls an 8s post-miss window,
+  // tests/e2e/smoke.spec.ts a 10s claim window. Both are pre-existing files
+  // this feature branch must not edit, and both were confirmed (repeated
+  // full-suite runs, docs/plans/2026-08-16-score-ranking task 5
+  // stabilization) to intermittently miss their own budget under parallel
+  // load *with only the suite's pre-existing files present*, before
+  // tests/e2e/ranking.spec.ts's real-gameplay tests were added — i.e. this
+  // is contention, not a defect in any spec.
+  //
+  // Dropping 4 -> 2 made it rarer but not gone: review round 3 still caught
+  // both of them failing, once each, across ~40 full-suite runs — always as
+  // a bare "Timeout Nms exceeded" on a gameplay poll, never a wrong value.
+  // 1 removes the cross-worker CPU contention that causes it outright, which
+  // is worth roughly a minute of extra wall-clock on a suite this small:
+  // an E2E gate is only useful if green means green.
+  //
+  // (Round 3 also cut the ranking spec's own gameplay driver from ~30
+  // page.evaluate() round trips per second to ~3, so this file contributes
+  // far less load than it used to — that reduction alone was not sufficient
+  // to make the pre-existing budgets reliable.)
+  workers: 1,
   retries: 0,
   reporter: [['list']],
   // No `use.baseURL`: tests/e2e/smoke.spec.ts navigates with the full
