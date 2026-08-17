@@ -47,6 +47,23 @@ export function decodeSampleByte(code: number): InputSample {
   };
 }
 
+/**
+ * Hard cap on how many bytes one run-length varint may occupy.
+ *
+ * A run length in this format is always in [1, MAX_INPUT_SAMPLES] (10800 —
+ * two varint bytes), so 5 bytes (a full uint32 and then some) is already
+ * absurdly generous headroom for any *legitimate* payload. The cap exists as
+ * a safety bound, not a convenience one: without it, a crafted run of
+ * continuation bytes (0x80 ...) drives `shift` arbitrarily high, at which
+ * point `Math.pow(2, shift)` becomes `Infinity` and `0 * Infinity` is `NaN`.
+ * `NaN` then silently passes *both* `runLength <= 0` and
+ * `total > maxTotalSamples` (every comparison against NaN is false), letting
+ * an unvalidated run escape the decoder — exactly the kind of
+ * "validate-while-decoding" hole this module's contract forbids. The cap plus
+ * the `Number.isSafeInteger()` check below closes it from both directions.
+ */
+const MAX_VARINT_BYTES = 5;
+
 function writeVarint(bytes: number[], value: number): void {
   let v = value;
   while (v >= 0x80) {
@@ -77,8 +94,9 @@ export function encodeRle(samples: readonly InputSample[]): Uint8Array {
  * Decodes+validates `data` one run at a time, yielding
  * `{ sample, runLength }` — never materializing the fully-expanded sample
  * array (see this module's doc comment). Throws as soon as it encounters an
- * invalid sample byte, a truncated varint, a zero/negative run length, or a
- * cumulative sample count exceeding `maxTotalSamples` — a caller mid-way
+ * invalid sample byte, a truncated or over-long varint, a run length that
+ * isn't a positive safe integer, or a cumulative sample count exceeding
+ * `maxTotalSamples` — a caller mid-way
  * through consuming the generator has therefore only ever processed
  * *validated* runs by the time an exception propagates.
  */
@@ -95,16 +113,26 @@ export function* decodeRleRuns(
 
     let runLength = 0;
     let shift = 0;
+    let varintBytes = 0;
     let byte: number;
     do {
       if (offset >= data.length) throw new Error('rle: truncated varint');
+      if (varintBytes >= MAX_VARINT_BYTES) throw new Error(`rle: varint exceeds ${MAX_VARINT_BYTES} bytes`);
       byte = data[offset];
       offset++;
+      varintBytes++;
       runLength += (byte & 0x7f) * Math.pow(2, shift);
       shift += 7;
     } while (byte & 0x80);
 
-    if (runLength <= 0) throw new Error('rle: invalid run length');
+    // `Number.isSafeInteger()` — not a bare `runLength <= 0` — because that
+    // comparison alone is false for NaN and for Infinity, the two values a
+    // malformed varint can otherwise produce (see MAX_VARINT_BYTES). This
+    // rejects NaN, ±Infinity, and any non-integer outright; MAX_VARINT_BYTES
+    // caps `shift` at 28, so a well-formed varint here is always exact.
+    if (!Number.isSafeInteger(runLength) || runLength <= 0) {
+      throw new Error(`rle: invalid run length ${runLength}`);
+    }
     total += runLength;
     if (total > maxTotalSamples) throw new Error(`rle: exceeds max sample count (${maxTotalSamples})`);
 
