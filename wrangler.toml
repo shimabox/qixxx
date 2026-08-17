@@ -38,24 +38,28 @@ database_id = "00000000-0000-0000-0000-000000000000"
 
 # CPU time ceiling — a denial-of-wallet / runaway brake, not a tuning knob.
 #
-# Sized from task 6's full-execution measurement (docs/ranking-cpu-measurement.md):
-# the heaviest series' local p99 was 1,731.8ms and the judged combination was
-# 2,887.27ms, so ~2x the combined figure is 6000ms. That doubling is the
-# margin the plan calls for ("実測 p99 の2倍程度"); 2000ms — the value carried
-# here while task 3 only needed local headroom — would now sit *below* the
-# measured p99 and start cutting off legitimate submissions on the edge.
+# 5000 = ~2x the measured worst-case combination, per the plan's "実測 p99 の
+# 2倍程度" guidance. From docs/ranking-cpu-measurement.md §4.3 (single-process,
+# strictly serial, 2026-08-17): p99(A) 41.51ms + max(B-success 1,563.73ms,
+# B-rejected 2,311.17ms) = 2,352.68ms, doubled and rounded up.
 #
-# IMPORTANT: 6000 is derived from a LOCAL WALL-CLOCK proxy, which is not the
-# CPU time Cloudflare actually meters (it includes I/O waits, GC, local
-# SQLite access and Miniflare overhead — see docs/ranking-cpu-measurement.md
-# §4; task 1's real-edge numbers ran roughly 1/3 of the local figures).
-# Re-measure real CPU time on a Paid preview deployment and retighten this to
-# ~2x that p99 — it is deliberately set generous rather than tight, because
-# the failure mode of "too low" is rejecting real players' runs.
+# Two earlier values are superseded. 2000 predates any full measurement and
+# now sits below the measured p99. 6000 came from a local HTTP wall-clock run
+# that has since been withdrawn as invalid — three copies of that harness ran
+# concurrently and contaminated each other (§3 of the same document).
+#
+# IMPORTANT: even 5000 rests on a proxy. The measurement is in-process
+# wall-clock of the verification core — the dominant cost, but a LOWER bound
+# on per-request CPU (it excludes hashing, D1 and response generation) — and
+# it is not the CPU time Cloudflare meters. It is also worth noting how far
+# this sits above realistic traffic: an ordinary run verifies in 96.41ms p99,
+# ~24x under this ceiling. Re-measure real CPU time on a Paid preview and
+# retighten to ~2x that p99. Deliberately generous rather than tight: the
+# failure mode of "too low" is rejecting real players' runs.
 #
 # This is a Workers Paid-plan setting (max 300000, default 30000 when unset)
 # that only takes effect on Cloudflare's edge under a Paid plan. Locally,
 # `wrangler pages dev`'s Miniflare/workerd does not enforce a request CPU cap
 # at all, so this key has no effect on local dev either way.
 [limits]
-cpu_ms = 6000
+cpu_ms = 5000
