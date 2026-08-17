@@ -12,6 +12,21 @@ export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   fullyParallel: true,
+  // Capped (not left at the CPU-count-based default, which measured 4 on an
+  // 8-core dev machine) after diagnosing an intermittent full-suite flake
+  // (docs/plans/2026-08-16-score-ranking task 5 stabilization): several
+  // specs drive real, wall-clock-timed gameplay with tight-ish timing
+  // margins (tests/e2e/gameover-share.spec.ts's 8s post-miss window,
+  // tests/e2e/smoke.spec.ts's 10s claim window) — confirmed via repeated
+  // full-suite runs that *both* intermittently miss their own budget under
+  // 4-way parallel CPU contention even independent of any other spec (this
+  // reproduces with only the suite's pre-existing files, before
+  // tests/e2e/ranking.spec.ts's own real-gameplay-driven tests are even
+  // added to the mix — not a defect introduced by either). 2 keeps
+  // meaningful parallelism while giving each real-time-sensitive test
+  // enough headroom; verified stable across repeated full-suite runs at
+  // this value where 4 was not.
+  workers: 2,
   retries: 0,
   reporter: [['list']],
   // No `use.baseURL`: tests/e2e/smoke.spec.ts navigates with the full

@@ -17,6 +17,7 @@ declare global {
     __game__?: {
       session: {
         getStatus: () => 'title' | 'playing' | 'stageclear' | 'gameover';
+        getTotalTicks: () => number;
         getGame: () => {
           getMarker: () => { getPosition: () => { x: number; y: number } };
           getWisps: () => { getPosition: () => { x: number; y: number } }[];
@@ -49,56 +50,160 @@ async function mockRanking(page: Page, entries: RankingEntry[]): Promise<void> {
   });
 }
 
+// Fixes normal mode's internal per-run seed (src/main.ts's
+// generateNormalRunSeed()) WITHOUT using `?seed=` — a `?seed=` run is
+// runMode: 'seeded' and is structurally excluded from the whole ranking
+// submission flow (src/ui/ranking.ts's isEligible()), so it can't be used to
+// stabilize these tests. generateNormalRunSeed() sources its seed from
+// `crypto.getRandomValues(new Uint32Array(1))`; stubbing that (only for
+// length-1 Uint32Array calls, so anything else that might call
+// getRandomValues for an unrelated reason is left untouched) makes the
+// board and Wisp behavior deterministic while runMode stays 'normal' (POST-
+// eligibility is preserved).
+//
+// SEED_VALUE = 1264, chosen by headless simulation (no browser needed) of
+// this exact file's chaseIntoWisp() pursuit logic directly against
+// GameSession, scanning seeds 1-5000 for ones that reach a 'life' gameover
+// without ever passing through 'stageclear' (the flake this fixes: a prior
+// randomly-seeded run's chase path happened to trace a shape that claimed
+// ~98% occupancy and cleared stage 1 before ever touching the Wisp) — see
+// this test's own git history for the exploration script. 1264 was then
+// cross-validated by re-running the same headless simulation at every
+// direction-re-evaluation cadence from 3 to 8 ticks (chaseIntoWisp() below
+// re-reads the Wisp's position roughly every 80ms of real time, i.e. every
+// ~4-5 ticks at 60 ticks/s, but real wall-clock polling can jitter a tick or
+// two either way) — seed 1264 reaches a 'life' gameover (never 'stageclear')
+// at every one of those cadences, within a tight 2021-2030 tick band
+// (~33.7-33.8s of real time at 60 ticks/s), making it robust to that jitter
+// rather than a knife-edge result specific to one exact cadence.
+const SEED_VALUE = 1264;
+
+// A *second*, independent flake (found while stabilizing the first): ANY
+// fresh keydown (not just Space/Enter) sets src/input/keyboard.ts's
+// edge-triggered "any key" confirm pulse — harmless mid-'playing', but if a
+// chase-driven direction-change keydown happens to land on the exact tick
+// gameover is reached, that queued confirm gets consumed on the very next
+// tick and immediately bounces GameOver -> Title, before this test ever
+// observes the transient 'gameover' status (`status` reads back 'title',
+// not 'gameover' — a real, reproduced failure, not hypothetical). Fixed by
+// freezing the chase's held direction (no more keyboard.down() calls, only
+// the passive keyboard.up() cleanup at the very end) once the live session
+// crosses FREEZE_TOTAL_TICKS — re-verified by headless simulation
+// (session.getTotalTicks() polled, not wall-clock time, so this is exact
+// regardless of frame-rate jitter) that seed 1264 still reaches a 'life'
+// gameover with no 'stageclear' when frozen this early, across cadences
+// 3-8: observed death at ticks 2021-2030 — 1300 is close to the earliest
+// tick that still reliably reaches the Wisp at all (freezing any earlier,
+// e.g. 1000, times out: the marker hasn't closed the distance yet), so
+// 1600 is used here for extra margin (~7s) rather than that bare minimum.
+// Even this large a margin was NOT sufficient on its own under real
+// full-suite CPU contention (a `read totalTicks, then decide, then
+// dispatch a keydown` round trip can itself be delayed well past when the
+// tick count was last observed, under enough scheduling pressure) — see
+// reachGameoverDeterministically()'s retry wrapper below for the
+// belt-and-suspenders fix that actually closed this out.
+const FREEZE_TOTAL_TICKS = 1600;
+
+async function stubDeterministicNormalSeed(page: Page): Promise<void> {
+  await page.addInitScript((seed: number) => {
+    const realGetRandomValues = crypto.getRandomValues.bind(crypto);
+    crypto.getRandomValues = ((array: ArrayBufferView | null) => {
+      if (array instanceof Uint32Array && array.length === 1) {
+        array[0] = seed;
+        return array;
+      }
+      return realGetRandomValues(array as never);
+    }) as Crypto['getRandomValues'];
+  }, SEED_VALUE);
+}
+
 /**
  * Steers the marker directly at the live Wisp position while holding the
- * fast-draw key, repeatedly, until 3 lives are lost (real gameplay, not a
- * fixed script — normal mode's board is randomly seeded per run so there is
- * no fixed path to script, unlike smoke.spec.ts's `?seed=1` scenario, which
- * would also be wrong here since seeded runs are excluded from the ranking
- * flow entirely). Verified empirically against the real app: each life-loss
- * typically takes 1-3s of held pursuit.
+ * fast-draw key, repeatedly, until 3 lives are lost (real gameplay, driven
+ * against the fixed board stubDeterministicNormalSeed() sets up — not a
+ * hardcoded fixed input script, so this loop still tolerates normal
+ * wall-clock/frame-rate jitter, just no longer a different board every
+ * run). Verified (headless simulation, see SEED_VALUE's comment) to reach
+ * a 'life' gameover in ~2021-2030 ticks (~34s) for this seed.
  */
-async function chaseIntoWisp(page: Page, timeoutMs = 60_000): Promise<void> {
+async function chaseIntoWisp(page: Page, timeoutMs = 90_000): Promise<void> {
   await page.keyboard.down('KeyX'); // fast draw, held for the whole chase
   let heldX: 'ArrowLeft' | 'ArrowRight' | null = null;
   let heldY: 'ArrowUp' | 'ArrowDown' | null = null;
+  let frozen = false;
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
     const status = await page.evaluate(() => window.__game__!.session.getStatus());
     if (status !== 'playing') break;
-    const state = await page.evaluate(() => {
-      const s = window.__game__!.session;
-      const wisps = s.getGame().getWisps();
-      return { marker: s.getGame().getMarker().getPosition(), wisp: wisps[0]?.getPosition() ?? null };
-    });
-    if (!state.wisp) {
-      await page.waitForTimeout(50);
-      continue;
-    }
-    const wantX = state.wisp.x > state.marker.x ? 'ArrowRight' : state.wisp.x < state.marker.x ? 'ArrowLeft' : null;
-    const wantY = state.wisp.y > state.marker.y ? 'ArrowDown' : state.wisp.y < state.marker.y ? 'ArrowUp' : null;
-    if (wantX !== heldX) {
-      if (heldX) await page.keyboard.up(heldX);
-      if (wantX) await page.keyboard.down(wantX);
-      heldX = wantX;
-    }
-    if (wantY !== heldY) {
-      if (heldY) await page.keyboard.up(heldY);
-      if (wantY) await page.keyboard.down(wantY);
-      heldY = wantY;
+
+    if (!frozen) {
+      const totalTicks = await page.evaluate(() => window.__game__!.session.getTotalTicks());
+      if (totalTicks >= FREEZE_TOTAL_TICKS) {
+        // Stop issuing any further keydown (see FREEZE_TOTAL_TICKS's
+        // comment) — hold whatever direction is already locked in and
+        // just wait for gameover from here on, sending no more input at
+        // all (not even keyup, which would be safe but is simply
+        // unnecessary — the direction is already correct).
+        frozen = true;
+      } else {
+        const state = await page.evaluate(() => {
+          const s = window.__game__!.session;
+          const wisps = s.getGame().getWisps();
+          return { marker: s.getGame().getMarker().getPosition(), wisp: wisps[0]?.getPosition() ?? null };
+        });
+        if (state.wisp) {
+          const wantX = state.wisp.x > state.marker.x ? 'ArrowRight' : state.wisp.x < state.marker.x ? 'ArrowLeft' : null;
+          const wantY = state.wisp.y > state.marker.y ? 'ArrowDown' : state.wisp.y < state.marker.y ? 'ArrowUp' : null;
+          if (wantX !== heldX) {
+            if (heldX) await page.keyboard.up(heldX);
+            if (wantX) await page.keyboard.down(wantX);
+            heldX = wantX;
+          }
+          if (wantY !== heldY) {
+            if (heldY) await page.keyboard.up(heldY);
+            if (wantY) await page.keyboard.down(wantY);
+            heldY = wantY;
+          }
+        }
+      }
     }
     // 80ms (not tighter): keeps this loop's own evaluate()/IPC overhead
     // low so it doesn't itself add to CPU contention against other
-    // parallel workers (a real gameplay-timing test in another file,
-    // tests/e2e/gameover-share.spec.ts, was observed to occasionally miss
-    // its own timing budget under 4-way parallel load with a tighter
-    // poll here) — still far more responsive than the Wisp's own movement
-    // speed needs.
+    // parallel workers — still far more responsive than the Wisp's own
+    // movement speed needs, and irrelevant to precision once frozen since
+    // FREEZE_TOTAL_TICKS is read from the live session, not wall time.
     await page.waitForTimeout(80);
   }
   if (heldX) await page.keyboard.up(heldX);
   if (heldY) await page.keyboard.up(heldY);
   await page.keyboard.up('KeyX');
+}
+
+/**
+ * Drives a fresh run (Title -> Playing -> chaseIntoWisp) all the way to a
+ * real 'life' gameover, retrying the whole thing from Title if it instead
+ * lands back on 'title' (the FREEZE_TOTAL_TICKS-guarded race described
+ * above, occasionally still possible under enough real scheduling delay —
+ * this retry is the actual belt-and-suspenders fix, since it self-heals
+ * regardless of the exact cause). SEED_VALUE is fixed for every retry
+ * (stubDeterministicNormalSeed() patches the page's crypto, not a one-shot
+ * value), so a retry replays the identical deterministic board/chase, just
+ * hoping to avoid whatever scheduling coincidence caused the bounce.
+ */
+async function reachGameoverDeterministically(page: Page, attempts = 3): Promise<void> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await page.keyboard.press('Space'); // Title -> Playing
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+
+    await chaseIntoWisp(page);
+    const status = await page.evaluate(() => window.__game__?.session.getStatus());
+    if (status === 'gameover') return;
+    if (attempt === attempts) {
+      throw new Error(`reachGameoverDeterministically: gave up after ${attempts} attempts, last status was "${status}"`);
+    }
+    // Landed back on 'title' (or something else unexpected) instead of
+    // 'gameover' — retry from a clean Title screen.
+  }
 }
 
 /** Records a short, deterministic "wander, then time runs out" replay (mirrors src/core/replayEngine.test.ts's recordTimeUpRun) and base64-encodes it for a mocked replay payload. */
@@ -163,7 +268,11 @@ test.describe('name-input submission flow', () => {
   // 59.7s timeout; the same test passed in 10.3s run alone) — not a defect
   // in the app itself.
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(150_000);
+  // Generous (not just 1-2x a single ~34s chase): reachGameoverDeterministically()
+  // retries up to 3 full attempts if a run lands back on 'title' instead of
+  // 'gameover' (see its own doc comment), and a single attempt's internal
+  // chaseIntoWisp() budget is itself 90s.
+  test.setTimeout(240_000);
 
   test('a real (non-tainted, non-seeded) gameover offers submission, and SUBMIT posts and shows the server-confirmed rank', async ({ page }) => {
     let scoresPostCount = 0;
@@ -180,12 +289,9 @@ test.describe('name-input submission flow', () => {
       });
     });
 
+    await stubDeterministicNormalSeed(page);
     await page.goto(APP_URL); // no ?seed= — normal mode is required for POST-eligibility
-    await page.keyboard.press('Space'); // Title -> Playing
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
-
-    await chaseIntoWisp(page);
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus()), { timeout: 60_000 }).toBe('gameover');
+    await reachGameoverDeterministically(page);
 
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
 
@@ -214,12 +320,9 @@ test.describe('name-input submission flow', () => {
       return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
+    await stubDeterministicNormalSeed(page);
     await page.goto(APP_URL);
-    await page.keyboard.press('Space');
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
-
-    await chaseIntoWisp(page);
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus()), { timeout: 60_000 }).toBe('gameover');
+    await reachGameoverDeterministically(page);
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
 
     await page.getByRole('button', { name: 'SKIP' }).click();
