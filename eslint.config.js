@@ -76,6 +76,7 @@ export default [
         // (type-unaware) `no-undef` rule doesn't flag them; tsc itself
         // already validates their usage via tsconfig.functions.json.
         KVNamespace: 'readonly',
+        D1Database: 'readonly',
         PagesFunction: 'readonly',
       },
     },

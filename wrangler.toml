@@ -20,3 +20,18 @@ pages_build_output_dir = "dist"
 [[kv_namespaces]]
 binding = "SHARES"
 id = "6c911969b6e94e5d90ea71ca6ab529dd"
+
+# D1 binding for the score-ranking feature (docs/plans/2026-08-16-score-
+# ranking task 3). `database_id` below is a placeholder, NOT a real
+# Cloudflare resource — `wrangler pages dev` / `wrangler d1 migrations apply`
+# happily create a purely local SQLite-backed D1 under .wrangler/state/ for
+# ANY database_id string, with zero Cloudflare account calls, which is
+# exactly what task 3 asks for ("実 D1 の作成・binding は不要"). This must be
+# replaced with the real id `wrangler d1 create qixxx-scores` prints out
+# before any real (non-local) deploy — see docs/plans/2026-08-16-score-
+# ranking/runbook.md's deploy-prep steps, which this round deliberately
+# stops short of (task 7's stop point).
+[[d1_databases]]
+binding = "DB"
+database_name = "qixxx-scores"
+database_id = "00000000-0000-0000-0000-000000000000"

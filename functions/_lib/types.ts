@@ -18,7 +18,14 @@ export interface ShareRecord extends ShareRequestPayload {
   at: number;
 }
 
-/** The Pages Functions environment bindings (wrangler.toml `[[kv_namespaces]]`). */
+/**
+ * The Pages Functions environment bindings (wrangler.toml
+ * `[[kv_namespaces]]` / `[[d1_databases]]`). `DB` (docs/plans/2026-08-16-
+ * score-ranking task 3) is bound to a *local-only* D1 database until task
+ * 7's stop point is cleared with the user — see wrangler.toml's own comment
+ * on the `[[d1_databases]]` block for the exact local/production split.
+ */
 export interface Env {
   SHARES: KVNamespace;
+  DB: D1Database;
 }
