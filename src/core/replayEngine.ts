@@ -106,6 +106,24 @@ export interface ChunkedSimOptions extends Omit<ReplaySimOptions, 'seed'> {
   yieldToEventLoop?: () => Promise<void>;
   /** Called after each chunk with the number of ticks simulated so far — for a progress/LOADING display. */
   onProgress?: (ticksSimulated: number) => void;
+  /**
+   * Aborts the simulation at the next chunk boundary.
+   *
+   * Chunking alone only keeps the page *responsive*; the work still runs to
+   * completion. A viewer who closes the list or starts a run has no further
+   * use for the result, and on a phone letting up to 10800 ticks grind on in
+   * the background is exactly the cost the chunking was meant to avoid — it
+   * lands on the freshly-started live game instead of on the loading screen.
+   */
+  signal?: AbortSignal;
+}
+
+/** Thrown by the chunked drivers when their AbortSignal fires. Callers treat it as "the user moved on", not as an error to report. */
+export class ReplayAbortedError extends Error {
+  constructor() {
+    super('replay: simulation aborted');
+    this.name = 'ReplayAbortedError';
+  }
 }
 
 function defaultYield(): Promise<void> {
@@ -128,12 +146,19 @@ export async function simulateReplayFromRleChunked(
   rle: Uint8Array,
   options: ChunkedSimOptions = {}
 ): Promise<ReplayResult> {
-  const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress, ...simOptions } = options;
+  const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress, signal, ...simOptions } = options;
+  if (signal?.aborted) throw new ReplayAbortedError();
   const steps = replaySimulationSteps(seed, rle, simOptions, chunkTicks);
   let step = steps.next();
   while (!step.done) {
     onProgress?.(step.value);
     await yieldToEventLoop();
+    if (signal?.aborted) {
+      // Closes the generator (running its `finally` blocks) so the abandoned
+      // GameSession becomes collectable immediately.
+      steps.return(undefined as never);
+      throw new ReplayAbortedError();
+    }
     step = steps.next();
   }
   return step.value;
@@ -271,6 +296,8 @@ export class ReplayEngine {
    */
   static async create(seed: number, rle: Uint8Array, options: ReplayEngineOptions & ChunkedSimOptions = {}): Promise<ReplayEngine> {
     const samples = decodeRleToSamples(rle);
+    // Throws ReplayAbortedError if options.signal fires — the caller is
+    // expected to treat that as "the viewer moved on", not as a failure.
     const preResult = await simulateReplayFromRleChunked(seed, rle, options);
     return new ReplayEngine(seed, samples, preResult, options);
   }
@@ -318,15 +345,24 @@ export class ReplayEngine {
    * STAGE" viewer control (task 4) — after this returns, the caller should
    * resume normal per-frame stepTick() calls to keep playing from there.
    */
-  async skipToFinalStage(options: Pick<ChunkedSimOptions, 'chunkTicks' | 'yieldToEventLoop' | 'onProgress'> = {}): Promise<void> {
-    const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress } = options;
+  async skipToFinalStage(options: Pick<ChunkedSimOptions, 'chunkTicks' | 'yieldToEventLoop' | 'onProgress' | 'signal'> = {}): Promise<void> {
+    const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress, signal } = options;
     const boundaries = this.preResult.stageBoundaries;
-    const targetTick = boundaries[boundaries.length - 1]?.startTick ?? 0;
+    const finalBoundary = boundaries[boundaries.length - 1];
+    const targetTick = finalBoundary?.startTick ?? 0;
+    const targetStage = finalBoundary?.stage ?? 1;
     let sinceYield = 0;
     // Chunked for the same reason create() is (see its doc comment): skipping
     // to the final stage of a long replay can be most of a 10800-tick
     // resimulation, and doing it in one synchronous burst froze the page.
-    while (this.session.getTotalTicks() < targetTick && !this.isFinished()) {
+    //
+    // The stage condition is not redundant with the tick one. A stage
+    // boundary's startTick is the tick count at which the *previous* stage
+    // ended, and stepTick() only auto-confirms the pending StageClear on its
+    // next call — so stopping the instant totalTicks reaches targetTick can
+    // leave the viewer looking at the previous stage's finished board rather
+    // than the final stage this method promises.
+    while (!this.isFinished() && (this.session.getTotalTicks() < targetTick || this.session.getStage() < targetStage)) {
       this.stepTick();
       this.session.drainEvents();
       this.session.drainDespawnedEmberPositions();
@@ -334,6 +370,11 @@ export class ReplayEngine {
         sinceYield = 0;
         onProgress?.(this.session.getTotalTicks());
         await yieldToEventLoop();
+        // Aborting mid-skip leaves the session at whatever tick it reached —
+        // a legitimate replay position, just not the final stage. That is the
+        // right behavior for EXIT, whose whole point is that this engine is
+        // about to be discarded.
+        if (signal?.aborted) throw new ReplayAbortedError();
       }
     }
   }

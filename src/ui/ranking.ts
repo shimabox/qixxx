@@ -9,7 +9,7 @@
 // is written via `textContent` only, never `innerHTML` or any other
 // HTML-interpreting API.
 import { GameSession, SessionStatus } from '../core/session';
-import { ReplayEngine } from '../core/replayEngine';
+import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
 
@@ -151,6 +151,14 @@ export interface RankingUIOptions {
   onReplayStart: (engine: ReplayEngine) => void;
   /** Switches main.ts's game loop back to live play. */
   onReplayExit: () => void;
+  /**
+   * Starts/stops main.ts's per-frame `stepTick()` driver without leaving
+   * replay mode. Needed because a chunked skip advances the very same engine
+   * between its yields: if normal playback kept running, both would step it
+   * and the replay would advance at roughly double speed, overshooting the
+   * boundary the skip is seeking.
+   */
+  onReplayAutoAdvanceChange: (autoAdvance: boolean) => void;
 }
 
 /**
@@ -305,9 +313,33 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // identical before and after a close/reopen.
   let browsingGeneration = 0;
 
+  /**
+   * Aborts whatever replay computation the current browsing context started.
+   *
+   * The generation counter only stops a stale result from being *applied*;
+   * the work itself kept running to completion in the background. For a
+   * replay pre-pass that is up to 10800 ticks of simulation still grinding
+   * away after the player has closed the list or — worse — started a run,
+   * where it competes with the live game for exactly the frames the chunking
+   * was introduced to protect.
+   */
+  let browsingAbort: AbortController | null = null;
+
+  function abortReplayWork(): void {
+    browsingAbort?.abort();
+    browsingAbort = null;
+  }
+
+  function beginReplayWork(): AbortSignal {
+    abortReplayWork();
+    browsingAbort = new AbortController();
+    return browsingAbort.signal;
+  }
+
   function hideList(): void {
     listOverlay.style.display = 'none';
     browsingGeneration++;
+    abortReplayWork();
   }
 
   /** Replaces the list body with a single status line (LOADING/error). */
@@ -463,9 +495,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // rejection, leaving the player staring at an unchanged list.
     let engine: ReplayEngine;
     showListStatus('LOADING REPLAY...');
+    const signal = beginReplayWork();
     try {
-      engine = await ReplayEngine.create(payload.seed, base64ToBytes(payload.rleBase64));
-    } catch {
+      engine = await ReplayEngine.create(payload.seed, base64ToBytes(payload.rleBase64), { signal });
+    } catch (err) {
+      // An abort means the player closed the list or started a run while the
+      // pre-pass was running — expected, and already reflected in the UI by
+      // whatever caused it. Anything else is a genuinely bad replay.
+      if (err instanceof ReplayAbortedError) return;
       clearListStatus();
       if (browsingAllowed() && browsingGeneration === requestGeneration) {
         showTransientMessage('THIS REPLAY COULD NOT BE PLAYED BACK.');
@@ -743,7 +780,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   exitReplayButton.addEventListener('click', () => {
     replayControls.style.display = 'none';
+    // Cleared BEFORE aborting, so the skip's own .finally() sees that its
+    // engine is no longer current and doesn't resume playback on a discarded
+    // one — and so a leftover SKIPPING... label can't survive into the next
+    // replay.
     activeReplayEngine = null;
+    abortReplayWork();
+    endSkipUi();
     options.onReplayExit();
     // "終了して一覧へ戻る" (task 4): EXIT returns to the ranking list the
     // replay was launched from, not just to the live screen — startReplayFor()
@@ -752,6 +795,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   });
 
   let skipping = false;
+
+  function endSkipUi(): void {
+    skipping = false;
+    skipToFinalButton.disabled = false;
+    skipToFinalButton.textContent = 'SKIP TO FINAL STAGE';
+  }
+
   skipToFinalButton.addEventListener('click', () => {
     const engine = activeReplayEngine;
     if (!engine || skipping) return;
@@ -761,11 +811,24 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // yields to the event loop instead of blocking it.
     skipToFinalButton.disabled = true;
     skipToFinalButton.textContent = 'SKIPPING...';
-    void engine.skipToFinalStage().finally(() => {
-      skipping = false;
-      skipToFinalButton.disabled = false;
-      skipToFinalButton.textContent = 'SKIP TO FINAL STAGE';
-    });
+    // Suspend normal playback for the duration. Both the skip loop and
+    // main.ts's per-frame driver call stepTick() on the SAME engine, and the
+    // skip yields between chunks — so without this they interleave and
+    // double-advance the replay, overshooting the stage boundary the skip is
+    // aiming at.
+    options.onReplayAutoAdvanceChange(false);
+    const signal = beginReplayWork();
+    void engine
+      .skipToFinalStage({ signal })
+      .catch((err) => {
+        if (!(err instanceof ReplayAbortedError)) throw err;
+      })
+      .finally(() => {
+        endSkipUi();
+        // Only resume if this engine is still the one on screen: EXIT aborts
+        // the skip, and resuming playback then would drive a discarded engine.
+        if (activeReplayEngine === engine) options.onReplayAutoAdvanceChange(true);
+      });
   });
 
   // Track the currently-viewed engine (main.ts hands it back via

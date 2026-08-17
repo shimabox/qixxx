@@ -36,6 +36,8 @@ declare global {
     __game__?: {
       session: GameSession;
       sfx: SfxEngine;
+      /** Auto-advance transitions around replay skips — see replayAutoAdvanceLog. */
+      getReplayAutoAdvanceLog: () => boolean[];
     };
   }
 }
@@ -315,6 +317,9 @@ type ViewMode = 'live' | 'replay';
 let viewMode: ViewMode = 'live';
 let replayEngine: ReplayEngine | null = null;
 let replayAutoAdvance = true;
+// Test-visibility only (see the onReplayAutoAdvanceChange wiring in init()):
+// a capped record of the auto-advance transitions, exposed on window.__game__.
+const replayAutoAdvanceLog: boolean[] = [];
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -497,6 +502,20 @@ function init(): void {
     getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
     onReplayStart: enterReplayMode,
     onReplayExit: exitReplayMode,
+    // Paused for the duration of a chunked "skip to final stage": that skip
+    // steps the same engine between its own yields, so leaving this driver
+    // running would advance the replay twice per tick — see the option's own
+    // doc comment in src/ui/ranking.ts.
+    onReplayAutoAdvanceChange: (autoAdvance: boolean) => {
+      replayAutoAdvance = autoAdvance;
+      // Recorded for the E2E suite (docs/plan.md §7.2's window.__game__ debug
+      // hook): whether playback was actually suspended around a skip is
+      // otherwise unobservable from outside, and the bug it guards against
+      // (two drivers stepping one engine) is only a few ticks of drift on a
+      // short replay — far too small to detect by watching the board.
+      // Bounded so it can never grow without limit.
+      if (replayAutoAdvanceLog.length < 20) replayAutoAdvanceLog.push(autoAdvance);
+    },
   });
   rankingUI.mountTitleButton();
 
@@ -515,7 +534,7 @@ function init(): void {
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
 
-  window.__game__ = { session, sfx };
+  window.__game__ = { session, sfx, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
   // shipped to players. The `import.meta.env.DEV` check is a compile-time

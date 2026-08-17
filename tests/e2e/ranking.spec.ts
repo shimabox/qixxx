@@ -24,6 +24,8 @@ declare global {
           getMarker: () => { isDrawing: () => boolean };
         };
       };
+      /** Auto-advance transitions around replay skips (src/main.ts's debug hook). */
+      getReplayAutoAdvanceLog: () => boolean[];
     };
   }
 }
@@ -194,6 +196,56 @@ function recordShortReplay(seed: number, timeLimitTicks: number): string {
   }
   const rle = encodeRle(samples);
   return Buffer.from(rle).toString('base64');
+}
+
+// A replay that actually spans SEVERAL stages, which is what makes
+// "SKIP TO FINAL STAGE" testable at all: with a single-stage replay the final
+// stage boundary is tick 0, so the skip is a no-op and a broken skip would
+// pass just as happily as a working one.
+//
+// Produced by a serpentine that repeatedly draws across the field and steps
+// along the border, claiming a strip at a time until the stage's required
+// occupancy (0.65) is met. Seed 377 was chosen by scanning seeds 1-400
+// headlessly for the LATEST final-stage boundary among well-formed replays:
+// it reaches FOUR stages, with the last beginning at tick 2172 of a
+// 2278-tick run. That maximizes the amount of real work the skip has to do.
+const MULTI_STAGE_SEED = 377;
+const MULTI_STAGE_STRIP_WIDTH = 4;
+const MULTI_STAGE_FINAL_STAGE = 4;
+
+/** Auto-confirms StageClear without recording it, exactly as ReplayEngine's own protocol replays it. */
+function recordMultiStageReplay(seed: number): string {
+  const session = new GameSession({ seed });
+  const confirm = { dx: 0 as const, dy: 0 as const, drawHeld: false, slow: false, confirm: true };
+  session.update(confirm); // Title -> Playing
+  const samples: InputSample[] = [];
+  const step = (dx: -1 | 0 | 1, dy: -1 | 0 | 1, drawHeld: boolean): void => {
+    samples.push({ dx, dy, drawHeld, slow: false });
+    session.update({ dx, dy, drawHeld, slow: false, confirm: false });
+    session.drainEvents();
+    session.drainDespawnedEmberPositions();
+  };
+
+  const height = session.getGame().getField().getHeight();
+  const stripWidth = MULTI_STAGE_STRIP_WIDTH;
+  let goingDown = true;
+  let guard = 0;
+  while (session.getStatus() !== 'gameover' && guard++ < 12_000) {
+    if (session.getStatus() === 'stageclear') {
+      session.update(confirm); // not recorded: the engine re-supplies it on playback
+      session.drainEvents();
+      session.drainDespawnedEmberPositions();
+      continue;
+    }
+    const targetY = goingDown ? height - 1 : 0;
+    let crossing = 0;
+    while (session.getStatus() === 'playing' && session.getGame().getMarker().getPosition().y !== targetY && crossing++ < height + 5) {
+      step(0, goingDown ? 1 : -1, true);
+    }
+    for (let i = 0; i < stripWidth && session.getStatus() === 'playing'; i++) step(1, 0, false);
+    goingDown = !goingDown;
+  }
+  return Buffer.from(encodeRle(samples)).toString('base64');
 }
 
 test.describe('ranking display', () => {
@@ -546,7 +598,7 @@ test.describe('name-input submission flow', () => {
 
 test.describe('replay viewing', () => {
   test('plays a mocked replay, skips to the final stage, exits, and never POSTs or touches the stored high score', async ({ page }) => {
-    const rleBase64 = recordShortReplay(2026, 4);
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
     let scoresPostCount = 0;
 
     await mockRanking(page, [
@@ -557,7 +609,7 @@ test.describe('replay viewing', () => {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ seed: 2026, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
       });
     });
     await page.route('**/api/scores', (route) => {
@@ -574,7 +626,24 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
 
+    // The replay starts on stage 1; the skip must actually carry it to the
+    // replay's final stage (boundary tick ~1191), which is only observable
+    // because this fixture spans several stages. The HUD reflects whichever
+    // session is being rendered, so during replay it shows the replay's.
+    await expect(page.locator('#hud')).toContainText('STAGE 1');
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+    await expect(page.locator('#hud')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE}`, { timeout: 20_000 });
+    // The button returns to its idle label once the chunked skip finishes.
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled();
+
+    // Normal playback was suspended for the duration and restored afterwards.
+    // Asserted on the transition log rather than by watching the board: the
+    // skip and main.ts's per-frame driver would step the SAME engine, and on
+    // a replay this short that double-advance is only a few ticks of drift —
+    // real, but far too small to observe as a wrong stage.
+    await expect
+      .poll(() => page.evaluate(() => window.__game__!.getReplayAutoAdvanceLog()))
+      .toEqual([false, true]);
 
     // Before EXIT the list is closed (startReplayFor() hid it on the way in).
     await expect(page.getByText('#1  42  STAGE 1')).toBeHidden();
@@ -699,7 +768,7 @@ test.describe('replay viewing', () => {
     // The skip resimulates up to a whole replay. Done synchronously it froze
     // the main thread outright; chunked, the page can still paint and answer
     // input while it runs.
-    const rleBase64 = recordShortReplay(4242, 600);
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
     await mockRanking(page, [
       { id: 'long', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'LONG', xHandle: null, replayAvailable: true },
     ]);
@@ -708,7 +777,7 @@ test.describe('replay viewing', () => {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ seed: 4242, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
       });
     });
 
@@ -727,5 +796,93 @@ test.describe('replay viewing', () => {
     // The page is still live and interactive afterwards.
     await page.getByRole('button', { name: 'EXIT' }).click();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+  });
+
+  test('EXIT during a skip cancels it, leaving no SKIPPING... state for the next replay', async ({ page }) => {
+    // Two things used to leak past EXIT: the skip loop kept advancing a
+    // discarded engine, and the button could still be showing SKIPPING...
+    // when the next replay opened.
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
+    await mockRanking(page, [
+      { id: 'ms', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'MULTI', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeVisible();
+
+    // Both clicks in ONE evaluate, deliberately: the skip runs its first
+    // chunk synchronously and then awaits a macrotask, so an EXIT dispatched
+    // in the same task lands strictly *between* chunks. Two separate
+    // Playwright clicks are milliseconds apart, by which time this ~2172-tick
+    // skip has already finished — i.e. the abort path would never be reached
+    // and the test would pass without testing anything.
+    await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button')];
+      const byLabel = (label: string) => buttons.find((b) => b.textContent === label) as HTMLButtonElement;
+      byLabel('SKIP TO FINAL STAGE').click();
+      byLabel('EXIT').click();
+    });
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+
+    // Playback was suspended by the skip and never resumed afterwards: the
+    // aborted skip must not restart a driver for an engine that has already
+    // been discarded.
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.__game__!.getReplayAutoAdvanceLog())).toEqual([false]);
+
+    // Reopening a replay finds a clean control bar, not a stuck SKIPPING...
+    await expect(page.getByRole('button', { name: 'REPLAY' })).toBeVisible();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden();
+
+    // And the fresh replay still skips correctly.
+    await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+    await expect(page.locator('#hud')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE}`, { timeout: 20_000 });
+  });
+
+  test('closing the list cancels an in-flight replay pre-pass instead of letting it run on', async ({ page }) => {
+    // The pre-pass is up to 10800 ticks of simulation. Before cancellation it
+    // kept running after the player had moved on, competing for frames with
+    // whatever came next — the exact cost chunking was meant to avoid.
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
+    await mockRanking(page, [
+      { id: 'ms', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: 1, name: 'MULTI', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    // Start a run while the fetch + pre-pass are still under way.
+    await page.keyboard.press('Space');
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+
+    // The replay must never take over, and the live run must keep ticking.
+    await page.waitForTimeout(2500);
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+    expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+    const ticks = await page.evaluate(() => window.__game__!.session.getTotalTicks());
+    await expect.poll(() => page.evaluate(() => window.__game__!.session.getTotalTicks())).toBeGreaterThan(ticks);
   });
 });
