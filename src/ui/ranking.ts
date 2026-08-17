@@ -8,13 +8,12 @@
 // XSS safety (hard requirement): every user-supplied string (name, X handle)
 // is written via `textContent` only, never `innerHTML` or any other
 // HTML-interpreting API.
-import { GameSession } from '../core/session';
-import { InputRecorder } from '../core/inputRecorder';
+import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine } from '../core/replayEngine';
 import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
 
-interface RankingEntry {
+export interface RankingEntry {
   id: string;
   createdAt: string;
   score: number;
@@ -22,6 +21,90 @@ interface RankingEntry {
   name: string;
   xHandle: string | null;
   replayAvailable: boolean;
+}
+
+/**
+ * Everything the submission flow is allowed to know about the run that just
+ * ended — captured *synchronously* by main.ts at the gameover edge, before
+ * any network round trip.
+ *
+ * The reason this exists rather than reading the live GameSession/
+ * InputRecorder at submit time: offerSubmission() has to ask the server for
+ * the current top 10 before it can decide whether to show the name field,
+ * and the player can walk right past that await (GAME OVER -> any key ->
+ * Title -> start a new run) while it is in flight. Reading `session.getSeed()`
+ * / `inputRecorder.encode()` afterwards would then describe *the run in
+ * progress*, not the run that earned the score — i.e. submit a half-finished
+ * replay under a finished run's banner. A snapshot makes that
+ * structurally impossible: the module cannot see live state at all.
+ *
+ * `runId` is main.ts's per-run counter, re-checked when the response lands so
+ * a reply that outlived its run is dropped instead of reopening the form.
+ */
+export interface RunSubmissionSnapshot {
+  runId: number;
+  /** undefined for a run with no seed at all (never POST-eligible). */
+  seed: number | undefined;
+  /** The finished run's complete RLE-encoded input stream. */
+  rle: Uint8Array;
+  score: number;
+  stage: number;
+  runMode: RunMode;
+  tainted: boolean;
+}
+
+/** Why decideSubmissionOffer() did (or did not) open the name field — 'show' is the only affirmative outcome. */
+export type SubmissionOfferDecision =
+  | 'show'
+  | 'ineligible-run'
+  | 'superseded'
+  | 'stale-run'
+  | 'run-no-longer-over'
+  | 'fetch-failed'
+  | 'out-of-range';
+
+/** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
+export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
+  return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
+}
+
+/**
+ * The whole "should the name field open?" decision, as a pure function of the
+ * snapshot plus the world as it looks *when the /api/ranking response lands*.
+ * Split out from the DOM so the race conditions it guards are directly
+ * unit-testable (src/ui/ranking.test.ts).
+ *
+ * `entries === null` means the fetch failed; the offer is skipped rather than
+ * guessed at.
+ */
+export function decideSubmissionOffer(args: {
+  snapshot: RunSubmissionSnapshot;
+  /** The snapshot the UI still considers current (identity-compared against `snapshot`). */
+  activeSnapshot: RunSubmissionSnapshot | null;
+  /** main.ts's live run counter at response time. */
+  currentRunId: number;
+  /** The live session's status at response time. */
+  currentStatus: SessionStatus;
+  entries: RankingEntry[] | null;
+}): SubmissionOfferDecision {
+  const { snapshot, activeSnapshot, currentRunId, currentStatus, entries } = args;
+  if (!isSnapshotEligible(snapshot)) return 'ineligible-run';
+  // A newer gameover already replaced this offer while the fetch was in
+  // flight (identity, not equality — two runs can coincidentally score the same).
+  if (activeSnapshot !== snapshot) return 'superseded';
+  // The player left this run behind (GAME OVER -> Title, possibly already
+  // playing again) before the response arrived.
+  if (snapshot.runId !== currentRunId) return 'stale-run';
+  if (currentStatus !== 'gameover') return 'run-no-longer-over';
+  if (entries === null) return 'fetch-failed';
+  // Strictly greater once the board is full: ties are broken by rank_seq ASC
+  // (first-come-first-served — functions/api/ranking.ts's 順位規則), so an
+  // equal score always sorts behind the incumbent, i.e. lands at 11th and is
+  // deleted by POST's own trim step. Offering the name field in that case
+  // would promise a slot that cannot exist. Below 10 entries there is a free
+  // slot regardless of the score, so no comparison applies.
+  const inRange = entries.length < 10 || snapshot.score > entries[entries.length - 1].score;
+  return inRange ? 'show' : 'out-of-range';
 }
 
 interface ReplayPayload {
@@ -33,9 +116,10 @@ interface ReplayPayload {
 
 export interface RankingUIOptions {
   anchor: HTMLElement;
+  /** The *live* session — read only for its status (browsing/replay gating), never for run data (see RunSubmissionSnapshot). */
   getSession: () => GameSession;
-  getRunMode: () => RunMode;
-  getInputRecorder: () => InputRecorder;
+  /** main.ts's per-run counter, re-checked when an in-flight ranking response lands. */
+  getRunId: () => number;
   getRulesetVersion: () => number;
   getReplayFormatVersion: () => number;
   /** Switches main.ts's game loop into replay-viewing mode. */
@@ -133,16 +217,36 @@ function styledButton(label: string): HTMLButtonElement {
 }
 
 export interface RankingUI {
-  /** Mounts the persistent RANKING button (canvas-wrap's top-right corner — see mountTitleButton()'s own comment for why not the HUD row) — visible any time, opens the top-10 list. */
+  /** Mounts the RANKING button (canvas-wrap's top-right corner — see mountTitleButton()'s own comment for why not the HUD row). Shown only on the Title screen; see syncAvailability(). */
   mountTitleButton(): void;
+  /**
+   * Shows/hides the RANKING button to match the live session's status, and
+   * force-closes the list if browsing is no longer allowed. Call once per
+   * rendered frame from main.ts (cheap: it early-returns unless the
+   * allowed/not-allowed state actually flipped).
+   */
+  syncAvailability(): void;
   /** Offers ranking submission for the just-finished run, if eligible and provisionally in range. No-op (shows nothing) otherwise. */
-  offerSubmission(scoreInfo: { score: number; stage: number }): void;
-  /** Hides any open submission/list UI — call whenever GAME OVER's own modal is hidden. */
+  offerSubmission(snapshot: RunSubmissionSnapshot): void;
+  /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
 }
 
 export function initRankingUI(options: RankingUIOptions): RankingUI {
   const { anchor } = options;
+
+  // ---- Browsing gate (review round 3) ----
+  // The ranking list, and therefore replay viewing, is reachable ONLY from
+  // the Title screen. Not a cosmetic restriction: entering replay mode
+  // suspends the live GameSession entirely (main.ts's update() returns early
+  // while `viewMode === 'replay'`), so a mid-run RANKING -> REPLAY -> EXIT
+  // round trip used to freeze a 3-minute run for an arbitrary length of
+  // time and then resume the very same untainted, still-POST-eligible run.
+  // Gating on 'title' removes the pause primitive outright rather than
+  // trying to detect abuse after the fact.
+  function browsingAllowed(): boolean {
+    return activeReplayEngine === null && options.getSession().getStatus() === 'title';
+  }
 
   // ---- Top-10 list overlay ----
   const listOverlay = styledOverlay();
@@ -173,6 +277,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   }
 
   async function showList(): Promise<void> {
+    if (!browsingAllowed()) return;
     listBody.textContent = '';
     const loading = document.createElement('div');
     loading.textContent = 'LOADING...';
@@ -262,6 +367,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   }
 
   async function startReplayFor(id: string): Promise<void> {
+    if (!browsingAllowed()) return; // see browsingAllowed()'s comment: replay viewing is a Title-screen-only affordance
     let payload: ReplayPayload;
     try {
       const res = await fetch(`/api/ranking/${encodeURIComponent(id)}/replay`);
@@ -368,7 +474,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   skipButton.addEventListener('click', () => {
     submitOverlay.style.display = 'none';
+    activeSubmission = null;
   });
+
+  // The run currently being offered for submission. Every read the POST needs
+  // (seed, inputs, score) comes from here — never from the live session — so
+  // a submission can only ever describe the run that actually earned the
+  // score. Cleared by hideAll()/SKIP, replaced by the next gameover.
+  let activeSubmission: RunSubmissionSnapshot | null = null;
 
   let submitting = false;
   postButton.addEventListener('click', () => {
@@ -377,10 +490,17 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   });
 
   async function submitScore(): Promise<void> {
-    const session = options.getSession();
-    const seed = session.getSeed();
-    if (seed === undefined) return; // shouldn't happen for an eligible (normal-mode, seeded internally) run
-    const rle = options.getInputRecorder().encode();
+    const snapshot = activeSubmission;
+    // No snapshot means the run this form belonged to is already gone (the
+    // player returned to Title mid-form) — never fall back to live state.
+    if (!snapshot || snapshot.seed === undefined) {
+      submitStatus.textContent = 'THIS RUN IS NO LONGER AVAILABLE TO SUBMIT.';
+      postButton.style.display = 'none';
+      skipButton.textContent = 'OK';
+      return;
+    }
+    const seed = snapshot.seed;
+    const rle = snapshot.rle;
 
     const usingHandle = handleCheckbox.checked;
     const name = usingHandle ? '' : nameInput.value;
@@ -426,34 +546,41 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
-  function isEligible(): boolean {
-    const session = options.getSession();
-    return options.getRunMode() === 'normal' && !session.isRunTainted() && session.getSeed() !== undefined;
-  }
-
-  function offerSubmission(scoreInfo: { score: number; stage: number }): void {
+  function offerSubmission(snapshot: RunSubmissionSnapshot): void {
     submitOverlay.style.display = 'none';
-    if (!isEligible()) return;
+    activeSubmission = null;
+    if (!isSnapshotEligible(snapshot)) return;
+    activeSubmission = snapshot;
     void (async () => {
-      let provisionalInRange = false;
+      let entries: RankingEntry[] | null = null;
       try {
         const res = await fetch('/api/ranking');
         if (res.ok) {
           const data = (await res.json()) as { entries: RankingEntry[] };
-          const entries = data.entries ?? [];
-          // Strictly greater once the board is full: ties are broken by
-          // rank_seq ASC (first-come-first-served — functions/api/ranking.ts's
-          // 順位規則), so a score merely *equal* to the current 10th place
-          // always sorts behind it, i.e. lands at 11th and gets deleted by
-          // POST's own trim step. Offering the name field in that case would
-          // promise a slot that cannot exist. Below 10 entries there is a
-          // free slot regardless of the score, so no comparison applies.
-          provisionalInRange = entries.length < 10 || scoreInfo.score > entries[entries.length - 1].score;
+          entries = data.entries ?? [];
         }
       } catch {
-        provisionalInRange = false;
+        entries = null;
       }
-      if (!provisionalInRange) return;
+
+      // Everything below re-checks the world as it looks *now*, not as it
+      // looked when the request went out — see decideSubmissionOffer()'s doc
+      // comment for the race this closes.
+      const decision = decideSubmissionOffer({
+        snapshot,
+        activeSnapshot: activeSubmission,
+        currentRunId: options.getRunId(),
+        currentStatus: options.getSession().getStatus(),
+        entries,
+      });
+      if (decision !== 'show') {
+        // Drop the snapshot for anything except a live, still-current run
+        // whose score simply didn't make the cut — in the latter case a
+        // 'superseded' offer already owns `activeSubmission` and must not be
+        // cleared out from under it.
+        if (decision !== 'superseded' && activeSubmission === snapshot) activeSubmission = null;
+        return;
+      }
 
       nameInput.value = '';
       handleInput.value = '';
@@ -521,6 +648,23 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   };
 
   // ---- Title button ----
+  let titleButton: HTMLButtonElement | null = null;
+  // `null` (not `true`/`false`) until the first syncAvailability() call, so
+  // that first call always writes the button's real initial state.
+  let lastBrowsingAllowed: boolean | null = null;
+
+  function syncAvailability(): void {
+    const allowed = browsingAllowed();
+    if (allowed === lastBrowsingAllowed) return;
+    lastBrowsingAllowed = allowed;
+    if (titleButton) titleButton.style.display = allowed ? 'block' : 'none';
+    // Also close a list that's already open: the Title screen's "press any
+    // key to start" confirm still fires while the overlay is up, so a player
+    // can start a run out from under an open list — which would otherwise
+    // leave a live 3-minute run ticking away behind it.
+    if (!allowed) hideList();
+  }
+
   function mountTitleButton(): void {
     const button = document.createElement('button');
     button.id = 'ranking-button';
@@ -551,15 +695,26 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     button.style.userSelect = 'none';
     button.style.zIndex = '5';
     button.addEventListener('click', (event) => {
-      void showList();
+      void showList(); // itself gated on browsingAllowed(), against a click racing syncAvailability()
       (event.currentTarget as HTMLButtonElement).blur();
     });
     anchor.appendChild(button);
+    titleButton = button;
+    // Mounted during init(), before the first frame ever renders: start from
+    // the real current state rather than flashing the button on a non-Title
+    // screen for one frame.
+    lastBrowsingAllowed = null;
+    syncAvailability();
   }
 
   function hideAll(): void {
     submitOverlay.style.display = 'none';
+    // Drops the pending snapshot too: main.ts calls this the moment the run
+    // stops being 'gameover', so any /api/ranking response still in flight
+    // for it must not reopen the form (decideSubmissionOffer()'s
+    // 'superseded' / 'stale-run' guards).
+    activeSubmission = null;
   }
 
-  return { mountTitleButton, offerSubmission, hideAll };
+  return { mountTitleButton, syncAvailability, offerSubmission, hideAll };
 }

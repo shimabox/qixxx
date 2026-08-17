@@ -391,12 +391,21 @@ let runMode: RunMode = 'normal';
 let seededRunSeed: number | undefined;
 
 // RANKING (docs/plans/2026-08-16-score-ranking task 2): records every
-// PLAYING-tick input of the *current* run, RLE-encoded on demand for a
-// ranking POST — see src/ui/ranking.ts's gameover flow (task 4), which reads
-// `session.getSeed()` + `inputRecorder.encode()` together while `status`
-// is still 'gameover' (both stay valid/unchanged for as long as that lasts —
-// see update()'s own seed-requeuing/recorder-reset comments below for why).
+// PLAYING-tick input of the *current* run. Read exactly once per run, at the
+// gameover edge in renderFrame(), where its contents are frozen into a
+// RunSubmissionSnapshot handed to src/ui/ranking.ts — that module never
+// touches this recorder (or the live session) itself, so a submission can
+// never accidentally describe the *next* run. See update()'s own
+// seed-requeuing/recorder-reset comments below.
 const inputRecorder = new InputRecorder();
+
+// Monotonic per-run identifier (review round 3). Bumped at the one boundary
+// where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
+// resetToFreshRun()), so an /api/ranking response that arrives after the
+// player has already moved on can be recognized as belonging to a run that
+// no longer exists and discarded — see src/ui/ranking.ts's
+// decideSubmissionOffer().
+let runId = 1;
 
 // Generates a fresh per-run seed for 'normal' mode (docs/plans/2026-08-16-
 // score-ranking task 2's confirmed spec: `crypto.getRandomValues()`, not
@@ -483,8 +492,7 @@ function init(): void {
   rankingUI = initRankingUI({
     anchor: canvasWrap,
     getSession: () => session,
-    getRunMode: () => runMode,
-    getInputRecorder: () => inputRecorder,
+    getRunId: () => runId,
     getRulesetVersion: () => RULESET_VERSION,
     getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
     onReplayStart: enterReplayMode,
@@ -880,6 +888,8 @@ function update(): void {
   // (title/stageclear/gameover ticks, or this same reset tick).
   if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
     inputRecorder.reset();
+    // A brand-new run starts here — see `runId`'s own comment.
+    runId++;
   }
   inputRecorder.observe(session, input);
 
@@ -928,6 +938,15 @@ function renderFrame(): void {
 
   const status = activeSession.getStatus();
 
+  // RANKING button/list availability (review round 3): browsing the ranking
+  // — and therefore starting a replay, which suspends the live session
+  // entirely — is a Title-screen-only affordance, so that a mid-run
+  // RANKING -> REPLAY -> EXIT round trip can't be used to pause a
+  // time-limited run. Driven from here (rather than from ranking.ts on a
+  // timer of its own) so it tracks the same status this frame is rendering;
+  // the call is a no-op unless that availability actually flipped.
+  rankingUI.syncAvailability();
+
   if (viewMode === 'replay') {
     // No sfx (docs/plans/2026-08-16-score-ranking task 4: "効果音もv1では
     // 鳴らさない"), no GAME OVER modal/ranking-submission UI (that modal's
@@ -975,8 +994,20 @@ function renderFrame(): void {
       });
       // Ranking submission offer (docs/plans/2026-08-16-score-ranking task
       // 4): a no-op if this run isn't POST-eligible (`?seed=`/tainted, see
-      // src/ui/ranking.ts's isEligible()) or isn't provisionally in range.
-      rankingUI.offerSubmission({ score: activeSession.getScore(), stage: activeSession.getStage() });
+      // src/ui/ranking.ts's isSnapshotEligible()) or isn't provisionally in
+      // range. Everything the offer/POST may ever read about the run is
+      // frozen here, synchronously, on the single frame the run ends —
+      // `session` (not `activeSession`) deliberately, to make it explicit
+      // this is the *live* run's final state and never a replay's.
+      rankingUI.offerSubmission({
+        runId,
+        seed: session.getSeed(),
+        rle: inputRecorder.encode(),
+        score: session.getScore(),
+        stage: session.getStage(),
+        runMode,
+        tainted: session.isRunTainted(),
+      });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
