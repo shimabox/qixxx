@@ -17,11 +17,10 @@ declare global {
     __game__?: {
       session: {
         getStatus: () => 'title' | 'playing' | 'stageclear' | 'gameover';
-        getTotalTicks: () => number;
         getScore: () => number;
         getGame: () => {
-          getMarker: () => { getPosition: () => { x: number; y: number } };
-          getWisps: () => { getPosition: () => { x: number; y: number } }[];
+          getGraceTicks: () => number;
+          getMarker: () => { isDrawing: () => boolean };
         };
       };
     };
@@ -97,56 +96,13 @@ async function mockFullBoardRelativeToLiveScore(page: Page, tenthPlaceOffset: nu
 // Fixes normal mode's internal per-run seed (src/main.ts's
 // generateNormalRunSeed()) WITHOUT using `?seed=` — a `?seed=` run is
 // runMode: 'seeded' and is structurally excluded from the whole ranking
-// submission flow (src/ui/ranking.ts's isEligible()), so it can't be used to
-// stabilize these tests. generateNormalRunSeed() sources its seed from
-// `crypto.getRandomValues(new Uint32Array(1))`; stubbing that (only for
+// submission flow (src/ui/ranking.ts's isSnapshotEligible()), so it can't be
+// used to stabilize these tests. generateNormalRunSeed() sources its seed
+// from `crypto.getRandomValues(new Uint32Array(1))`; stubbing that (only for
 // length-1 Uint32Array calls, so anything else that might call
-// getRandomValues for an unrelated reason is left untouched) makes the
-// board and Wisp behavior deterministic while runMode stays 'normal' (POST-
-// eligibility is preserved).
-//
-// SEED_VALUE = 1264, chosen by headless simulation (no browser needed) of
-// this exact file's chaseIntoWisp() pursuit logic directly against
-// GameSession, scanning seeds 1-5000 for ones that reach a 'life' gameover
-// without ever passing through 'stageclear' (the flake this fixes: a prior
-// randomly-seeded run's chase path happened to trace a shape that claimed
-// ~98% occupancy and cleared stage 1 before ever touching the Wisp) — see
-// this test's own git history for the exploration script. 1264 was then
-// cross-validated by re-running the same headless simulation at every
-// direction-re-evaluation cadence from 3 to 8 ticks (chaseIntoWisp() below
-// re-reads the Wisp's position roughly every 80ms of real time, i.e. every
-// ~4-5 ticks at 60 ticks/s, but real wall-clock polling can jitter a tick or
-// two either way) — seed 1264 reaches a 'life' gameover (never 'stageclear')
-// at every one of those cadences, within a tight 2021-2030 tick band
-// (~33.7-33.8s of real time at 60 ticks/s), making it robust to that jitter
-// rather than a knife-edge result specific to one exact cadence.
+// getRandomValues for an unrelated reason is left untouched) keeps the board
+// deterministic while runMode stays 'normal' (POST-eligibility is preserved).
 const SEED_VALUE = 1264;
-
-// A *second*, independent flake (found while stabilizing the first): ANY
-// fresh keydown (not just Space/Enter) sets src/input/keyboard.ts's
-// edge-triggered "any key" confirm pulse — harmless mid-'playing', but if a
-// chase-driven direction-change keydown happens to land on the exact tick
-// gameover is reached, that queued confirm gets consumed on the very next
-// tick and immediately bounces GameOver -> Title, before this test ever
-// observes the transient 'gameover' status (`status` reads back 'title',
-// not 'gameover' — a real, reproduced failure, not hypothetical). Fixed by
-// freezing the chase's held direction (no more keyboard.down() calls, only
-// the passive keyboard.up() cleanup at the very end) once the live session
-// crosses FREEZE_TOTAL_TICKS — re-verified by headless simulation
-// (session.getTotalTicks() polled, not wall-clock time, so this is exact
-// regardless of frame-rate jitter) that seed 1264 still reaches a 'life'
-// gameover with no 'stageclear' when frozen this early, across cadences
-// 3-8: observed death at ticks 2021-2030 — 1300 is close to the earliest
-// tick that still reliably reaches the Wisp at all (freezing any earlier,
-// e.g. 1000, times out: the marker hasn't closed the distance yet), so
-// 1600 is used here for extra margin (~7s) rather than that bare minimum.
-// Even this large a margin was NOT sufficient on its own under real
-// full-suite CPU contention (a `read totalTicks, then decide, then
-// dispatch a keydown` round trip can itself be delayed well past when the
-// tick count was last observed, under enough scheduling pressure) — see
-// reachGameoverDeterministically()'s retry wrapper below for the
-// belt-and-suspenders fix that actually closed this out.
-const FREEZE_TOTAL_TICKS = 1600;
 
 async function stubDeterministicNormalSeed(page: Page): Promise<void> {
   await page.addInitScript((seed: number) => {
@@ -162,92 +118,67 @@ async function stubDeterministicNormalSeed(page: Page): Promise<void> {
 }
 
 /**
- * Steers the marker directly at the live Wisp position while holding the
- * fast-draw key, repeatedly, until 3 lives are lost (real gameplay, driven
- * against the fixed board stubDeterministicNormalSeed() sets up — not a
- * hardcoded fixed input script, so this loop still tolerates normal
- * wall-clock/frame-rate jitter, just no longer a different board every
- * run). Verified (headless simulation, see SEED_VALUE's comment) to reach
- * a 'life' gameover in ~2021-2030 ticks (~34s) for this seed.
+ * Drives a fresh, fully POST-eligible run (normal mode, no `?debug`, no
+ * `?seed=`) to a real 'life' gameover, by the cheapest deterministic route
+ * the real game offers: draw a short line inward, then stand still on it and
+ * let the Igniter (src/core/fuse.ts) spawn and catch up. Three of those cost
+ * three lives and end the run.
+ *
+ * Chosen over chasing a Wisp (what this suite used to do) on two counts.
+ * Determinism: the Igniter is pure, spawning a fixed number of ticks after
+ * the marker stops and advancing on a fixed cadence, with no dependence on
+ * enemy RNG, on the marker ever intercepting a moving target, or on how
+ * promptly this loop re-reads and re-steers. Headless simulation of this
+ * exact pattern reaches a 'life' gameover — never a 'stageclear' — in
+ * ~1319 ticks (~22s) at every seed tried, because standing still on a line
+ * claims nothing. And cost: it needs one page.evaluate() every 300ms and a
+ * key pulse only after each life is lost, where the chase needed two or
+ * three evaluate() round trips every 80ms for ~34s. That difference is not
+ * cosmetic — this file runs four real-gameplay tests serially while the
+ * other Playwright worker runs the rest of the suite, and the chase's IPC
+ * load was enough to push a timing-sensitive pre-existing test
+ * (tests/e2e/gameover-share.spec.ts, whose 8s polls this file must not and
+ * cannot edit) over its budget under full-suite contention.
+ *
+ * The `grace === 0` guard matters: for ~2s after each miss, entering an
+ * UNCLAIMED cell is blocked (docs/plan.md §3.5's grace-period exploit fix),
+ * so a draw pulse issued during grace would do nothing at all and the run
+ * would sit at the border forever. Re-pulsing whenever the marker is idle —
+ * rather than once per observed life change — also self-heals if a pulse is
+ * ever swallowed.
  */
-async function chaseIntoWisp(page: Page, timeoutMs = 90_000): Promise<void> {
-  await page.keyboard.down('KeyX'); // fast draw, held for the whole chase
-  let heldX: 'ArrowLeft' | 'ArrowRight' | null = null;
-  let heldY: 'ArrowUp' | 'ArrowDown' | null = null;
-  let frozen = false;
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    const status = await page.evaluate(() => window.__game__!.session.getStatus());
-    if (status !== 'playing') break;
+async function reachGameoverDeterministically(page: Page, timeoutMs = 90_000): Promise<void> {
+  await page.keyboard.press('Space'); // Title -> Playing
+  await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
 
-    if (!frozen) {
-      const totalTicks = await page.evaluate(() => window.__game__!.session.getTotalTicks());
-      if (totalTicks >= FREEZE_TOTAL_TICKS) {
-        // Stop issuing any further keydown (see FREEZE_TOTAL_TICKS's
-        // comment) — hold whatever direction is already locked in and
-        // just wait for gameover from here on, sending no more input at
-        // all (not even keyup, which would be safe but is simply
-        // unnecessary — the direction is already correct).
-        frozen = true;
-      } else {
-        const state = await page.evaluate(() => {
-          const s = window.__game__!.session;
-          const wisps = s.getGame().getWisps();
-          return { marker: s.getGame().getMarker().getPosition(), wisp: wisps[0]?.getPosition() ?? null };
-        });
-        if (state.wisp) {
-          const wantX = state.wisp.x > state.marker.x ? 'ArrowRight' : state.wisp.x < state.marker.x ? 'ArrowLeft' : null;
-          const wantY = state.wisp.y > state.marker.y ? 'ArrowDown' : state.wisp.y < state.marker.y ? 'ArrowUp' : null;
-          if (wantX !== heldX) {
-            if (heldX) await page.keyboard.up(heldX);
-            if (wantX) await page.keyboard.down(wantX);
-            heldX = wantX;
-          }
-          if (wantY !== heldY) {
-            if (heldY) await page.keyboard.up(heldY);
-            if (wantY) await page.keyboard.down(wantY);
-            heldY = wantY;
-          }
-        }
-      }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => {
+      const session = window.__game__!.session;
+      const game = session.getGame();
+      return {
+        status: session.getStatus(),
+        drawing: game.getMarker().isDrawing(),
+        grace: game.getGraceTicks(),
+      };
+    });
+    if (state.status === 'gameover') return;
+
+    if (state.status === 'playing' && !state.drawing && state.grace === 0) {
+      // Cut a fresh stub of line into the field, then let go: the marker is
+      // left stationary mid-line, which is exactly the condition the Igniter
+      // spawns on.
+      await page.keyboard.down('KeyX');
+      await page.keyboard.down('ArrowDown');
+      await page.waitForTimeout(200);
+      await page.keyboard.up('ArrowDown');
+      await page.keyboard.up('KeyX');
     }
-    // 80ms (not tighter): keeps this loop's own evaluate()/IPC overhead
-    // low so it doesn't itself add to CPU contention against other
-    // parallel workers — still far more responsive than the Wisp's own
-    // movement speed needs, and irrelevant to precision once frozen since
-    // FREEZE_TOTAL_TICKS is read from the live session, not wall time.
-    await page.waitForTimeout(80);
+    await page.waitForTimeout(300);
   }
-  if (heldX) await page.keyboard.up(heldX);
-  if (heldY) await page.keyboard.up(heldY);
-  await page.keyboard.up('KeyX');
-}
 
-/**
- * Drives a fresh run (Title -> Playing -> chaseIntoWisp) all the way to a
- * real 'life' gameover, retrying the whole thing from Title if it instead
- * lands back on 'title' (the FREEZE_TOTAL_TICKS-guarded race described
- * above, occasionally still possible under enough real scheduling delay —
- * this retry is the actual belt-and-suspenders fix, since it self-heals
- * regardless of the exact cause). SEED_VALUE is fixed for every retry
- * (stubDeterministicNormalSeed() patches the page's crypto, not a one-shot
- * value), so a retry replays the identical deterministic board/chase, just
- * hoping to avoid whatever scheduling coincidence caused the bounce.
- */
-async function reachGameoverDeterministically(page: Page, attempts = 3): Promise<void> {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    await page.keyboard.press('Space'); // Title -> Playing
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
-
-    await chaseIntoWisp(page);
-    const status = await page.evaluate(() => window.__game__?.session.getStatus());
-    if (status === 'gameover') return;
-    if (attempt === attempts) {
-      throw new Error(`reachGameoverDeterministically: gave up after ${attempts} attempts, last status was "${status}"`);
-    }
-    // Landed back on 'title' (or something else unexpected) instead of
-    // 'gameover' — retry from a clean Title screen.
-  }
+  const status = await page.evaluate(() => window.__game__?.session.getStatus());
+  throw new Error(`reachGameoverDeterministically: timed out after ${timeoutMs}ms, status was "${status}"`);
 }
 
 /** Records a short, deterministic "wander, then time runs out" replay (mirrors src/core/replayEngine.test.ts's recordTimeUpRun) and base64-encodes it for a mocked replay payload. */
@@ -311,21 +242,65 @@ test.describe('ranking display', () => {
   });
 });
 
+test.describe('ranking browsing is a Title-screen-only affordance', () => {
+  // Why this is a correctness requirement and not a style choice: starting a
+  // replay suspends the live GameSession entirely (src/main.ts's update()
+  // returns early while viewMode === 'replay'), so a mid-run
+  // RANKING -> REPLAY -> EXIT round trip would pause a time-limited run for
+  // as long as the player likes and then resume the same still-submittable
+  // run. Keeping the entry point on Title removes the pause primitive.
+  // (The "…and comes back once the run really ends" half of this rule is
+  // asserted on a genuine gameover -> Title transition in the stale-response
+  // test below, which already pays for a real run.)
+  test('the RANKING button is visible on Title, hidden while playing, and present again on a fresh Title', async ({ page }) => {
+    await mockRanking(page, []);
+    await page.goto(APP_URL);
+
+    const rankingButton = page.locator('#ranking-button');
+    await expect(rankingButton).toBeVisible();
+
+    await page.keyboard.press('Space'); // Title -> Playing
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+    await expect(rankingButton).toBeHidden();
+
+    // And it comes back once the session is on Title again (driven here via
+    // the debug-panel-free route: reload, which starts a fresh Title).
+    await page.reload();
+    await expect(page.locator('#ranking-button')).toBeVisible();
+  });
+
+  test('starting a run closes an open ranking list instead of leaving it over a live game', async ({ page }) => {
+    await mockRanking(page, [
+      { id: 'x', createdAt: '2026-01-01T12:00:00Z', score: 1, stage: 1, name: 'OPEN', xHandle: null, replayAvailable: true },
+    ]);
+    await page.goto(APP_URL);
+
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('X handles are self-reported')).toBeVisible();
+
+    // The Title screen's "press any key to start" confirm still fires while
+    // the overlay is up, so the list must not survive into the run.
+    await page.keyboard.press('Space');
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+    await expect(page.getByText('X handles are self-reported')).toBeHidden();
+    await expect(page.getByRole('button', { name: 'REPLAY' })).toBeHidden();
+  });
+});
+
 test.describe('name-input submission flow', () => {
-  // Serialized (not this file's other, network-only describes): both tests
-  // here drive several seconds of real, wall-clock-timed gameplay via
-  // chaseIntoWisp() — running them concurrently in separate Chromium
-  // workers (playwright.config.ts's fullyParallel default) contends for
-  // real CPU/frame-rate and was observed to make the chase loop miss its
-  // budget under 4-way parallel load (a real flake seen once locally,
-  // 59.7s timeout; the same test passed in 10.3s run alone) — not a defect
-  // in the app itself.
+  // Serialized (unlike this file's other, network-only describes): every
+  // test here drives ~22s of real, wall-clock-timed gameplay via
+  // reachGameoverDeterministically(). Running them concurrently in separate
+  // Chromium workers (playwright.config.ts's fullyParallel default) contends
+  // for real CPU/frame-rate — both between themselves and against the other
+  // worker's suite — which is exactly the pressure that used to make these
+  // miss their budget. Serial keeps this file's gameplay load to one run at
+  // a time.
   test.describe.configure({ mode: 'serial' });
-  // Generous (not just 1-2x a single ~34s chase): reachGameoverDeterministically()
-  // retries up to 3 full attempts if a run lands back on 'title' instead of
-  // 'gameover' (see its own doc comment), and a single attempt's internal
-  // chaseIntoWisp() budget is itself 90s.
-  test.setTimeout(240_000);
+  // 90s is reachGameoverDeterministically()'s own internal budget for a run
+  // that normally completes in ~22s; 120s leaves room for that plus the
+  // surrounding assertions/waits without masking a genuine hang.
+  test.setTimeout(120_000);
 
   test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission, and SUBMIT posts and shows the server-confirmed rank', async ({ page }) => {
     let scoresPostCount = 0;
@@ -404,6 +379,52 @@ test.describe('name-input submission flow', () => {
     // that same full board) — it simply decided "out of range" this time.
     await expect.poll(rankingGetCount).toBeGreaterThanOrEqual(1);
     await page.waitForTimeout(500); // let any (incorrect) overlay reveal settle before asserting its absence
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
+    await expect(page.getByPlaceholder('NAME')).toBeHidden();
+    expect(scoresPostCount).toBe(0);
+  });
+
+  test('a provisional-rank response that lands after the player has left GAME OVER never reopens the form', async ({ page }) => {
+    // The race: offerSubmission() must ask the server for the current top 10
+    // before it can decide whether to show the name field, and the player can
+    // walk straight past that await (GAME OVER -> any key -> Title). A
+    // response arriving then used to reopen the form — and the form used to
+    // read the *live* seed/InputRecorder at submit time, i.e. the run now in
+    // progress rather than the one that earned the score.
+    let scoresPostCount = 0;
+    let rankingGets = 0;
+    await page.route('**/api/ranking', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      rankingGets++;
+      await new Promise((resolve) => setTimeout(resolve, 3000)); // still in flight when the player moves on
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries: [] }), // empty board: would definitely be "in range"
+      });
+    });
+    await page.route('**/api/scores', (route) => {
+      scoresPostCount++;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+
+    // The RANKING button stays hidden on GAME OVER too (browsing is Title-only).
+    await expect(page.locator('#ranking-button')).toBeHidden();
+
+    // Leave the finished run behind while the GET is still outstanding.
+    await expect.poll(() => rankingGets).toBeGreaterThanOrEqual(1);
+    await page.keyboard.press('Space'); // GAME OVER -> Title (a brand-new run id)
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+
+    // ...and it really does come back on the Title a finished run returns to.
+    await expect(page.locator('#ranking-button')).toBeVisible();
+
+    // Let the stale response land (3s delay above) plus margin.
+    await page.waitForTimeout(4000);
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     await expect(page.getByPlaceholder('NAME')).toBeHidden();
     expect(scoresPostCount).toBe(0);
