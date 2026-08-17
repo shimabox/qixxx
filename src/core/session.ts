@@ -431,8 +431,19 @@ export class GameSession {
     this.splitSuccesses = 0;
     this.totalTicks = 0;
     this.gameOverReason = null;
-    this.tainted = false;
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
+    // NOT an unconditional `false`: debug overrides (`debugOverrides` /
+    // `debugTimeLimitTicks`) deliberately *persist* across a retry — they're
+    // session-level tuning state, and buildStageGame() above has already
+    // re-applied them to this brand-new run's stage-1 Game. Resetting
+    // `tainted` to false regardless would therefore hand the next run a
+    // board built with non-standard parameters while reporting it as clean,
+    // making it POST-eligible for the ranking. Seeding the flag from the
+    // overrides actually in effect at this run-start boundary keeps the two
+    // in step (and still yields `false` for the overwhelmingly common case
+    // of no overrides at all). Must run *after* buildStageGame(), since
+    // hasActiveDebugOverrides() reads through to `this.game`.
+    this.tainted = this.hasActiveDebugOverrides();
   }
 
   /**
