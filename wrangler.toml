@@ -38,12 +38,28 @@ database_id = "00000000-0000-0000-0000-000000000000"
 
 # CPU time ceiling — a denial-of-wallet / runaway brake, not a tuning knob.
 #
-# 4000 = ~2x the measured worst-case combination, per the plan's "実測 p99 の
-# 2倍程度" guidance. From docs/ranking-cpu-measurement.md §4.3 (single-process,
-# strictly serial, 2026-08-17, measuring the WHOLE onRequestPost path, with
-# every request asserted against its series' expected status/accepted/tick
-# count): p99(A) 251.49ms + max(B-success 1,278.43ms, B-rejected 1,169.19ms)
-# = 1,529.92ms, doubled and rounded up.
+# *** PROVISIONAL VALUE — NOT THE FINAL ONE. ***
+# 4000 is derived from the LOCAL IN-PROCESS WALL-CLOCK BENCHMARK
+# (docs/ranking-cpu-measurement.md §4), which is a reproducible local baseline
+# for the CPU-dominant part of the implementation — NOT a measurement of the
+# CPU time Cloudflare meters. The final value is decided from real CPU time on
+# a Paid preview deployment (§4.8 of that document), and this comment must be
+# rewritten when it is.
+#
+# How 4000 was reached: ~2x the measured worst-case combination, per the plan's
+# "実測 p99 の2倍程度" guidance. From §4.3 (single-process, strictly serial,
+# 2026-08-17, exercising the WHOLE onRequestPost path, every request asserted
+# against its series' expected status/accepted/tick count): p99(A) 251.49ms +
+# max(B-success 1,278.43ms, B-rejected 1,169.19ms) = 1,529.92ms, doubled and
+# rounded up.
+#
+# Why it is only provisional: the benchmark is Node in-process wall-clock, on
+# this hardware, with D1 and KV mocked out entirely (so no database or KV I/O
+# is included at all) — three separate reasons it is not the metered figure.
+# Note also how far it sits above realistic traffic: an ordinary run completes
+# the whole request in 46.61ms p99, ~85x under this ceiling. Deliberately
+# generous rather than tight: the failure mode of "too low" is rejecting real
+# players' runs.
 #
 # Three earlier values are superseded, all recorded in §3 of that document.
 # 2000 predates any full measurement. 6000 came from a local HTTP run in which
@@ -51,12 +67,9 @@ database_id = "00000000-0000-0000-0000-000000000000"
 # 5000 came from a core-only run whose fixture A silently died after 715 ticks
 # instead of completing 10800, so its "max enemy load" figure was not that.
 #
-# IMPORTANT: this is still a proxy. It is in-process wall-clock with D1/KV
-# stubbed, not the CPU time Cloudflare meters, and not this hardware. Note too
-# how far it sits above realistic traffic: an ordinary run completes the whole
-# request in 46.61ms p99, ~85x under this ceiling. Re-measure real CPU time on
-# a Paid preview and retighten to ~2x that p99. Deliberately generous rather
-# than tight: the failure mode of "too low" is rejecting real players' runs.
+# Free-tier viability is NOT in question here and is not decided by this
+# benchmark: task 1's real Cloudflare measurement already settled it
+# (widespread exceededCpu at the 10ms request cap).
 #
 # This is a Workers Paid-plan setting (max 300000, default 30000 when unset)
 # that only takes effect on Cloudflare's edge under a Paid plan. Locally,

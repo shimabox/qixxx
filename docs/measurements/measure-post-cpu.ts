@@ -1,4 +1,14 @@
-// Full-path CPU measurement for POST /api/scores. Run from the repo root:
+// LOCAL IN-PROCESS WALL-CLOCK BENCHMARK for POST /api/scores.
+//
+// Role (see docs/ranking-cpu-measurement.md's positioning section): this is a
+// reproducible LOCAL BASELINE for comparing the CPU-dominant part of the
+// implementation — regression detection and relative comparison. It does NOT
+// decide `cpu_ms`, and it does NOT decide whether the Paid plan is viable.
+// Free-tier non-viability was already settled by task 1's real Cloudflare
+// measurement (widespread exceededCpu). Paid viability and the final
+// `cpu_ms` are decided from real CPU time on a Paid preview deployment.
+//
+// Run from the repo root:
 //
 //   npx vite-node docs/measurements/measure-post-cpu.ts
 //
@@ -22,10 +32,11 @@
 //     not CPU time Cloudflare meters and which wrecked an earlier attempt;
 //   - it is reproducible with no server, no ports and no account.
 //
-// D1 and KV are in-memory stubs. Their real cost is I/O, not CPU, and a
-// stub keeps the run deterministic; the SQL is still prepared and bound
-// exactly as in production. Treat the result as per-request CPU excluding
-// database I/O.
+// D1 and KV are in-memory mocks. Their real cost is I/O, not CPU, and mocking
+// them keeps the run deterministic; the SQL is still prepared and bound
+// exactly as in production. So the number excludes database/KV I/O entirely —
+// good for a stable local baseline, but another reason it is not the real
+// per-request cost and must not be used to fix `cpu_ms`.
 //
 // The max-load fixtures need enemy counts and lives production can never
 // produce, so they are injected via the bench hook — see

@@ -79,11 +79,16 @@
      "SELECT name FROM sqlite_master WHERE type='table' AND name='scores';"
    ```
 
-4. **`[limits] cpu_ms` を確認**
+4. **`[limits] cpu_ms` を確定する**(現在の値は暫定)
 
-   現在の値の根拠は `docs/ranking-cpu-measurement.md` §4。
-   **ローカル wall-clock の代理値ベース**なので、Paid 契約後の preview 環境で
-   **実 CPU 時間**を測り直し、実測 p99 の 2 倍程度に再設定すること。
+   現在の `4000` は **ローカル in-process wall-clock ベンチマーク**
+   (`docs/ranking-cpu-measurement.md` §4)から置いた**暫定値**であり、
+   Cloudflare が課金・制限する CPU 時間の実測ではない。
+
+   **preview 環境で実 CPU 時間**(`wrangler tail` の `cpuTime` /
+   ダッシュボードの CPU time メトリクス)を測り直し、その p99 の 2 倍程度に
+   確定すること。手順は同文書 §4.8。**Paid 成立の可否も同じ実測で判断する**
+   (ローカルベンチマークでは判断しない)。
 
 5. **疎通確認**
 
