@@ -15,6 +15,22 @@
 
 ## 0. 用語と「正」の所在
 
+> ### ⚠ `--remote` を付け忘れないこと(最重要)
+>
+> **wrangler 3.114.17 では、`d1 execute` / `d1 migrations apply` は
+> `--remote` を付けない限りローカル(`.wrangler/state/` の SQLite)に対して実行される。**
+> 本番 D1 を操作したいのに `--remote` を忘れると、
+> **何のエラーも出ないまま**ローカルだけが変更され、本番は無傷のまま残る
+> (逆に、ローカルを触るつもりで `--remote` を付けると本番を壊す)。
+>
+> | 対象 | 付けるフラグ |
+> | --- | --- |
+> | **本番 D1** | **`--remote` を必ず付ける** |
+> | ローカル D1(開発用) | `--local`(省略時もローカル。明示推奨) |
+>
+> 本手順書のコマンドはすべて**本番向けに `--remote` 付き**で書いてある。
+> ローカルで試すときは `--remote` を `--local` に置き換えること。
+
 | 概念 | 正の所在 | 意味 |
 | --- | --- | --- |
 | `CURRENT_SEASON_ID` | **サーバー**(`functions/_lib/ranking/season.ts`) | シーズン。クライアントは申告しない |
@@ -49,8 +65,18 @@
 3. **マイグレーション適用**
 
    ```sh
-   npx wrangler d1 migrations apply qixxx-scores          # 本番
-   npx wrangler d1 migrations apply qixxx-scores --local  # ローカル
+   # 本番(--remote 必須。付け忘れるとローカルだけに適用され、本番は空のまま)
+   npx wrangler d1 migrations apply qixxx-scores --remote
+
+   # ローカル(開発用)
+   npx wrangler d1 migrations apply qixxx-scores --local
+   ```
+
+   適用後、本番に実際にテーブルができたことを確認する:
+
+   ```sh
+   npx wrangler d1 execute qixxx-scores --remote --command \
+     "SELECT name FROM sqlite_master WHERE type='table' AND name='scores';"
    ```
 
 4. **`[limits] cpu_ms` を確認**
@@ -74,7 +100,7 @@
 **まず対象を特定する**(消す前に必ず中身を見る):
 
 ```sh
-npx wrangler d1 execute qixxx-scores --command \
+npx wrangler d1 execute qixxx-scores --remote --command \
   "SELECT rank_seq, id, score, stage, name, x_handle, datetime(created_at/1000,'unixepoch') AS created
    FROM scores
    WHERE season_id = 1 AND ruleset_version = 1
@@ -84,7 +110,7 @@ npx wrangler d1 execute qixxx-scores --command \
 **1件削除**(公開 ID 指定。`rank_seq` ではなく `id` を使う — 公開 API が返すのは `id`):
 
 ```sh
-npx wrangler d1 execute qixxx-scores --command \
+npx wrangler d1 execute qixxx-scores --remote --command \
   "DELETE FROM scores WHERE id = '<公開ID>';"
 ```
 
@@ -96,12 +122,15 @@ npx wrangler d1 execute qixxx-scores --command \
 - 名前だけを消したい(記録は残したい)場合は `UPDATE` を使う:
 
   ```sh
-  npx wrangler d1 execute qixxx-scores --command \
+  npx wrangler d1 execute qixxx-scores --remote --command \
     "UPDATE scores SET name = '(removed)', x_handle = NULL WHERE id = '<公開ID>';"
   ```
 
-- `--local` を付けるとローカル D1 に対して実行される。**本番に対して実行するときは
-  `--local` を付けない**。取り違えに注意。
+- **上のコマンドはすべて `--remote` 付き = 本番 D1 に対する操作**である。
+  `--remote` を落とすとローカル D1 だけが変更され、**本番は何も変わらないのに
+  成功したように見える**(冒頭の警告を参照)。ローカルで試すときは
+  `--remote` を `--local` に置き換えること。
+- 削除・更新は取り消せない。実行前に必ず上の SELECT で対象を確認すること。
 
 ---
 
