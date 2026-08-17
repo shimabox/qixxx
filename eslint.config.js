@@ -38,6 +38,8 @@ export default [
         crypto: 'readonly',
         fetch: 'readonly',
         URLSearchParams: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
       },
     },
     plugins: {

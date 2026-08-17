@@ -1,5 +1,6 @@
 import { GameSession, SessionInput } from './core/session';
 import { InputRecorder } from './core/inputRecorder';
+import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
 import { TouchControls, attachTapToConfirm } from './input/touch';
@@ -9,6 +10,7 @@ import { loadMuted, saveMuted } from './storage/settings';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
+import { initRankingUI, RankingUI } from './ui/ranking';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -22,6 +24,8 @@ import {
   HUD_WORST_CASE_STATS_TEXT,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
+  RULESET_VERSION,
+  REPLAY_FORMAT_VERSION,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -295,7 +299,22 @@ let hudLine2: HTMLDivElement;
 let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
+let rankingUI: RankingUI;
 let muteButton: HTMLButtonElement;
+
+// REPLAY VIEWING (docs/plans/2026-08-16-score-ranking task 4's "副作用の隔
+// 離" requirement): while `viewMode === 'replay'`, update()/renderFrame()
+// branch almost entirely away from the live-run path below — no keyboard
+// input reaches core, no highscore persistence, no InputRecorder
+// observation, no GAME OVER modal/ranking-submission UI, no sfx. Driven by
+// `replayEngine` (src/core/replayEngine.ts) instead of the live `session`;
+// renderFrame() simply reads whichever of the two is currently active,
+// since both are the same GameSession class with an identical rendering
+// -relevant API.
+type ViewMode = 'live' | 'replay';
+let viewMode: ViewMode = 'live';
+let replayEngine: ReplayEngine | null = null;
+let replayAutoAdvance = true;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -461,6 +480,17 @@ function init(): void {
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap);
+  rankingUI = initRankingUI({
+    anchor: canvasWrap,
+    getSession: () => session,
+    getRunMode: () => runMode,
+    getInputRecorder: () => inputRecorder,
+    getRulesetVersion: () => RULESET_VERSION,
+    getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
+    onReplayStart: enterReplayMode,
+    onReplayExit: exitReplayMode,
+  });
+  rankingUI.mountTitleButton();
 
   sfx = new SfxEngine(loadMuted());
   getCreditLinkElement(hudRow);
@@ -511,6 +541,35 @@ function toggleMute(): void {
 
 function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+}
+
+/** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
+function currentSession(): GameSession {
+  return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
+}
+
+// REPLAY VIEWING mode switches (see `viewMode`'s module doc comment).
+function enterReplayMode(engine: ReplayEngine): void {
+  viewMode = 'replay';
+  replayEngine = engine;
+  replayAutoAdvance = true;
+  // No audio during replay (docs/plans/2026-08-16-score-ranking task 4's
+  // confirmed spec: "効果音もv1では鳴らさない") — stop any in-progress
+  // continuous draw tone left over from live play.
+  sfx.setDrawing(false, null);
+  gameOverModal.hide();
+  gameOverModalShown = false;
+  // Force the next renderFrame() to rewrite the HUD/screen text (they were
+  // last written for the live session and must not be left stale).
+  lastHudStage = -1;
+  lastScreenText = null;
+}
+
+function exitReplayMode(): void {
+  viewMode = 'live';
+  replayEngine = null;
+  lastHudStage = -1;
+  lastScreenText = null;
 }
 
 // The scale factor fitCanvasToViewport() would apply to CANVAS_WIDTH x
@@ -657,17 +716,18 @@ function updateHudMode(): void {
 // frame, but usually a no-op) and updateHudMode() (once, right after a mode
 // flip, to force a rewrite via the invalidated cache).
 function updateHud(): void {
-  const game = session.getGame();
+  const activeSession = currentSession();
+  const game = activeSession.getGame();
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
-  const stage = session.getStage();
-  const score = session.getScore();
-  const hi = session.getHighScore();
-  const lives = session.getLives();
-  const multiplier = session.getMultiplier();
+  const stage = activeSession.getStage();
+  const score = activeSession.getScore();
+  const hi = activeSession.getHighScore();
+  const lives = activeSession.getLives();
+  const multiplier = activeSession.getMultiplier();
   // TIME: the run's remaining time budget, counting down from
   // GameSession.getTimeLimitTicks() to 0 (docs/plans/2026-08-13-time-limit-
   // mode) — a run-wide countdown, not a per-stage elapsed count.
-  const remainingTicks = session.getRemainingTicks();
+  const remainingTicks = activeSession.getRemainingTicks();
   const timeStr = formatTicks(remainingTicks);
   // Last-30-seconds warning (docs/plans/2026-08-13-time-limit-mode): tracked
   // as its own boolean, separately from `timeStr === lastHudTime` below,
@@ -766,7 +826,31 @@ function fitCanvasToViewport(): void {
 
 // Update logic (fixed timestep)
 function update(): void {
+  // Polled exactly once per tick regardless of mode (KeyboardInput.getInput()
+  // consumes the edge-triggered `confirm` pulse on read — calling it twice
+  // in the same tick would silently swallow a real confirm press).
   const input = keyboard.getInput();
+
+  // REPLAY VIEWING (docs/plans/2026-08-16-score-ranking task 4's "副作用の
+  // 隔離" requirement): entirely separate path — keyboard input is polled
+  // (so a held key doesn't "carry over" as a stale edge-triggered confirm
+  // once the player exits back to live play) but never read into core,
+  // InputRecorder never observes, highscore is never persisted, sfx never
+  // plays.
+  if (viewMode === 'replay') {
+    if (replayEngine && replayAutoAdvance) {
+      const advanced = replayEngine.stepTick();
+      const replaySession = replayEngine.getSession();
+      // Drain (not forward anywhere) every tick, same as a live run —
+      // GameSession's own doc comments warn these queues grow unbounded
+      // otherwise.
+      replaySession.drainEvents();
+      replaySession.drainDespawnedEmberPositions();
+      if (!advanced) replayAutoAdvance = false;
+    }
+    return;
+  }
+
   lastInput = input;
 
   // Seed lifecycle (docs/plans/2026-08-16-score-ranking task 2's "gameover
@@ -825,7 +909,8 @@ function update(): void {
 
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
-  const game = session.getGame();
+  const activeSession = currentSession();
+  const game = activeSession.getGame();
   const graceTicks = game.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
@@ -841,14 +926,34 @@ function renderFrame(): void {
     markerVisible
   );
 
+  const status = activeSession.getStatus();
+
+  if (viewMode === 'replay') {
+    // No sfx (docs/plans/2026-08-16-score-ranking task 4: "効果音もv1では
+    // 鳴らさない"), no GAME OVER modal/ranking-submission UI (that modal's
+    // own "POST TO X" button assumes a *live* run's just-finished score —
+    // see src/ui/gameOverModal.ts). A replay's own session can only ever be
+    // 'playing' or 'gameover' from the outside (ReplayEngine.stepTick()
+    // always auto-confirms all the way through Title/StageClear before
+    // returning) — a plain "REPLAY FINISHED" line covers the other case.
+    updateHud();
+    const text =
+      status === 'gameover'
+        ? `REPLAY FINISHED\n\nSCORE ${activeSession.getScore()}  STAGE ${activeSession.getStage()}`
+        : '';
+    if (text !== lastScreenText) {
+      lastScreenText = text;
+      screen.textContent = text;
+    }
+    return;
+  }
+
   // Continuous line-drawing drone (docs/plan.md §3.8): driven off the
   // marker's actual drawing state plus whichever speed button the most
   // recent tick's merged input held.
   sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   updateHud();
-
-  const status = session.getStatus();
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
@@ -860,18 +965,23 @@ function renderFrame(): void {
     if (!gameOverModalShown) {
       gameOverModalShown = true;
       gameOverModal.show({
-        score: session.getScore(),
-        stage: session.getStage(),
-        hiScore: session.getHighScore(),
+        score: activeSession.getScore(),
+        stage: activeSession.getStage(),
+        hiScore: activeSession.getHighScore(),
         // TIME UP! (docs/plans/2026-08-13-time-limit-mode): distinguishes a
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
-        reason: session.getGameOverReason() ?? undefined,
+        reason: activeSession.getGameOverReason() ?? undefined,
       });
+      // Ranking submission offer (docs/plans/2026-08-16-score-ranking task
+      // 4): a no-op if this run isn't POST-eligible (`?seed=`/tainted, see
+      // src/ui/ranking.ts's isEligible()) or isn't provisionally in range.
+      rankingUI.offerSubmission({ score: activeSession.getScore(), stage: activeSession.getStage() });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
     gameOverModal.hide();
+    rankingUI.hideAll();
   }
 
   if (status === 'playing') {
