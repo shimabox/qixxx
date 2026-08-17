@@ -2,7 +2,7 @@
 -- `wrangler d1 migrations apply qixxx-scores` — locally during development
 -- (wrangler's local D1 emulation, no Cloudflare account action required),
 -- and against the real D1 database only once task 7's stop point has been
--- cleared with the user (see docs/plans/2026-08-16-score-ranking/runbook.md).
+-- cleared with the user (see docs/ranking-runbook.md).
 --
 -- Column notes:
 --   - rank_seq: internal ordering tie-breaker (docs/plans/2026-08-16-score-

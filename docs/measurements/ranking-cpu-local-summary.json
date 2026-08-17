@@ -1,0 +1,8 @@
+{
+  "pA": 1155.47,
+  "pBsuccess": 1553.45,
+  "pBrejected": 1731.8,
+  "combined": 2887.27,
+  "threshold": 1000,
+  "verdict": "FAIL"
+}

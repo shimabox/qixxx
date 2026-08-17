@@ -417,5 +417,5 @@ export const MAX_INPUT_SAMPLES = TIME_LIMIT_TICKS;
 // unbounded too — this is a protocol/DoS parameter, not a gameplay rule
 // (core/claim.ts itself is untouched), which is why it lives here in
 // config.ts rather than being folded into RULESET_VERSION's scope. Changing
-// it is documented (task 7's runbook) as a season/verification-rule change.
+// it is documented (docs/ranking-runbook.md §4.3) as a season/verification-rule change.
 export const MAX_VERIFIED_CLAIMS = 100;

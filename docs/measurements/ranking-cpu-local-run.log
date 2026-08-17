@@ -1,0 +1,26 @@
+[2026-08-17T08:00:22.491Z] Starting task 6 local full-execution measurement (serial, wrangler pages dev :8788)
+[2026-08-17T08:00:22.497Z] [A] warmup (10 requests, serial)...
+[2026-08-17T08:00:30.252Z] [A] measuring (100 requests, serial)...
+[2026-08-17T08:00:38.340Z] [A] 20/100 done (last wallMs=320.2, status=200, accepted=true)
+[2026-08-17T08:00:45.070Z] [A] 40/100 done (last wallMs=324.1, status=200, accepted=true)
+[2026-08-17T08:00:51.762Z] [A] 60/100 done (last wallMs=334.7, status=200, accepted=true)
+[2026-08-17T08:01:04.901Z] [A] 80/100 done (last wallMs=654.0, status=200, accepted=true)
+[2026-08-17T08:01:18.545Z] [A] 100/100 done (last wallMs=689.2, status=200, accepted=true)
+[2026-08-17T08:01:18.547Z] [A] p99=1155.54ms mean=482.87ms min=288.46ms max=1273.62ms statuses=200 accepted=true
+[2026-08-17T08:01:18.547Z] [Bsuccess] warmup (10 requests, serial)...
+[2026-08-17T08:01:28.519Z] [Bsuccess] measuring (100 requests, serial)...
+[2026-08-17T08:01:53.855Z] [Bsuccess] 20/100 done (last wallMs=1326.7, status=200, accepted=true)
+[2026-08-17T08:02:19.299Z] [Bsuccess] 40/100 done (last wallMs=1174.2, status=200, accepted=true)
+[2026-08-17T08:02:43.816Z] [Bsuccess] 60/100 done (last wallMs=1226.3, status=200, accepted=true)
+[2026-08-17T08:03:07.716Z] [Bsuccess] 80/100 done (last wallMs=1157.3, status=200, accepted=true)
+[2026-08-17T08:03:32.118Z] [Bsuccess] 100/100 done (last wallMs=1171.6, status=200, accepted=true)
+[2026-08-17T08:03:32.121Z] [Bsuccess] p99=1500.5ms mean=1235.9ms min=1060.07ms max=1527.21ms statuses=200 accepted=true
+[2026-08-17T08:03:32.121Z] [Brejected] warmup (10 requests, serial)...
+[2026-08-17T08:03:43.822Z] [Brejected] measuring (100 requests, serial)...
+[2026-08-17T08:04:06.830Z] [Brejected] 20/100 done (last wallMs=1117.4, status=200, accepted=false)
+[2026-08-17T08:04:29.635Z] [Brejected] 40/100 done (last wallMs=1143.6, status=200, accepted=false)
+[2026-08-17T08:04:53.591Z] [Brejected] 60/100 done (last wallMs=1214.6, status=200, accepted=false)
+[2026-08-17T08:05:15.493Z] [Brejected] 80/100 done (last wallMs=826.7, status=200, accepted=false)
+[2026-08-17T08:05:40.901Z] [Brejected] 100/100 done (last wallMs=1585.1, status=200, accepted=false)
+[2026-08-17T08:05:40.904Z] [Brejected] p99=1681.7ms mean=1170.7ms min=771.5ms max=1748.72ms statuses=200 accepted=false
+[2026-08-17T08:05:40.904Z] DONE. p99(A)=1155.54 + max(p99(Bsuccess)=1500.5, p99(Brejected)=1681.7) = 2837.24ms vs 1000ms threshold -> FAIL

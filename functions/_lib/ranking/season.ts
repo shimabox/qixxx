@@ -8,7 +8,7 @@
 // core/ — the same build's simulation must agree with whatever value gets
 // stamped into a submitted row).
 //
-// Operational rule (task 7's runbook expands on this): whenever
+// Operational rule (docs/ranking-runbook.md §4.1 expands on this): whenever
 // RULESET_VERSION changes, CURRENT_SEASON_ID below MUST also be incremented
 // by hand, in the same deploy. Forgetting to bump the season is harmless by
 // construction — every ranking/replay query filters on
@@ -19,5 +19,5 @@
 // than an accidentally-reused number.
 export { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../../src/config';
 
-/** The current season. Bumped by hand (never by a deploy script) to reset the ranking while keeping RULESET_VERSION unchanged — see this module's doc comment and task 7's runbook. */
+/** The current season. Bumped by hand (never by a deploy script) to reset the ranking while keeping RULESET_VERSION unchanged — see this module's doc comment and docs/ranking-runbook.md §3. */
 export const CURRENT_SEASON_ID = 1;
