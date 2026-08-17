@@ -87,6 +87,69 @@ export interface ReplaySimOptions {
  * to avoid unbounded memory growth across a full 10800-tick run.
  */
 export function simulateReplayFromRle(seed: number, rle: Uint8Array, options: Omit<ReplaySimOptions, 'seed'> = {}): ReplayResult {
+  // chunkTicks: Infinity — the generator never yields, so this is a single
+  // next() call and behaves exactly like a plain loop. The server path pays
+  // nothing for the chunking machinery the viewer needs.
+  const steps = replaySimulationSteps(seed, rle, options, Number.POSITIVE_INFINITY);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  return step.value;
+}
+
+/** Ticks simulated between yields when chunking. Small enough that one chunk is a few ms even on a slow phone, large enough that a full 10800-tick replay is ~40 yields rather than thousands. */
+export const REPLAY_CHUNK_TICKS = 256;
+
+export interface ChunkedSimOptions extends Omit<ReplaySimOptions, 'seed'> {
+  /** Ticks per chunk before yielding to the event loop. Defaults to REPLAY_CHUNK_TICKS. */
+  chunkTicks?: number;
+  /** How to yield between chunks. Defaults to a macrotask (`setTimeout(0)`); injectable so tests can run without real timers. */
+  yieldToEventLoop?: () => Promise<void>;
+  /** Called after each chunk with the number of ticks simulated so far — for a progress/LOADING display. */
+  onProgress?: (ticksSimulated: number) => void;
+}
+
+function defaultYield(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Same simulation as simulateReplayFromRle(), but handing control back to the
+ * event loop every `chunkTicks` ticks.
+ *
+ * Exists for the *viewing* path only. A replay is up to 10800 ticks, and
+ * running that as one synchronous loop blocks the main thread for as long as
+ * it takes — on a phone, seconds of a frozen page with no way to show so much
+ * as a spinner. The server path must stay synchronous (a Worker has no
+ * reason to yield, and verifyReplay() is a pure function), hence two drivers
+ * over one generator rather than making everything async.
+ */
+export async function simulateReplayFromRleChunked(
+  seed: number,
+  rle: Uint8Array,
+  options: ChunkedSimOptions = {}
+): Promise<ReplayResult> {
+  const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress, ...simOptions } = options;
+  const steps = replaySimulationSteps(seed, rle, simOptions, chunkTicks);
+  let step = steps.next();
+  while (!step.done) {
+    onProgress?.(step.value);
+    await yieldToEventLoop();
+    step = steps.next();
+  }
+  return step.value;
+}
+
+/**
+ * The single implementation behind both drivers above. Yields the running
+ * tick count every `chunkTicks` simulated ticks and returns the final
+ * ReplayResult; pass `Infinity` to make it a plain uninterrupted loop.
+ */
+function* replaySimulationSteps(
+  seed: number,
+  rle: Uint8Array,
+  options: Omit<ReplaySimOptions, 'seed'>,
+  chunkTicks: number
+): Generator<number, ReplayResult, void> {
   const maxTicks = options.maxTicks ?? MAX_INPUT_SAMPLES;
   const session = new GameSession({
     seed,
@@ -100,6 +163,8 @@ export function simulateReplayFromRle(seed: number, rle: Uint8Array, options: Om
   let totalClaims = 0;
   let excessSamplesAfterGameover = 0;
   let stoppedByOnTick = false;
+  let ticksSimulated = 0;
+  let ticksSinceYield = 0;
   const stageBoundaries: ReplayStageBoundary[] = [{ stage: 1, startTick: 0 }];
 
   outer: for (const { sample, runLength } of decodeRleRuns(rle, maxTicks)) {
@@ -136,6 +201,12 @@ export function simulateReplayFromRle(seed: number, rle: Uint8Array, options: Om
       if (options.onTick?.({ totalClaimsSoFar: totalClaims, events, session })) {
         stoppedByOnTick = true;
         break outer;
+      }
+
+      ticksSimulated++;
+      if (++ticksSinceYield >= chunkTicks) {
+        ticksSinceYield = 0;
+        yield ticksSimulated;
       }
     }
   }
@@ -174,10 +245,10 @@ export class ReplayEngine {
   private index = 0;
   private readonly preResult: ReplayResult;
 
-  constructor(seed: number, rle: Uint8Array, options: ReplayEngineOptions = {}) {
+  private constructor(seed: number, samples: readonly InputSample[], preResult: ReplayResult, options: ReplayEngineOptions) {
     this.seed = seed;
-    this.samples = decodeRleToSamples(rle);
-    this.preResult = simulateReplayFromRle(seed, rle, options);
+    this.samples = samples;
+    this.preResult = preResult;
     this.session = new GameSession({
       seed,
       fieldWidth: options.fieldWidth,
@@ -185,6 +256,23 @@ export class ReplayEngine {
       timeLimitTicks: options.timeLimitTicks,
     });
     this.session.update(CONFIRM); // Title -> Playing, mirroring simulateReplayFromRle()'s own first step
+  }
+
+  /**
+   * Builds an engine, running the one-time pre-pass in chunks so the page
+   * stays responsive.
+   *
+   * Async (rather than a plain constructor) because that pre-pass resimulates
+   * the entire replay — up to 10800 ticks — to discover its final
+   * score/stage/duration and stage boundaries. Doing that synchronously froze
+   * the main thread for the whole duration, which on a phone is seconds of a
+   * dead page that can't even paint a spinner. `onProgress` lets the caller
+   * show one instead (src/ui/ranking.ts's LOADING state).
+   */
+  static async create(seed: number, rle: Uint8Array, options: ReplayEngineOptions & ChunkedSimOptions = {}): Promise<ReplayEngine> {
+    const samples = decodeRleToSamples(rle);
+    const preResult = await simulateReplayFromRleChunked(seed, rle, options);
+    return new ReplayEngine(seed, samples, preResult, options);
   }
 
   /** The GameSession this engine is driving — pass straight to the existing renderer. */
@@ -230,13 +318,23 @@ export class ReplayEngine {
    * STAGE" viewer control (task 4) — after this returns, the caller should
    * resume normal per-frame stepTick() calls to keep playing from there.
    */
-  skipToFinalStage(): void {
+  async skipToFinalStage(options: Pick<ChunkedSimOptions, 'chunkTicks' | 'yieldToEventLoop' | 'onProgress'> = {}): Promise<void> {
+    const { chunkTicks = REPLAY_CHUNK_TICKS, yieldToEventLoop = defaultYield, onProgress } = options;
     const boundaries = this.preResult.stageBoundaries;
     const targetTick = boundaries[boundaries.length - 1]?.startTick ?? 0;
+    let sinceYield = 0;
+    // Chunked for the same reason create() is (see its doc comment): skipping
+    // to the final stage of a long replay can be most of a 10800-tick
+    // resimulation, and doing it in one synchronous burst froze the page.
     while (this.session.getTotalTicks() < targetTick && !this.isFinished()) {
       this.stepTick();
       this.session.drainEvents();
       this.session.drainDespawnedEmberPositions();
+      if (++sinceYield >= chunkTicks) {
+        sinceYield = 0;
+        onProgress?.(this.session.getTotalTicks());
+        await yieldToEventLoop();
+      }
     }
   }
 }

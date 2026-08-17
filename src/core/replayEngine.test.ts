@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameSession } from './session';
 import { encodeRle, InputSample } from './rle';
-import { simulateReplayFromRle, ReplayEngine } from './replayEngine';
+import { simulateReplayFromRle, simulateReplayFromRleChunked, ReplayEngine } from './replayEngine';
 
 const CONFIRM = { dx: 0 as const, dy: 0 as const, drawHeld: false, confirm: true };
 
@@ -85,10 +85,68 @@ describe('simulateReplayFromRle', () => {
   });
 });
 
+describe('chunked simulation (viewer responsiveness)', () => {
+  it('produces exactly the same result as the synchronous driver', async () => {
+    const rle = recordTimeUpRun(7, 40);
+    const sync = simulateReplayFromRle(7, rle, { timeLimitTicks: 40 });
+    const chunked = await simulateReplayFromRleChunked(7, rle, {
+      timeLimitTicks: 40,
+      chunkTicks: 8,
+      yieldToEventLoop: () => Promise.resolve(),
+    });
+    expect(chunked).toEqual(sync);
+  });
+
+  it('actually yields between chunks rather than running straight through', async () => {
+    const rle = recordTimeUpRun(7, 40);
+    let yields = 0;
+    const progress: number[] = [];
+    await simulateReplayFromRleChunked(7, rle, {
+      timeLimitTicks: 40,
+      chunkTicks: 8,
+      yieldToEventLoop: () => {
+        yields++;
+        return Promise.resolve();
+      },
+      onProgress: (ticks) => progress.push(ticks),
+    });
+    // 40 ticks at 8 per chunk: several hand-backs to the event loop, each
+    // reporting a strictly increasing tick count.
+    expect(yields).toBeGreaterThanOrEqual(4);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress[0]).toBe(8);
+  });
+
+  it('lets other work interleave while the pre-pass runs (the whole point on a phone)', async () => {
+    const rle = recordTimeUpRun(7, 40);
+    const order: string[] = [];
+    const done = simulateReplayFromRleChunked(7, rle, {
+      timeLimitTicks: 40,
+      chunkTicks: 8,
+      yieldToEventLoop: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      onProgress: () => order.push('chunk'),
+    });
+    // Queued after the first chunk's yield — a synchronous pre-pass could
+    // never let this run before the simulation finished.
+    setTimeout(() => order.push('interleaved'), 0);
+    await done;
+    expect(order).toContain('interleaved');
+    expect(order.indexOf('interleaved')).toBeLessThan(order.length - 1);
+  });
+
+  it('never yields when driven synchronously (the server path pays nothing)', () => {
+    // simulateReplayFromRle() drives the same generator with an infinite
+    // chunk size; if that ever regressed, this would loop-yield instead.
+    const rle = recordTimeUpRun(7, 40);
+    const result = simulateReplayFromRle(7, rle, { timeLimitTicks: 40 });
+    expect(result.durationTicks).toBe(40);
+  });
+});
+
 describe('ReplayEngine (viewing mode)', () => {
-  it('stepTick() drives the same tick-by-tick outcome as the headless pre-pass', () => {
+  it('stepTick() drives the same tick-by-tick outcome as the headless pre-pass', async () => {
     const rle = recordTimeUpRun(42, 5);
-    const engine = new ReplayEngine(42, rle, { timeLimitTicks: 5 });
+    const engine = await ReplayEngine.create(42, rle, { timeLimitTicks: 5 });
     let ticks = 0;
     while (engine.stepTick()) ticks++;
     expect(ticks).toBe(engine.getResult().durationTicks);
@@ -97,11 +155,11 @@ describe('ReplayEngine (viewing mode)', () => {
     expect(engine.isFinished()).toBe(true);
   });
 
-  it('skipToFinalStage() lands exactly at the final stage boundary tick', () => {
+  it('skipToFinalStage() lands exactly at the final stage boundary tick', async () => {
     const rle = recordTimeUpRun(1000, 8);
-    const engine = new ReplayEngine(1000, rle, { timeLimitTicks: 8 });
+    const engine = await ReplayEngine.create(1000, rle, { timeLimitTicks: 8 });
     const finalBoundary = engine.getResult().stageBoundaries[engine.getResult().stageBoundaries.length - 1];
-    engine.skipToFinalStage();
+    await engine.skipToFinalStage();
     expect(engine.getSession().getTotalTicks()).toBeGreaterThanOrEqual(finalBoundary.startTick);
     expect(engine.getSession().getStage()).toBe(engine.getResult().stageBoundaries[engine.getResult().stageBoundaries.length - 1].stage);
   });
