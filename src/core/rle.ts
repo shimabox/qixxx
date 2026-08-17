@@ -1,0 +1,128 @@
+// RLE codec for a recorded input stream (docs/plans/2026-08-16-score-ranking
+// task 2). Pure logic — no DOM/localStorage/fetch dependency, matching every
+// other module in src/core/. Promoted from a task-1 CPU-spike prototype
+// (docs/plans/2026-08-16-score-ranking/request.md task 1's explicitly
+// -sanctioned "minimal prototype ... may be promoted") after that gate's
+// preview measurement confirmed the approach.
+//
+// Encoding: each PLAYING-tick input sample (dx, dy, drawHeld, slow) packs
+// into one byte (36 possible combinations, well under 256), followed by a
+// LEB128 varint run-length. `decodeRleRuns()` is a generator that decodes
+// and validates one run at a time — never materializing the full expanded
+// sample array — per this round's "検証しながら展開" lesson (RLE must be
+// validated *while* decoding, not decoded-then-validated).
+import { Axis } from './marker';
+import { MAX_INPUT_SAMPLES } from '../config';
+
+export interface InputSample {
+  dx: Axis;
+  dy: Axis;
+  drawHeld: boolean;
+  slow: boolean;
+}
+
+const AXIS_VALUES: readonly Axis[] = [-1, 0, 1];
+
+/** Packs one sample into a single byte in [0, 35]. */
+export function encodeSampleByte(s: InputSample): number {
+  const dxIdx = AXIS_VALUES.indexOf(s.dx);
+  const dyIdx = AXIS_VALUES.indexOf(s.dy);
+  return dxIdx * 12 + dyIdx * 4 + (s.drawHeld ? 2 : 0) + (s.slow ? 1 : 0);
+}
+
+/** Unpacks a single byte back into a sample. Throws on any value outside [0, 35] (an invalid/corrupt code). */
+export function decodeSampleByte(code: number): InputSample {
+  if (!Number.isInteger(code) || code < 0 || code > 35) {
+    throw new Error(`rle: invalid sample code ${code}`);
+  }
+  const dxIdx = Math.floor(code / 12);
+  const rem1 = code % 12;
+  const dyIdx = Math.floor(rem1 / 4);
+  const rem2 = rem1 % 4;
+  return {
+    dx: AXIS_VALUES[dxIdx],
+    dy: AXIS_VALUES[dyIdx],
+    drawHeld: (rem2 & 2) !== 0,
+    slow: (rem2 & 1) !== 0,
+  };
+}
+
+function writeVarint(bytes: number[], value: number): void {
+  let v = value;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v = Math.floor(v / 128);
+  }
+  bytes.push(v);
+}
+
+/** Encodes a full sample list as (byte, varint run-length) pairs. */
+export function encodeRle(samples: readonly InputSample[]): Uint8Array {
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < samples.length) {
+    const code = encodeSampleByte(samples[i]);
+    let runLength = 1;
+    while (i + runLength < samples.length && encodeSampleByte(samples[i + runLength]) === code) {
+      runLength++;
+    }
+    bytes.push(code);
+    writeVarint(bytes, runLength);
+    i += runLength;
+  }
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Decodes+validates `data` one run at a time, yielding
+ * `{ sample, runLength }` — never materializing the fully-expanded sample
+ * array (see this module's doc comment). Throws as soon as it encounters an
+ * invalid sample byte, a truncated varint, a zero/negative run length, or a
+ * cumulative sample count exceeding `maxTotalSamples` — a caller mid-way
+ * through consuming the generator has therefore only ever processed
+ * *validated* runs by the time an exception propagates.
+ */
+export function* decodeRleRuns(
+  data: Uint8Array,
+  maxTotalSamples: number = MAX_INPUT_SAMPLES
+): Generator<{ sample: InputSample; runLength: number }> {
+  let offset = 0;
+  let total = 0;
+  while (offset < data.length) {
+    const code = data[offset];
+    offset++;
+    const sample = decodeSampleByte(code); // throws before this run is ever used
+
+    let runLength = 0;
+    let shift = 0;
+    let byte: number;
+    do {
+      if (offset >= data.length) throw new Error('rle: truncated varint');
+      byte = data[offset];
+      offset++;
+      runLength += (byte & 0x7f) * Math.pow(2, shift);
+      shift += 7;
+    } while (byte & 0x80);
+
+    if (runLength <= 0) throw new Error('rle: invalid run length');
+    total += runLength;
+    if (total > maxTotalSamples) throw new Error(`rle: exceeds max sample count (${maxTotalSamples})`);
+
+    yield { sample, runLength };
+  }
+}
+
+/**
+ * Convenience wrapper over decodeRleRuns() that *does* materialize the full
+ * sample array — for callers (tests, the UI's replay list fetch) that need
+ * random access rather than a streaming pass. Server-side verification
+ * (functions/_lib/verifyReplay.ts) uses decodeRleRuns() directly instead, to
+ * honor the "検証しながら展開" rule all the way through a 10800-sample replay.
+ */
+export function decodeRleToSamples(data: Uint8Array, maxTotalSamples: number = MAX_INPUT_SAMPLES): InputSample[] {
+  const samples: InputSample[] = [];
+  for (const { sample, runLength } of decodeRleRuns(data, maxTotalSamples)) {
+    for (let i = 0; i < runLength; i++) samples.push(sample);
+  }
+  return samples;
+}

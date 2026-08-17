@@ -35,6 +35,9 @@ export default [
         localStorage: 'readonly',
         KeyboardEvent: 'readonly',
         AudioContext: 'readonly',
+        crypto: 'readonly',
+        fetch: 'readonly',
+        URLSearchParams: 'readonly',
       },
     },
     plugins: {
@@ -62,6 +65,8 @@ export default [
         console: 'readonly',
         crypto: 'readonly',
         atob: 'readonly',
+        btoa: 'readonly',
+        TextEncoder: 'readonly',
         Response: 'readonly',
         Request: 'readonly',
         Headers: 'readonly',

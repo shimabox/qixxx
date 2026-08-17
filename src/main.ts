@@ -1,4 +1,5 @@
 import { GameSession, SessionInput } from './core/session';
+import { InputRecorder } from './core/inputRecorder';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
 import { TouchControls, attachTapToConfirm } from './input/touch';
@@ -370,6 +371,25 @@ let runMode: RunMode = 'normal';
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
+// RANKING (docs/plans/2026-08-16-score-ranking task 2): records every
+// PLAYING-tick input of the *current* run, RLE-encoded on demand for a
+// ranking POST — see src/ui/ranking.ts's gameover flow (task 4), which reads
+// `session.getSeed()` + `inputRecorder.encode()` together while `status`
+// is still 'gameover' (both stay valid/unchanged for as long as that lasts —
+// see update()'s own seed-requeuing/recorder-reset comments below for why).
+const inputRecorder = new InputRecorder();
+
+// Generates a fresh per-run seed for 'normal' mode (docs/plans/2026-08-16-
+// score-ranking task 2's confirmed spec: `crypto.getRandomValues()`, not
+// Math.random — a normal run's board should be unpredictable/unseedable by
+// a player, unlike `?seed=` mode's deliberately-reproducible one). Never
+// called for 'seeded' mode, whose single seed comes from the URL instead.
+function generateNormalRunSeed(): number {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return buf[0];
+}
+
 // SEEDED RUNS helpers.
 
 /**
@@ -403,7 +423,12 @@ function init(): void {
     seededRunSeed = explicitSeedParam;
     session = new GameSession({ seed: explicitSeedParam, highScore });
   } else {
-    session = new GameSession({ highScore });
+    // Normal mode's initial Title board (docs/plans/2026-08-16-score-ranking
+    // task 2's "初回Titleの盤面生成時"): seeded here, at construction —
+    // stage 1's board is already fully built by the time Title is ever
+    // shown (see GameSession's own module doc comment), so there's no later
+    // "Title -> Playing" moment this could instead hook into.
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore });
   }
 
   gameRoot = getGameRootElement();
@@ -743,7 +768,37 @@ function fitCanvasToViewport(): void {
 function update(): void {
   const input = keyboard.getInput();
   lastInput = input;
+
+  // Seed lifecycle (docs/plans/2026-08-16-score-ranking task 2's "gameover
+  // →titleで新しい盤面を生成するとき"): queues a fresh seed for whenever
+  // resetToFreshRun() next runs. Set every tick while 'gameover' (not just
+  // once, on the status-change edge) — simplest correct option, since
+  // GameSession.setNextSeed() only cares about whichever value is queued at
+  // the instant confirm actually triggers the reset; re-queuing a few dozen
+  // times while the GAME OVER screen sits idle is cheap. Never touches a
+  // 'seeded' (`?seed=`) run, whose fixed seed must keep reproducing the same
+  // board on every retry, exactly as before this feature existed.
+  const statusBeforeThisTick = session.getStatus();
+  if (runMode === 'normal' && statusBeforeThisTick === 'gameover') {
+    session.setNextSeed(generateNormalRunSeed());
+  }
+
   session.update(input);
+
+  // InputRecorder (docs/plans/2026-08-16-score-ranking task 2): reset the
+  // instant a fresh run actually starts (gameover -> title, i.e.
+  // resetToFreshRun() just fired inside the update() call above) — without
+  // this, the recorder's own "have we already seen this totalTicks value"
+  // guard would silently refuse to record the new run's early ticks (their
+  // totalTicks values are smaller than the previous run's final one).
+  // observe() itself is always safe to call unconditionally afterward: it's
+  // a no-op on any tick that didn't actually advance a *new* playing tick
+  // (title/stageclear/gameover ticks, or this same reset tick).
+  if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
+    inputRecorder.reset();
+  }
+  inputRecorder.observe(session, input);
+
   sfx.handleEvents(session.drainEvents());
   // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
   // tick granularity, same as the events above, so an effect is queued for

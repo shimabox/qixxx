@@ -126,8 +126,34 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
-  private readonly seed?: number;
+  // Not readonly (docs/plans/2026-08-16-score-ranking task 2): a 'normal'
+  // run's seed is now replaced on every retry, at the resetToFreshRun()
+  // boundary — see `nextSeed`/setNextSeed() below for why that boundary
+  // (not Title->Playing) is the right one.
+  private seed?: number;
   private readonly baseRng?: Rng;
+  // Queued by setNextSeed() (docs/plans/2026-08-16-score-ranking task 2):
+  // consumed the next time resetToFreshRun() runs, then cleared. Lets a
+  // caller (main.ts, normal-mode runs only) generate a fresh
+  // crypto.getRandomValues()-sourced seed ahead of time — e.g. every tick
+  // while status is 'gameover', so whichever value is queued at the moment
+  // the player actually confirms back to Title is already fresh — without
+  // needing to predict the exact tick resetToFreshRun() will fire on. A
+  // 'seeded' (`?seed=`) run's caller never calls this, so its fixed seed is
+  // simply reused on every retry exactly as before this field existed.
+  private nextSeed?: number;
+  // True from the moment any debug override becomes active, until the next
+  // resetToFreshRun() (docs/plans/2026-08-16-score-ranking task 2: "ラン単位
+  // の汚染追跡"/runTainted). Deliberately *sticky* within a run — unlike
+  // hasActiveDebugOverrides() (which only reflects whether an override is
+  // *currently* active), this stays true even after the debug panel's own
+  // RESET button clears every override back to stage defaults, since the
+  // run itself was already influenced by non-standard parameters at some
+  // point and can never un-happen. Read by main.ts to exclude such a run
+  // from ranking submission, alongside `?seed=` mode (checked separately,
+  // via RunMode — a seeded run's board itself is the non-standard part, not
+  // anything this flag tracks).
+  private tainted = false;
   // The rng actually in effect for the stage currently being built — either
   // a fresh `mulberry32(deriveStageSeed(seed, stage))` (seeded runs) or
   // `baseRng` (the test-hook rng, unseeded runs). Recomputed by
@@ -217,6 +243,34 @@ export class GameSession {
   }
 
   /**
+   * The seed currently driving this run's per-stage boards, or `undefined`
+   * if this session was never seeded at all (docs/plans/2026-08-16-score-
+   * ranking task 2: read by main.ts to record which seed a normal run's
+   * `InputRecorder` samples belong to, for the ranking POST payload).
+   */
+  getSeed(): number | undefined {
+    return this.seed;
+  }
+
+  /**
+   * Queues `seed` to take effect the next time resetToFreshRun() runs (see
+   * `nextSeed`'s field doc comment for the full rationale). No effect on the
+   * *current* run in progress — only ever changes what the *next* fresh run
+   * (gameover -> title, or title -> title on repeated calls) is seeded with.
+   */
+  setNextSeed(seed: number): void {
+    this.nextSeed = seed;
+  }
+
+  /**
+   * True if this run has ever had a debug override active (see `tainted`'s
+   * field doc comment: sticky within a run, unlike hasActiveDebugOverrides()).
+   */
+  isRunTainted(): boolean {
+    return this.tainted;
+  }
+
+  /**
    * Ticks elapsed since the current stage started (docs/plans/2026-08-11-
    * daily-seed-time-attack request task 2), counting only while
    * `status === 'playing'`. Resets to 0 on every stage transition (fresh run
@@ -287,6 +341,7 @@ export class GameSession {
    */
   setDebugTimeLimitTicks(ticks: number): void {
     this.debugTimeLimitTicks = ticks;
+    this.tainted = true;
   }
 
   /**
@@ -361,11 +416,22 @@ export class GameSession {
    * Title (docs/plan.md §6 M4's "full reset" requirement).
    */
   private resetToFreshRun(): void {
+    // Consume any queued seed (docs/plans/2026-08-16-score-ranking task 2)
+    // *before* buildStageGame() below reads `this.seed` to build stage 1 —
+    // this is "the resetToFreshRun(seed) boundary" the request describes,
+    // deliberately not Title->Playing, since stage 1's board is already
+    // fully built by the time Title is ever shown (see this class's own
+    // module doc comment).
+    if (this.nextSeed !== undefined) {
+      this.seed = this.nextSeed;
+      this.nextSeed = undefined;
+    }
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
     this.totalTicks = 0;
     this.gameOverReason = null;
+    this.tainted = false;
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
   }
 
@@ -398,6 +464,7 @@ export class GameSession {
    */
   applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
     this.debugOverrides = { ...this.debugOverrides, ...overrides };
+    this.tainted = true;
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 
