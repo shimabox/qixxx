@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-08-17T17:09:41.762Z",
+  "node": "v20.19.5",
+  "measures": "POST /api/scores onRequestPost() end to end, in-process, single-threaded, serial (D1/KV stubbed)",
+  "warmupCount": 10,
+  "measuredCount": 100,
+  "fixtureAcceptance": {
+    "aDurationTicks": 10800,
+    "aGameOverReason": "time",
+    "bSuccessDurationTicks": 10800,
+    "bSuccessClaims": 100,
+    "bRejectedClaims": 101
+  },
+  "p99Ms": {
+    "A": 297.36,
+    "Bsuccess": 1321.45,
+    "Brejected": 1174.85,
+    "Realistic": 66.44
+  },
+  "combinedP99Ms": 1618.81,
+  "thresholdMs": 1000,
+  "verdict": "FAIL",
+  "suggestedCpuMsLimit": 4000
+}

@@ -1,0 +1,38 @@
+[2026-08-17T17:05:16.308Z] [pid 28867] START single-process serial full-path measurement (node v20.19.5)
+[2026-08-17T17:05:16.309Z] [pid 28867] building fixtures...
+[2026-08-17T17:05:18.940Z] [pid 28867] fixtures: A ticks=10800 reason=time | Bsuccess ticks=10800 claims=100 | Brejected claims=101 | Realistic ticks=3581
+[2026-08-17T17:05:18.941Z] [pid 28867] [A] warmup (10 requests, serial)...
+[2026-08-17T17:05:20.705Z] [pid 28867] [A] measuring (100 requests, serial)...
+[2026-08-17T17:05:24.133Z] [pid 28867] [A] 20/100 done (last=159.2ms, status=200, ticks=10800)
+[2026-08-17T17:05:28.080Z] [pid 28867] [A] 40/100 done (last=173.3ms, status=200, ticks=10800)
+[2026-08-17T17:05:31.879Z] [pid 28867] [A] 60/100 done (last=184.4ms, status=200, ticks=10800)
+[2026-08-17T17:05:35.551Z] [pid 28867] [A] 80/100 done (last=180.8ms, status=200, ticks=10800)
+[2026-08-17T17:05:39.346Z] [pid 28867] [A] 100/100 done (last=192.1ms, status=200, ticks=10800)
+[2026-08-17T17:05:39.347Z] [pid 28867] [A] p99=297.36ms mean=186.22ms min=121.99ms max=310.95ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-17T17:05:39.348Z] [pid 28867] [Bsuccess] warmup (10 requests, serial)...
+[2026-08-17T17:05:50.758Z] [pid 28867] [Bsuccess] measuring (100 requests, serial)...
+[2026-08-17T17:06:13.281Z] [pid 28867] [Bsuccess] 20/100 done (last=1100.9ms, status=200, ticks=10800)
+[2026-08-17T17:06:35.770Z] [pid 28867] [Bsuccess] 40/100 done (last=1122.3ms, status=200, ticks=10800)
+[2026-08-17T17:06:58.467Z] [pid 28867] [Bsuccess] 60/100 done (last=1157.8ms, status=200, ticks=10800)
+[2026-08-17T17:07:20.792Z] [pid 28867] [Bsuccess] 80/100 done (last=1114.6ms, status=200, ticks=10800)
+[2026-08-17T17:07:43.771Z] [pid 28867] [Bsuccess] 100/100 done (last=1268.3ms, status=200, ticks=10800)
+[2026-08-17T17:07:43.774Z] [pid 28867] [Bsuccess] p99=1321.45ms mean=1129.69ms min=1023.57ms max=1368.43ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-17T17:07:43.789Z] [pid 28867] [Brejected] warmup (10 requests, serial)...
+[2026-08-17T17:07:54.425Z] [pid 28867] [Brejected] measuring (100 requests, serial)...
+[2026-08-17T17:08:15.420Z] [pid 28867] [Brejected] 20/100 done (last=1014.9ms, status=422, ticks=-1)
+[2026-08-17T17:08:36.286Z] [pid 28867] [Brejected] 40/100 done (last=966.3ms, status=422, ticks=-1)
+[2026-08-17T17:08:57.534Z] [pid 28867] [Brejected] 60/100 done (last=1066.0ms, status=422, ticks=-1)
+[2026-08-17T17:09:18.575Z] [pid 28867] [Brejected] 80/100 done (last=1052.9ms, status=422, ticks=-1)
+[2026-08-17T17:09:39.897Z] [pid 28867] [Brejected] 100/100 done (last=1010.7ms, status=422, ticks=-1)
+[2026-08-17T17:09:39.898Z] [pid 28867] [Brejected] p99=1174.85ms mean=1054.40ms min=966.25ms max=1199.17ms outcomes=status=422 accepted=false ticks=-1 error=max-verified-claims-exceeded
+[2026-08-17T17:09:39.898Z] [pid 28867] [Realistic] warmup (10 requests, serial)...
+[2026-08-17T17:09:40.107Z] [pid 28867] [Realistic] measuring (100 requests, serial)...
+[2026-08-17T17:09:40.457Z] [pid 28867] [Realistic] 20/100 done (last=39.6ms, status=200, ticks=3581)
+[2026-08-17T17:09:40.796Z] [pid 28867] [Realistic] 40/100 done (last=10.7ms, status=200, ticks=3581)
+[2026-08-17T17:09:41.117Z] [pid 28867] [Realistic] 60/100 done (last=43.8ms, status=200, ticks=3581)
+[2026-08-17T17:09:41.432Z] [pid 28867] [Realistic] 80/100 done (last=26.4ms, status=200, ticks=3581)
+[2026-08-17T17:09:41.761Z] [pid 28867] [Realistic] 100/100 done (last=10.2ms, status=200, ticks=3581)
+[2026-08-17T17:09:41.761Z] [pid 28867] [Realistic] p99=66.44ms mean=16.36ms min=8.05ms max=75.73ms outcomes=status=200 accepted=true ticks=3581
+[2026-08-17T17:09:41.763Z] [pid 28867] DONE combined p99 = 297.36 + max(1321.45, 1174.85) = 1618.81ms vs 1000ms -> FAIL
+[2026-08-17T17:09:41.763Z] [pid 28867] suggested cpu_ms = 4000
+[2026-08-17T17:09:41.763Z] [pid 28867] wrote post-cpu-2026-08-17T17-05-16-306Z.json and post-cpu-2026-08-17T17-05-16-306Z-summary.json
