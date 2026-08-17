@@ -35,3 +35,19 @@ id = "6c911969b6e94e5d90ea71ca6ab529dd"
 binding = "DB"
 database_name = "qixxx-scores"
 database_id = "00000000-0000-0000-0000-000000000000"
+
+# CPU time ceiling (docs/plans/2026-08-16-score-ranking task 3: "ローカル
+# workerd の CPU 上限を 2 秒程度に拡張すること"). This is a *production*
+# Workers Paid-plan setting (max 300000, default 30000 when unset) that only
+# takes effect on Cloudflare's edge under a Paid plan/contract — see task 7's
+# stop point, which this round has not yet reached, so it deliberately has
+# no real-deploy effect yet. Locally, `wrangler pages dev`'s Miniflare/
+# workerd simulation does not enforce Free's 10ms request CPU cap at all
+# (confirmed empirically: task 1's spike endpoint completed local requests
+# up to ~300ms wall-clock with zero `exceededCpu` outcomes, unlike the real
+# temp Worker task 1 deployed to actually observe the Free-tier cutoff) —
+# so this key is set here for forward documentation/consistency with the
+# eventual real deploy's limit (task 7: "実測 p99 の2倍程度"), not because
+# local dev needs it to let task 6's full-execution measurement complete.
+[limits]
+cpu_ms = 2000
