@@ -11,6 +11,7 @@ import { verifyReplay } from '../_lib/ranking/verifyReplay';
 import { computeReplayHash } from '../_lib/ranking/hash';
 import { validateName, validateXHandle } from '../_lib/ranking/nameValidation';
 import { validateSeed } from '../_lib/ranking/seedValidation';
+import { resolveBenchHooks } from '../_lib/ranking/benchHooks';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
 import type { ScoreSubmission } from '../_lib/ranking/types';
@@ -189,7 +190,10 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   // 2. Server-side resimulation (docs/plans/2026-08-16-score-ranking task 3:
   // "verifyReplay() によるサーバー側の再シミュレーションで、スコア・ステー
   // ジ・duration_ticks を導出する").
-  const verified = verifyReplay(seed, rle);
+  // resolveBenchHooks() returns undefined for every production env — the CPU
+  // harness is the only thing that can arm it, and only in-process. See
+  // functions/_lib/ranking/benchHooks.ts.
+  const verified = verifyReplay(seed, rle, resolveBenchHooks(env));
   if (!verified.ok) {
     return jsonResponse({ error: verified.reason, accepted: false }, 422);
   }

@@ -12,6 +12,7 @@
 import { simulateReplayFromRle, ReplayResult } from '../../../src/core/replayEngine';
 import { GameOverReason } from '../../../src/core/session';
 import { TIME_LIMIT_TICKS, MAX_VERIFIED_CLAIMS } from '../../../src/config';
+import type { BenchVerifyHooks } from './benchHooks';
 
 export type VerifyReplayRejectionReason =
   | 'malformed-replay'
@@ -57,11 +58,16 @@ export type VerifyReplayResult = VerifyReplayOk | VerifyReplayRejected;
  * already has everything it needs to make on its own, before ever paying for
  * a resimulation.
  */
-export function verifyReplay(seed: number, rle: Uint8Array): VerifyReplayResult {
+export function verifyReplay(seed: number, rle: Uint8Array, benchHooks?: BenchVerifyHooks): VerifyReplayResult {
   let result: ReplayResult;
   try {
     result = simulateReplayFromRle(seed, rle, {
       onTick: ({ totalClaimsSoFar }) => totalClaimsSoFar > MAX_VERIFIED_CLAIMS,
+      // Always undefined in production — see benchHooks.ts for the two locks
+      // (a flag AND a live function on env, which no remote caller can set).
+      // Present only so the CPU harness can measure the real handler instead
+      // of a reimplementation of it.
+      gameFactory: benchHooks?.gameFactory,
     });
   } catch {
     return { ok: false, reason: 'malformed-replay' };
