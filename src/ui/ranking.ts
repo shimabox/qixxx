@@ -57,6 +57,19 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * Stops keydown/keyup from bubbling past this element to `window` — where
+ * KeyboardInput (src/input/keyboard.ts) listens for gameplay input and the
+ * GAME OVER/Title/StageClear screens' edge-triggered "any key" confirm.
+ * Without this, typing into a text field would both leak keystrokes into
+ * the game's move/draw state and (worse) fire that "any key" confirm on
+ * every character, instantly dismissing whatever screen the field is on.
+ */
+function stopKeyPropagation(el: HTMLElement): void {
+  el.addEventListener('keydown', (e) => e.stopPropagation());
+  el.addEventListener('keyup', (e) => e.stopPropagation());
+}
+
 function styledOverlay(): HTMLDivElement {
   const el = document.createElement('div');
   el.style.position = 'absolute';
@@ -269,6 +282,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   nameInput.style.fontSize = '0.8em';
   nameInput.style.padding = '4px 8px';
   nameInput.style.width = '180px';
+  // Without this, every keystroke bubbles up to KeyboardInput's
+  // window-level listener (src/input/keyboard.ts), whose edge-triggered
+  // "any key" pulse is exactly what dismisses the GAME OVER screen back to
+  // Title — typing a single letter would silently discard this whole
+  // submission form before SUBMIT could ever be clicked.
+  stopKeyPropagation(nameInput);
   submitOverlay.appendChild(nameInput);
 
   const handleRow = document.createElement('label');
@@ -293,6 +312,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleInput.style.padding = '4px 8px';
   handleInput.style.width = '180px';
   handleInput.style.display = 'none';
+  stopKeyPropagation(handleInput); // see nameInput's own comment above
   submitOverlay.appendChild(handleInput);
   handleCheckbox.addEventListener('change', () => {
     handleInput.style.display = handleCheckbox.checked ? 'block' : 'none';
