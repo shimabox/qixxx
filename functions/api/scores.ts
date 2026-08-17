@@ -10,6 +10,7 @@ import { generateShareId } from '../_lib/shareId';
 import { verifyReplay } from '../_lib/ranking/verifyReplay';
 import { computeReplayHash } from '../_lib/ranking/hash';
 import { validateName, validateXHandle } from '../_lib/ranking/nameValidation';
+import { validateSeed } from '../_lib/ranking/seedValidation';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
 import type { ScoreSubmission } from '../_lib/ranking/types';
@@ -81,9 +82,16 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
   const submission = body as Partial<ScoreSubmission>;
 
-  if (typeof submission.seed !== 'number' || !Number.isFinite(submission.seed)) {
-    return jsonResponse({ error: 'seed must be a number' }, 400);
+  // A uint32 check, not merely "a finite number" — the client's only seed
+  // source is crypto.getRandomValues(new Uint32Array(1)) (src/main.ts's
+  // generateNormalRunSeed()), so anything else was never a real run's seed.
+  // See seedValidation.ts's module comment.
+  const seedResult = validateSeed(submission.seed);
+  if (!seedResult.ok) {
+    return jsonResponse({ error: seedResult.reason }, 400);
   }
+  const seed = seedResult.value;
+
   if (typeof submission.rleBase64 !== 'string' || submission.rleBase64.length === 0) {
     return jsonResponse({ error: 'rleBase64 must be a non-empty string' }, 400);
   }
@@ -120,7 +128,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   // 2. Server-side resimulation (docs/plans/2026-08-16-score-ranking task 3:
   // "verifyReplay() によるサーバー側の再シミュレーションで、スコア・ステー
   // ジ・duration_ticks を導出する").
-  const verified = verifyReplay(submission.seed, rle);
+  const verified = verifyReplay(seed, rle);
   if (!verified.ok) {
     return jsonResponse({ error: verified.reason, accepted: false }, 422);
   }
@@ -128,7 +136,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const replayHash = await computeReplayHash({
     seasonId: CURRENT_SEASON_ID,
     rulesetVersion: RULESET_VERSION,
-    seed: submission.seed,
+    seed,
     rle,
   });
 
@@ -156,7 +164,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
         verified.stage,
         nameResult.value,
         xHandleResult.value,
-        submission.seed,
+        seed,
         rle,
         verified.durationTicks,
         replayHash,
