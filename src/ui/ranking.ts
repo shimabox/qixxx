@@ -272,12 +272,22 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listOverlay.appendChild(listCloseButton);
   anchor.appendChild(listOverlay);
 
+  // Bumped on every change to the browsing context (the list opening or
+  // closing). A network request issued while browsing captures this value and
+  // re-checks it on arrival, so a reply that belongs to a browsing session the
+  // player has since left is discarded rather than acted on — browsingAllowed()
+  // alone can't catch that, since "still on Title with a list open" reads
+  // identical before and after a close/reopen.
+  let browsingGeneration = 0;
+
   function hideList(): void {
     listOverlay.style.display = 'none';
+    browsingGeneration++;
   }
 
   async function showList(): Promise<void> {
     if (!browsingAllowed()) return;
+    browsingGeneration++;
     listBody.textContent = '';
     const loading = document.createElement('div');
     loading.textContent = 'LOADING...';
@@ -367,17 +377,36 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   }
 
   async function startReplayFor(id: string): Promise<void> {
-    if (!browsingAllowed()) return; // see browsingAllowed()'s comment: replay viewing is a Title-screen-only affordance
-    let payload: ReplayPayload;
+    // Checked here AND again once the response lands. The pre-check alone is
+    // not enough: the fetch is an await, and the Title screen's "press any
+    // key to start" confirm still fires underneath it, so a player who
+    // clicks REPLAY and immediately starts a run would otherwise be dropped
+    // into replay mode mid-run on arrival — which suspends the live session
+    // entirely (main.ts's update() early-returns in replay mode), restoring
+    // exactly the pause exploit the Title-only gate exists to remove.
+    if (!browsingAllowed()) return;
+    const requestGeneration = browsingGeneration;
+
+    let payload: ReplayPayload | null = null;
+    let gone = false;
     try {
       const res = await fetch(`/api/ranking/${encodeURIComponent(id)}/replay`);
-      if (res.status === 410) {
-        showTransientMessage('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.');
-        return;
-      }
-      if (!res.ok) throw new Error(`replay fetch failed: ${res.status}`);
-      payload = (await res.json()) as ReplayPayload;
+      gone = res.status === 410;
+      if (res.ok) payload = (await res.json()) as ReplayPayload;
     } catch {
+      payload = null;
+    }
+
+    // Nothing above this line may touch the UI. A response that outlived its
+    // browsing session is dropped silently — including the error/410
+    // messages, which would otherwise pop an overlay over a live run.
+    if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
+
+    if (gone) {
+      showTransientMessage('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.');
+      return;
+    }
+    if (!payload) {
       showTransientMessage('FAILED TO LOAD REPLAY.');
       return;
     }
@@ -483,9 +512,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // score. Cleared by hideAll()/SKIP, replaced by the next gameover.
   let activeSubmission: RunSubmissionSnapshot | null = null;
 
-  let submitting = false;
+  // The snapshot whose POST is currently in flight — deliberately not a bare
+  // `submitting` boolean. A boolean is shared across runs: run A's in-flight
+  // POST would keep run B's SUBMIT button inert (`if (submitting) return`)
+  // long after run A's form was replaced. Keyed by snapshot, "already
+  // submitting" can only ever block the run it actually belongs to.
+  let submittingFor: RunSubmissionSnapshot | null = null;
   postButton.addEventListener('click', () => {
-    if (submitting) return;
+    if (submittingFor !== null && submittingFor === activeSubmission) return;
     void submitScore();
   });
 
@@ -510,9 +544,20 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       return;
     }
 
-    submitting = true;
+    submittingFor = snapshot;
     postButton.disabled = true;
     submitStatus.textContent = 'SUBMITTING...';
+
+    /**
+     * True once this POST's reply no longer belongs to whatever the form is
+     * currently showing. submitStatus/postButton/skipButton are a single
+     * shared form reused by every run, so writing run A's outcome into them
+     * after run B's offer has taken over would both lie about run B and (via
+     * the SUBMIT button's own disabled/hidden state) lock the player out of
+     * submitting it. Identity, not runId: a new run always gets a fresh
+     * snapshot object, making this the strictly stronger check of the two.
+     */
+    const responseIsStale = (): boolean => activeSubmission !== snapshot;
 
     try {
       const res = await fetch('/api/scores', {
@@ -528,6 +573,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         }),
       });
       const data = (await res.json()) as { accepted: boolean; rank: number | null; error?: string };
+      if (responseIsStale()) return;
       if (!res.ok && res.status !== 422 && res.status !== 409) {
         throw new Error(data.error ?? `unexpected status ${res.status}`);
       }
@@ -539,10 +585,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       postButton.style.display = 'none';
       skipButton.textContent = 'OK';
     } catch {
+      if (responseIsStale()) return;
       submitStatus.textContent = 'SUBMIT FAILED — YOU CAN TRY AGAIN.';
       postButton.disabled = false;
     } finally {
-      submitting = false;
+      // Only release the in-flight marker if it is still ours: a newer
+      // submission may already have claimed it.
+      if (submittingFor === snapshot) submittingFor = null;
     }
   }
 

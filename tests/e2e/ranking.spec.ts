@@ -18,6 +18,7 @@ declare global {
       session: {
         getStatus: () => 'title' | 'playing' | 'stageclear' | 'gameover';
         getScore: () => number;
+        getTotalTicks: () => number;
         getGame: () => {
           getGraceTicks: () => number;
           getMarker: () => { isDrawing: () => boolean };
@@ -285,6 +286,47 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
     await expect(page.getByText('X handles are self-reported')).toBeHidden();
     await expect(page.getByRole('button', { name: 'REPLAY' })).toBeHidden();
   });
+
+  test('a replay response that lands after the player has started a run does not hijack the live game', async ({ page }) => {
+    // The gate has to hold across startReplayFor()'s own await, not just at
+    // click time: the Title "press any key" confirm still fires while the
+    // replay request is outstanding, so a late response could otherwise drop
+    // a live run into replay mode — which suspends the session entirely and
+    // hands back the pause the Title-only gate exists to remove.
+    const rleBase64 = recordShortReplay(2026, 4);
+    await mockRanking(page, [
+      { id: 'slow', createdAt: '2026-01-01T12:00:00Z', score: 42, stage: 1, name: 'SLOW', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: 2026, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    // Start a run while the replay request is still in flight.
+    await page.keyboard.press('Space');
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+
+    await page.waitForTimeout(4500); // let the stale replay response land
+
+    // No replay viewer, and — the part that actually matters — the live run
+    // is still being ticked, i.e. never got suspended.
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
+    expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+    const ticksBefore = await page.evaluate(() => window.__game__!.session.getTotalTicks());
+    await expect
+      .poll(() => page.evaluate(() => window.__game__!.session.getTotalTicks()))
+      .toBeGreaterThan(ticksBefore);
+  });
 });
 
 test.describe('name-input submission flow', () => {
@@ -382,6 +424,77 @@ test.describe('name-input submission flow', () => {
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     await expect(page.getByPlaceholder('NAME')).toBeHidden();
     expect(scoresPostCount).toBe(0);
+  });
+
+  test("run A's slow POST response cannot clobber run B's form or lock its SUBMIT", async ({ page }) => {
+    // submitStatus / SUBMIT / SKIP are a single form reused by every run. If
+    // run A's reply is applied after run B's offer has taken over, it both
+    // reports A's outcome as if it were B's and — by hiding/disabling SUBMIT
+    // — leaves B unsubmittable. (The in-flight marker used to be a shared
+    // boolean, which locked B's button out on its own.)
+    let posts = 0;
+    let resolveFirstPost: (() => void) | null = null;
+    const firstPostReceived = new Promise<void>((resolve) => {
+      resolveFirstPost = resolve;
+    });
+    let releaseFirstPost: (() => void) | null = null;
+    const firstPostReleased = new Promise<void>((resolve) => {
+      releaseFirstPost = resolve;
+    });
+
+    await mockRanking(page, []); // empty board: every run is provisionally in range
+    await page.route('**/api/scores', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      posts++;
+      if (posts === 1) {
+        resolveFirstPost!();
+        await firstPostReleased; // held open across the whole of run B
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ accepted: true, rank: 1 }),
+        });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, rank: 2 }) });
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+
+    // --- Run A: reach gameover, submit, leave the POST hanging ---
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await page.getByPlaceholder('NAME').fill('RUN-A');
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await firstPostReceived;
+    await expect(page.getByText('SUBMITTING...')).toBeVisible();
+
+    // --- Run B: back to Title, play again, get a fresh offer ---
+    await page.keyboard.press('Space');
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+
+    const nameInput = page.getByPlaceholder('NAME');
+    const submitButton = page.getByRole('button', { name: 'SUBMIT' });
+    await expect(nameInput).toHaveValue(''); // a fresh form, not run A's
+    await expect(submitButton).toBeVisible();
+    await expect(submitButton).toBeEnabled();
+
+    // --- Run A's response finally lands, mid-run-B-form ---
+    releaseFirstPost!();
+    await page.waitForTimeout(1500);
+
+    // Run B's form is untouched: no "RANKED #1!" from run A leaked into it.
+    await expect(page.getByText('RANKED #1!')).toBeHidden();
+    await expect(submitButton).toBeVisible();
+    await expect(submitButton).toBeEnabled();
+
+    // And run B is still genuinely submittable.
+    await nameInput.fill('RUN-B');
+    await submitButton.click();
+    await expect(page.getByText('RANKED #2!')).toBeVisible();
+    expect(posts).toBe(2);
   });
 
   test('a provisional-rank response that lands after the player has left GAME OVER never reopens the form', async ({ page }) => {
