@@ -102,17 +102,39 @@
 
 名前・X ハンドルはユーザー入力なので、不適切な投稿は手で消す。
 
-**まず対象を特定する**(消す前に必ず中身を見る):
+**手順0: 現行のシーズンとルール版を確認する**
+
+下の SELECT は現行ランキングだけを見るために両方の値で絞る。
+**ハードコードせず、毎回ソースを見て置き換えること** — シーズンを切り替えた後に
+古い値のまま実行すると、**旧シーズンのランキングを表示して的外れな行を消しかねない**。
+
+| 値 | 参照するファイル | 定数 |
+| --- | --- | --- |
+| `<CURRENT_SEASON_ID>` | `functions/_lib/ranking/season.ts` | `CURRENT_SEASON_ID` |
+| `<RULESET_VERSION>` | `src/config.ts` | `RULESET_VERSION` |
+
+```sh
+grep -n 'CURRENT_SEASON_ID' functions/_lib/ranking/season.ts
+grep -n 'RULESET_VERSION' src/config.ts
+```
+
+**手順1: 対象を特定する**(消す前に必ず中身を見る)
+
+以下の `<CURRENT_SEASON_ID>` / `<RULESET_VERSION>` は手順0の実際の値に置き換える。
 
 ```sh
 npx wrangler d1 execute qixxx-scores --remote --command \
   "SELECT rank_seq, id, score, stage, name, x_handle, datetime(created_at/1000,'unixepoch') AS created
    FROM scores
-   WHERE season_id = 1 AND ruleset_version = 1
+   WHERE season_id = <CURRENT_SEASON_ID> AND ruleset_version = <RULESET_VERSION>
    ORDER BY score DESC, rank_seq ASC LIMIT 10;"
 ```
 
-**1件削除**(公開 ID 指定。`rank_seq` ではなく `id` を使う — 公開 API が返すのは `id`):
+現行ランキングが空に見えたら、まず**置き換えた値が正しいか**を疑うこと
+(シーズンを繰り上げた直後は、実際に空になっているのが正常でもある)。
+
+**手順2: 1件削除**(公開 ID 指定。`rank_seq` ではなく `id` を使う — 公開 API が返すのは `id`。
+`id` はシーズンに関係なく一意なので、こちらは絞り込み不要):
 
 ```sh
 npx wrangler d1 execute qixxx-scores --remote --command \
