@@ -356,14 +356,17 @@ export class ReplayEngine {
     // to the final stage of a long replay can be most of a 10800-tick
     // resimulation, and doing it in one synchronous burst froze the page.
     //
-    // The stage condition is not redundant with the tick one. A stage
-    // boundary's startTick is the tick count at which the *previous* stage
-    // ended, and stepTick() only auto-confirms the pending StageClear on its
-    // next call — so stopping the instant totalTicks reaches targetTick can
-    // leave the viewer looking at the previous stage's finished board rather
-    // than the final stage this method promises.
-    while (!this.isFinished() && (this.session.getTotalTicks() < targetTick || this.session.getStage() < targetStage)) {
-      this.stepTick();
+    // Settling pending StageClears separately from stepTick() is what makes
+    // the landing exact. A boundary's startTick is the tick count at which
+    // the previous stage ended, and stepTick() confirms the pending
+    // StageClear *and* consumes the next input in the same call — so using it
+    // to pick up the transition would overshoot to targetTick + 1. Confirming
+    // on its own costs no ticks (getTotalTicks() counts only 'playing'
+    // ticks), leaving the session exactly at targetTick, on targetStage.
+    while (!this.isFinished()) {
+      this.settlePendingStageClear();
+      if (this.session.getTotalTicks() >= targetTick && this.session.getStage() >= targetStage) break;
+      if (!this.stepTick()) break;
       this.session.drainEvents();
       this.session.drainDespawnedEmberPositions();
       if (++sinceYield >= chunkTicks) {
@@ -376,6 +379,24 @@ export class ReplayEngine {
         // about to be discarded.
         if (signal?.aborted) throw new ReplayAbortedError();
       }
+    }
+  }
+
+  /**
+   * Confirms through any pending StageClear WITHOUT consuming a recorded
+   * input, so the stage advances at zero tick cost.
+   *
+   * Only 'stageclear' is confirmed: 'title' is already behind us (the
+   * constructor confirms it), and confirming 'gameover' would reset the whole
+   * run back to Title — the one transition a replay viewer must never make.
+   */
+  private settlePendingStageClear(): void {
+    let guard = 0;
+    while (this.session.getStatus() === 'stageclear') {
+      this.session.update(CONFIRM);
+      this.session.drainEvents();
+      this.session.drainDespawnedEmberPositions();
+      if (++guard > 10) throw new Error('replay: stuck confirming a StageClear');
     }
   }
 }

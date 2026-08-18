@@ -301,7 +301,10 @@ describe('ReplayEngine (viewing mode)', () => {
     expect(boundaries.length).toBeGreaterThan(1);
     expect(finalBoundary.startTick).toBeGreaterThan(0);
     await engine.skipToFinalStage({ yieldToEventLoop: () => Promise.resolve() });
-    expect(engine.getSession().getTotalTicks()).toBeGreaterThanOrEqual(finalBoundary.startTick);
+    // EXACTLY the boundary tick, not "at least" it: stepTick() confirms a
+    // pending StageClear and consumes the next input together, so a skip that
+    // leans on it to pick up the transition lands one tick late.
+    expect(engine.getSession().getTotalTicks()).toBe(finalBoundary.startTick);
     expect(engine.getSession().getStage()).toBe(engine.getResult().stageBoundaries[engine.getResult().stageBoundaries.length - 1].stage);
   });
 });
