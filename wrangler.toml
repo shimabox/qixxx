@@ -48,16 +48,17 @@ database_id = "00000000-0000-0000-0000-000000000000"
 #
 # How 4000 was reached: ~2x the measured worst-case combination, per the plan's
 # "実測 p99 の2倍程度" guidance. From §4.3 (single-process, strictly serial,
-# 2026-08-17, exercising the WHOLE onRequestPost path, every request asserted
-# against its series' expected status/accepted/tick count): p99(A) 251.49ms +
-# max(B-success 1,278.43ms, B-rejected 1,169.19ms) = 1,529.92ms, doubled and
-# rounded up.
+# 2026-08-18, exercising the WHOLE onRequestPost path, every request asserted
+# against its series' expected status/accepted/tick count, and fixture A's
+# enemy parameters cross-checked field by field against getStageConfig(10)):
+# p99(A) 330.59ms + max(B-success 1,477.62ms, B-rejected 1,368.02ms)
+# = 1,808.21ms, doubled and rounded up.
 #
 # Why it is only provisional: the benchmark is Node in-process wall-clock, on
 # this hardware, with D1 and KV mocked out entirely (so no database or KV I/O
 # is included at all) — three separate reasons it is not the metered figure.
 # Note also how far it sits above realistic traffic: an ordinary run completes
-# the whole request in 46.61ms p99, ~85x under this ceiling. Deliberately
+# the whole request in 60.40ms p99, ~66x under this ceiling. Deliberately
 # generous rather than tight: the failure mode of "too low" is rejecting real
 # players' runs.
 #

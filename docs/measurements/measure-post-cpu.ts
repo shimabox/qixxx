@@ -85,6 +85,37 @@ function nearestRankP99(values: number[]): number {
   return sorted[Math.min(sorted.length, Math.ceil(0.99 * sorted.length)) - 1];
 }
 
+/**
+ * Every load-bearing parameter the bench board is built from, recorded so it
+ * can be cross-checked against getStageConfig(BENCH_STAGE) field by field.
+ *
+ * This exists because the same class of defect has now been found three
+ * times: a fixture that looked like "max load" but silently wasn't (enemies
+ * at stage-1 speed, embers that never branch-chase, a marker that died after
+ * 715 ticks). Recording what was actually applied — and asserting it against
+ * the real StageConfig rather than eyeballing the constructor calls — is the
+ * only way this stops recurring.
+ */
+interface AppliedEnemyParams {
+  wispCount: number;
+  wispSpeedMultiplier: number;
+  emberCount: number;
+  emberMoveTicks: number;
+  emberBranchChaseProbability: number;
+  emberSpawnIntervalTicks: number;
+  maxConcurrentEmbers: number;
+  requiredOccupancy: number;
+}
+
+let lastAppliedParams: AppliedEnemyParams | null = null;
+
+/**
+ * `neutralized` keeps the enemy OBJECTS present (so claim processing still
+ * pays to enumerate them and re-test despawns) while zeroing their movement —
+ * what fixture B needs to isolate claim cost. Fixture A passes false and must
+ * therefore get the genuine stage-10 numbers, speed multiplier and
+ * branch-chase probability included.
+ */
 function makeBenchGameFactory(neutralized: boolean): NonNullable<SessionOptions['gameFactory']> {
   return (_stage, carry) => {
     const config = getStageConfig(BENCH_STAGE);
@@ -92,12 +123,20 @@ function makeBenchGameFactory(neutralized: boolean): NonNullable<SessionOptions[
     const markerStart = { x: Math.floor(field.getWidth() / 2), y: 0 };
     const rng: Rng = mulberry32(RNG_SEED);
 
+    // Taken from StageConfig, never hardcoded: stage 10 is x5.0 Wisp speed
+    // and 1.0 branch-chase, and a faster Wisp costs more per tick (more
+    // movement sub-steps and more collision work), which is exactly the load
+    // fixture A is supposed to represent.
+    const wispSpeedMultiplier = neutralized ? 0 : config.wispSpeedMultiplier;
+    const emberMoveTicks = neutralized ? 1_000_000 : config.emberMoveTicks;
+    const emberBranchChaseProbability = neutralized ? 0 : config.emberBranchChaseProbability;
+
     const cx = Math.floor(field.getWidth() / 2);
     const cy = Math.floor(field.getHeight() / 2);
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
       const x = cx + Math.round((i - (config.wispCount - 1) / 2) * 3);
-      wisps.push(new Wisp({ x, y: cy }, rng, undefined, neutralized ? 0 : 1));
+      wisps.push(new Wisp({ x, y: cy }, rng, undefined, wispSpeedMultiplier));
     }
 
     const embers: Ember[] = [];
@@ -105,15 +144,26 @@ function makeBenchGameFactory(neutralized: boolean): NonNullable<SessionOptions[
       const onRight = i % 2 === 1;
       const start = { x: onRight ? field.getWidth() - 1 : 0, y: 0 };
       const heading: Heading = onRight ? { dx: -1, dy: 0 } : { dx: 1, dy: 0 };
-      embers.push(new Ember(start, heading, rng, neutralized ? 1_000_000 : config.emberMoveTicks, 0, false));
+      embers.push(new Ember(start, heading, rng, emberMoveTicks, emberBranchChaseProbability, false));
     }
+
+    lastAppliedParams = {
+      wispCount: wisps.length,
+      wispSpeedMultiplier,
+      emberCount: embers.length,
+      emberMoveTicks,
+      emberBranchChaseProbability,
+      emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
+      maxConcurrentEmbers: config.maxConcurrentEmbers,
+      requiredOccupancy: config.requiredOccupancy,
+    };
 
     const options: GameOptions = {
       wisps,
       embers,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
-      emberMoveTicks: config.emberMoveTicks,
-      emberBranchChaseProbability: neutralized ? 0 : config.emberBranchChaseProbability,
+      emberMoveTicks,
+      emberBranchChaseProbability,
       maxConcurrentEmbers: config.maxConcurrentEmbers,
       requiredOccupancy: config.requiredOccupancy,
       score: carry.score,
@@ -124,8 +174,37 @@ function makeBenchGameFactory(neutralized: boolean): NonNullable<SessionOptions[
   };
 }
 
-/** Fixture A: enemies at their ceiling and moving, marker surviving all 10800 ticks to a clean TIME UP. */
-function buildFixtureA(): { rle: Uint8Array; ticks: number; reason: string | null } {
+/**
+ * Fails the whole measurement unless fixture A's board really was built with
+ * stage-10 load everywhere. Compares field by field against the live
+ * StageConfig rather than against copied literals, so a future StageConfig
+ * change can't leave this silently checking stale numbers.
+ */
+function assertMaxLoadParams(applied: AppliedEnemyParams | null): AppliedEnemyParams {
+  if (applied === null) throw new Error('fixture A: no bench board was ever constructed');
+  const config = getStageConfig(BENCH_STAGE);
+  const expected: AppliedEnemyParams = {
+    wispCount: config.wispCount,
+    wispSpeedMultiplier: config.wispSpeedMultiplier,
+    emberCount: config.maxConcurrentEmbers,
+    emberMoveTicks: config.emberMoveTicks,
+    emberBranchChaseProbability: config.emberBranchChaseProbability,
+    emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
+    maxConcurrentEmbers: config.maxConcurrentEmbers,
+    requiredOccupancy: config.requiredOccupancy,
+  };
+  const mismatches = (Object.keys(expected) as (keyof AppliedEnemyParams)[])
+    .filter((key) => applied[key] !== expected[key])
+    .map((key) => `${key}: applied ${applied[key]} != StageConfig(${BENCH_STAGE}) ${expected[key]}`);
+  if (mismatches.length > 0) {
+    throw new Error(`fixture A is not at max enemy load: ${mismatches.join('; ')}`);
+  }
+  return applied;
+}
+
+/** Fixture A: enemies at their ceiling and moving (stage-10 speed and branch-chase included), marker surviving all 10800 ticks to a clean TIME UP. */
+function buildFixtureA(): { rle: Uint8Array; ticks: number; reason: string | null; params: AppliedEnemyParams } {
+  lastAppliedParams = null;
   const session = new GameSession({ gameFactory: makeBenchGameFactory(false) });
   session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
   const samples: InputSample[] = [];
@@ -137,7 +216,10 @@ function buildFixtureA(): { rle: Uint8Array; ticks: number; reason: string | nul
     session.drainDespawnedEmberPositions();
     samples.push(s);
   }
-  return { rle: encodeRle(samples), ticks: session.getTotalTicks(), reason: session.getGameOverReason() };
+  // Checked here, at build time, so a mis-parameterized board can never reach
+  // the measurement loop at all.
+  const params = assertMaxLoadParams(lastAppliedParams);
+  return { rle: encodeRle(samples), ticks: session.getTotalTicks(), reason: session.getGameOverReason(), params };
 }
 
 /** Fixture B: enemies present but neutralized, heavy topology, exactly `targetClaims` claims via real Game.update(). */
@@ -367,6 +449,7 @@ async function main(): Promise<void> {
     progress(
       `fixtures: A ticks=${a.ticks} reason=${a.reason} | Bsuccess ticks=${b100.ticks} claims=${b100.claims} | Brejected claims=${b101.claims} | Realistic ticks=${r.ticks}`
     );
+    progress(`fixture A enemy params (all cross-checked against StageConfig(${BENCH_STAGE})): ${JSON.stringify(a.params)}`);
 
     // Acceptance criteria for the fixtures themselves — the check missed last
     // time, when fixture A silently died after 715 ticks and its p99 was
@@ -426,6 +509,9 @@ async function main(): Promise<void> {
       fixtureAcceptance: {
         aDurationTicks: a.ticks,
         aGameOverReason: a.reason,
+        aEnemyParams: a.params,
+        aEnemyParamsSource: `getStageConfig(${BENCH_STAGE})`,
+        stageConfigAtBenchStage: getStageConfig(BENCH_STAGE),
         bSuccessDurationTicks: b100.ticks,
         bSuccessClaims: b100.claims,
         bRejectedClaims: b101.claims,
