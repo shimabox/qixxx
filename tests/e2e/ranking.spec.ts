@@ -42,13 +42,23 @@ interface RankingEntry {
   replayAvailable: boolean;
 }
 
-async function mockRanking(page: Page, entries: RankingEntry[]): Promise<void> {
+interface PendingRankingEntry {
+  id: string;
+  createdAt: string;
+  score: number;
+  stage: number;
+  name: string;
+  xHandle: string | null;
+  unverified: true;
+}
+
+async function mockRanking(page: Page, entries: RankingEntry[], pendingEntries: PendingRankingEntry[] = []): Promise<void> {
   await page.route('**/api/ranking', (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries }),
+      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries, pendingEntries }),
     });
   });
 }
@@ -293,6 +303,48 @@ test.describe('ranking display', () => {
     await expect(replayButtons.nth(2)).toBeDisabled(); // entry 'c': replayAvailable: false
     await expect(replayButtons.nth(0)).toBeEnabled();
   });
+
+  // docs/plans/2026-08-19-ranking-free-async spec item 5: pendingEntries
+  // renders as an unranked section ABOVE the confirmed board — never merged
+  // into it, no rank number, no REPLAY button (the server itself refuses to
+  // serve a pending row's replay regardless of what the UI does or doesn't
+  // offer — see functions/api/ranking/[id]/replay.ts's status='verified'
+  // requirement, covered separately by its own unit tests).
+  test('renders pendingEntries as an unranked "PENDING VERIFICATION" section above the confirmed TOP10, never affecting its ranks/order', async ({ page }) => {
+    const entries: RankingEntry[] = [
+      { id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'CONFIRMED1', xHandle: null, replayAvailable: true },
+      { id: 'v2', createdAt: '2026-01-03T12:00:00Z', score: 800, stage: 2, name: 'CONFIRMED2', xHandle: null, replayAvailable: true },
+    ];
+    const pendingEntries: PendingRankingEntry[] = [
+      { id: 'p1', createdAt: '2026-01-04T12:00:00Z', score: 950, stage: 5, name: 'PENDING1', xHandle: null, unverified: true },
+    ];
+    await mockRanking(page, entries, pendingEntries);
+    await page.goto(APP_URL);
+
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('PENDING VERIFICATION')).toBeVisible();
+    // The pending row's score/stage/name appear, but with NO rank number
+    // (unlike '#1 900 STAGE 3 CONFIRMED1' below) and a PENDING badge instead
+    // of a REPLAY button.
+    await expect(page.getByText('950  STAGE 5')).toBeVisible();
+    await expect(page.getByText('#1  950')).toHaveCount(0); // never assigned a rank, even though it outscores both confirmed entries
+    await expect(page.getByText('PENDING', { exact: true })).toBeVisible();
+
+    // The confirmed board is untouched: still exactly 2 ranked rows, in
+    // their own score order, unaffected by the pending entry's higher score.
+    await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
+    await expect(page.getByText('#2  800  STAGE 2')).toBeVisible();
+    const replayButtons = page.getByRole('button', { name: 'REPLAY' });
+    await expect(replayButtons).toHaveCount(2); // only the confirmed rows get a REPLAY button, never the pending one
+  });
+
+  test('renders no "PENDING VERIFICATION" section at all when pendingEntries is empty', async ({ page }) => {
+    await mockRanking(page, [{ id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'SOLO', xHandle: null, replayAvailable: true }], []);
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
+    await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
+  });
 });
 
 test.describe('ranking browsing is a Title-screen-only affordance', () => {
@@ -396,7 +448,7 @@ test.describe('name-input submission flow', () => {
   // surrounding assertions/waits without masking a genuine hang.
   test.setTimeout(120_000);
 
-  test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission, and SUBMIT posts and shows the server-confirmed rank', async ({ page }) => {
+  test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission, and SUBMIT posts score/stage and shows the pending-verification confirmation', async ({ page }) => {
     let scoresPostCount = 0;
     let lastPostedBody: Record<string, unknown> | undefined;
     // A full 10-entry board whose 10th place is exactly one point *below*
@@ -407,10 +459,13 @@ test.describe('name-input submission flow', () => {
       if (route.request().method() !== 'POST') return route.fallback();
       scoresPostCount++;
       lastPostedBody = route.request().postDataJSON();
+      // docs/plans/2026-08-19-ranking-free-async: POST no longer resimulates
+      // synchronously, so a success response carries no final rank — only
+      // "provisionally accepted, pending verification".
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ accepted: true, rank: 3 }),
+        body: JSON.stringify({ accepted: true, status: 'pending', message: 'provisionally accepted — pending verification' }),
       });
     });
 
@@ -430,11 +485,20 @@ test.describe('name-input submission flow', () => {
     await handleInput.fill('e2e_submitter');
 
     await page.getByRole('button', { name: 'SUBMIT' }).click();
-    await expect(page.getByText('RANKED #3!')).toBeVisible();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
     expect(scoresPostCount).toBe(1);
     expect(lastPostedBody?.xHandle).toBe('e2e_submitter');
     expect(lastPostedBody?.rulesetVersion).toBe(RULESET_VERSION);
     expect(lastPostedBody?.replayFormatVersion).toBe(REPLAY_FORMAT_VERSION);
+    // docs/plans/2026-08-19-ranking-free-async spec item 1: score/stage are
+    // now the client's claim in the POST body (previously absent — the
+    // synchronous version's verifyReplay() derived them server-side).
+    expect(typeof lastPostedBody?.score).toBe('number');
+    expect(typeof lastPostedBody?.stage).toBe('number');
+    // duration_ticks is deliberately NEVER a client-submitted field, in
+    // either version — confirms this round didn't accidentally add one.
+    expect(lastPostedBody?.durationTicks).toBeUndefined();
+    expect(lastPostedBody?.duration_ticks).toBeUndefined();
   });
 
   test('SKIP dismisses the submission overlay without ever POSTing', async ({ page }) => {
@@ -504,10 +568,10 @@ test.describe('name-input submission flow', () => {
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ accepted: true, rank: 1 }),
+          body: JSON.stringify({ accepted: true, status: 'pending' }),
         });
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, rank: 2 }) });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, status: 'pending' }) });
     });
 
     await stubDeterministicNormalSeed(page);
@@ -537,15 +601,21 @@ test.describe('name-input submission flow', () => {
     releaseFirstPost!();
     await page.waitForTimeout(1500);
 
-    // Run B's form is untouched: no "RANKED #1!" from run A leaked into it.
-    await expect(page.getByText('RANKED #1!')).toBeHidden();
+    // Run B's form is untouched: run A's (now-resolved) response did not
+    // overwrite it into its post-submit state (hidden SUBMIT, "OK" SKIP
+    // label) — the async-audit response contract no longer carries a
+    // distinguishing per-run rank number to assert on directly (both runs'
+    // success responses read identically, "provisionally accepted"), so
+    // this asserts the stronger, more direct thing: the form B is looking
+    // at is still its OWN pre-submit state, not run A's post-submit one.
     await expect(submitButton).toBeVisible();
     await expect(submitButton).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'SKIP' })).toBeVisible(); // not yet relabeled "OK" by a leaked response
 
     // And run B is still genuinely submittable.
     await nameInput.fill('RUN-B');
     await submitButton.click();
-    await expect(page.getByText('RANKED #2!')).toBeVisible();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
     expect(posts).toBe(2);
   });
 

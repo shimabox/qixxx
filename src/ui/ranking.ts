@@ -24,6 +24,26 @@ export interface RankingEntry {
 }
 
 /**
+ * A provisionally-in-range, not-yet-audited submission (docs/plans/2026-08
+ * -19-ranking-free-async spec item 5) — GET /api/ranking's `pendingEntries`.
+ * Deliberately has no rank: the UI renders these in their own unranked
+ * "検証待ち" section above the confirmed board, never merged into it, and
+ * never offers a REPLAY button for one (the server itself refuses to serve
+ * a pending row's replay — GET /api/ranking/:id/replay requires
+ * status='verified' — so `id` here is carried only for a stable list key,
+ * not treated as replayable).
+ */
+export interface PendingRankingEntry {
+  id: string;
+  createdAt: string;
+  score: number;
+  stage: number;
+  name: string;
+  xHandle: string | null;
+  unverified: true;
+}
+
+/**
  * Everything the submission flow is allowed to know about the run that just
  * ended — captured *synchronously* by main.ts at the gameover edge, before
  * any network round trip.
@@ -294,6 +314,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
   listOverlay.appendChild(disclaimer);
+  // Unranked "検証待ち" section (docs/plans/2026-08-19-ranking-free-async
+  // spec item 5) — a SEPARATE container from listBody below, inserted
+  // ABOVE the confirmed board, never merged/inserted into it. Hidden
+  // (no children) whenever pendingEntries is empty.
+  const pendingBody = document.createElement('div');
+  pendingBody.style.display = 'flex';
+  pendingBody.style.flexDirection = 'column';
+  pendingBody.style.gap = '4px';
+  pendingBody.style.width = '100%';
+  listOverlay.appendChild(pendingBody);
   const listBody = document.createElement('div');
   listBody.style.display = 'flex';
   listBody.style.flexDirection = 'column';
@@ -342,9 +372,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     abortReplayWork();
   }
 
-  /** Replaces the list body with a single status line (LOADING/error). */
+  /** Replaces the list body with a single status line (LOADING/error) — also clears the pending section, since a failed/loading fetch has nothing trustworthy to show there either. */
   function showListStatus(text: string): void {
     listBody.textContent = '';
+    pendingBody.textContent = '';
     const line = document.createElement('div');
     line.textContent = text;
     listBody.appendChild(line);
@@ -352,6 +383,59 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function clearListStatus(): void {
     listBody.textContent = '';
+    pendingBody.textContent = '';
+  }
+
+  /**
+   * Renders the unranked "検証待ち" section (docs/plans/2026-08-19-ranking-
+   * free-async spec item 5): no rank number, no REPLAY button (the server
+   * itself refuses to serve a pending row's replay — see
+   * PendingRankingEntry's own doc comment), a distinct dimmer/badged style
+   * so it reads as provisional rather than as part of the confirmed board.
+   * No-op (renders nothing) when `pending` is empty.
+   */
+  function renderPendingEntries(pending: PendingRankingEntry[]): void {
+    pendingBody.textContent = '';
+    if (pending.length === 0) return;
+
+    const heading = document.createElement('div');
+    heading.textContent = 'PENDING VERIFICATION';
+    heading.style.fontSize = '0.75em';
+    heading.style.opacity = '0.75';
+    heading.style.marginTop = '2px';
+    pendingBody.appendChild(heading);
+
+    pending.forEach((entry) => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '8px';
+      row.style.width = '100%';
+      row.style.justifyContent = 'space-between';
+      row.style.opacity = '0.65'; // visually distinct from the confirmed board below
+
+      const left = document.createElement('div');
+      left.style.textAlign = 'left';
+      const line = document.createElement('div');
+      // No rank number here — deliberately, per this section's own contract
+      // (never implies a confirmed position on the board).
+      line.textContent = `${entry.score}  STAGE ${entry.stage}  `;
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = entry.name || '(no name)';
+      line.appendChild(nameSpan);
+      left.appendChild(line);
+      row.appendChild(left);
+
+      const badge = document.createElement('span');
+      badge.textContent = 'PENDING';
+      badge.style.fontSize = '0.7em';
+      badge.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+      badge.style.borderRadius = '4px';
+      badge.style.padding = '2px 6px';
+      row.appendChild(badge);
+
+      pendingBody.appendChild(row);
+    });
   }
 
   async function showList(): Promise<void> {
@@ -362,11 +446,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     listOverlay.style.display = 'flex';
 
     let entries: RankingEntry[] | null = null;
+    let pendingEntries: PendingRankingEntry[] = [];
     try {
       const res = await fetch('/api/ranking');
       if (!res.ok) throw new Error(`ranking fetch failed: ${res.status}`);
-      const data = (await res.json()) as { entries: RankingEntry[] };
+      const data = (await res.json()) as { entries: RankingEntry[]; pendingEntries?: PendingRankingEntry[] };
       entries = data.entries ?? [];
+      pendingEntries = data.pendingEntries ?? [];
     } catch {
       entries = null;
     }
@@ -381,6 +467,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       showListStatus('FAILED TO LOAD RANKING');
       return;
     }
+
+    renderPendingEntries(pendingEntries);
 
     listBody.textContent = '';
     if (entries.length === 0) {
@@ -671,21 +759,39 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         body: JSON.stringify({
           seed,
           rleBase64: bytesToBase64(rle),
+          // docs/plans/2026-08-19-ranking-free-async spec item 1: the
+          // client now claims score/stage (the server no longer derives
+          // them synchronously — that happens later, asynchronously, in
+          // the audit). Taken from the immutable gameover-time snapshot,
+          // never from live session state, same as seed/rle above.
+          score: snapshot.score,
+          stage: snapshot.stage,
           name: usingHandle ? undefined : name,
           xHandle: usingHandle ? xHandle : undefined,
           rulesetVersion: options.getRulesetVersion(),
           replayFormatVersion: options.getReplayFormatVersion(),
         }),
       });
-      const data = (await res.json()) as { accepted: boolean; rank: number | null; error?: string };
+      const data = (await res.json()) as { accepted: boolean; status?: string; reason?: string; error?: string };
       if (responseIsStale()) return;
-      if (!res.ok && res.status !== 422 && res.status !== 409) {
+      if (!res.ok && res.status !== 429 && res.status !== 409) {
         throw new Error(data.error ?? `unexpected status ${res.status}`);
       }
+      // Free-tier async-audit response contract: a 200 accepted:true never
+      // carries a final rank anymore (POST no longer resimulates
+      // synchronously — see functions/api/scores.ts's own module comment) —
+      // only "provisionally accepted, pending verification". A rejected
+      // submission (out-of-range pre-gate, pending-cap 429, duplicate 409,
+      // or any other declined outcome) is reported as-is; the previously
+      // Paid-version-only "JUST MISSED THE TOP 10" copy doesn't distinguish
+      // these anymore, so the server's own reason/error string is surfaced
+      // directly instead.
       if (data.accepted) {
-        submitStatus.textContent = `RANKED #${data.rank}!`;
+        submitStatus.textContent = 'SUBMITTED — PENDING VERIFICATION.';
+      } else if (data.reason === 'out-of-range') {
+        submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
       } else {
-        submitStatus.textContent = data.error ? `NOT RANKED (${data.error}).` : 'JUST MISSED THE TOP 10.';
+        submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
       }
       postButton.style.display = 'none';
       skipButton.textContent = 'OK';
