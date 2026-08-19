@@ -4,56 +4,56 @@
 // no Request/D1 dependency — matching this directory's existing
 // seedValidation.ts / nameValidation.ts pattern.
 //
-// Upper bounds (request.md's "未確定事項": "値域の上限は実装者裁量、根拠を
-// コードコメントに記録すること"):
+// UPPER BOUNDS: deliberately none beyond Number.isSafeInteger (request.md's
+// "値域の上限は理論上限を踏まえて定め、根拠をコメントに記録"; this IS that
+// record). An earlier revision capped score at 999_999 and stage at 999,
+// reusing src/config.ts's HUD_WORST_CASE_STATS_TEXT sizing budget as the
+// justification — which was simply the wrong source: that constant's own
+// comment explicitly names "a 7+-digit cumulative score" as an ACCEPTED
+// RESIDUAL the HUD layout does not protect against, i.e. the game itself
+// treats a 7-digit score as reachable. Deriving a rejection threshold from a
+// display-width budget therefore threw away legitimate high scores with a
+// 400 before the audit ever saw them.
 //
-//   - MAX_SCORE = 999_999: matches src/config.ts's own documented HUD budget
-//     (HUD_WORST_CASE_STATS_TEXT's "6-digit SCORE/HI (just under
-//     1,000,000)") — that comment already treats a 7+-digit cumulative
-//     score as an accepted residual the HUD sizing doesn't protect against,
-//     so reusing the same ceiling here is a deliberate, already-precedented
-//     line, not a new one invented for this task. A legitimate run's score
-//     under normal play (SCORE_PER_CELL_FAST/SLOW * a 160x120 field, across
-//     however many stages a 10800-tick/180s run realistically reaches) sits
-//     far below this — the cap exists only to reject an obviously-impossible
-//     claim value cheaply, before ever reaching pending storage or the async
-//     audit.
-//   - MAX_STAGE = 999: same source, the HUD budget's "3-digit STAGE".
-//     core/stage.ts's difficulty curve plateaus at STAGE_MAX_DIFFICULTY (10)
-//     and holds flat forever after, so nothing in core/ actually bounds how
-//     many stages a sufficiently long/skilled run could clear in principle;
-//     999 is generous headroom under the HUD's own display ceiling rather
-//     than a gameplay-derived number.
+// The role split that makes an upper bound unnecessary here (spec item 1/3):
 //
-// These are deliberately *generous* pre-pending sanity bounds, not the
-// integrity check — verifyPendingEntry() (this directory) is what actually
-// confirms a pending entry's declared score/stage against a resimulation
-// during the async audit. Rejecting here only screens out obviously-bogus
-// claims (negative, non-integer, or beyond either display ceiling) before
-// they ever consume a pending slot.
-export const MAX_SCORE = 999_999;
-export const MAX_STAGE = 999;
-
+//   - THIS layer (POST time) only screens out values that could not be a
+//     score/stage AT ALL — non-numbers, non-integers, negatives, a stage
+//     below 1, and anything outside the safe-integer range (past 2^53-1,
+//     arithmetic and JSON round-tripping stop being exact, so such a value
+//     is not a meaningful integer claim in the first place). Nothing here is
+//     an integrity check; the value is stored as a CLAIM on a 'pending' row
+//     that never appears in the confirmed ranking.
+//   - THE AUDIT (verifyPendingEntry(), this directory) is what actually
+//     decides truth: it resimulates the submitted replay and compares the
+//     derived score/stage against the declared ones, deleting the row on any
+//     mismatch ('declared-score-mismatch' / 'declared-stage-mismatch').
+//
+// So an absurd claim (9e15, say) needs no bound here — it takes the designed
+// path: accepted as pending, then deleted by the audit as a confirmed
+// mismatch. Estimating a "theoretical maximum" at POST time would only add a
+// second, weaker, and independently-maintained copy of a judgement the
+// resimulation already makes exactly.
 export type ScoreValidationResult = { ok: true; value: number } | { ok: false; reason: string };
 
-/** Validates a submitted score: an integer in [0, MAX_SCORE]. */
+/** Validates a submitted score: a safe integer >= 0 (no upper bound — see this module's doc comment). */
 export function validateScore(raw: unknown): ScoreValidationResult {
-  if (typeof raw !== 'number' || !Number.isInteger(raw)) {
-    return { ok: false, reason: 'score must be an integer' };
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw)) {
+    return { ok: false, reason: 'score must be a safe integer' };
   }
-  if (raw < 0 || raw > MAX_SCORE) {
-    return { ok: false, reason: `score must be in [0, ${MAX_SCORE}]` };
+  if (raw < 0) {
+    return { ok: false, reason: 'score must be >= 0' };
   }
   return { ok: true, value: raw };
 }
 
-/** Validates a submitted stage: an integer in [1, MAX_STAGE]. */
+/** Validates a submitted stage: a safe integer >= 1 (no upper bound — see this module's doc comment). */
 export function validateStage(raw: unknown): ScoreValidationResult {
-  if (typeof raw !== 'number' || !Number.isInteger(raw)) {
-    return { ok: false, reason: 'stage must be an integer' };
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw)) {
+    return { ok: false, reason: 'stage must be a safe integer' };
   }
-  if (raw < 1 || raw > MAX_STAGE) {
-    return { ok: false, reason: `stage must be in [1, ${MAX_STAGE}]` };
+  if (raw < 1) {
+    return { ok: false, reason: 'stage must be >= 1' };
   }
   return { ok: true, value: raw };
 }

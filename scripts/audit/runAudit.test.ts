@@ -5,7 +5,7 @@
 // semantics are exercised for real.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
-import { runAudit } from './runAudit';
+import { runAudit, type AuditEvent } from './runAudit';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
 
@@ -139,6 +139,48 @@ describe('runAudit (real local D1)', () => {
         duration_ticks: number;
       }>();
       expect(row).toEqual({ status: 'verified', score: fixture.score, stage: fixture.stage, duration_ticks: fixture.durationTicks });
+    });
+
+    // User review, 2026-08-20: the pending fetch is season-agnostic on
+    // purpose (an old season's leftovers have no other sweeper), but the
+    // verdict layer used to compare only the ruleset/replay-format versions.
+    // Bumping CURRENT_SEASON_ID while keeping RULESET_VERSION — season.ts's
+    // documented "reset the ranking" operation — therefore let last season's
+    // pending rows get CONFIRMED as verified: invisible to every ranking
+    // query (which filters on season_id AND ruleset_version together) and
+    // never trimmed by the TOP10 cleanup (current season only), so their
+    // replay BLOBs piled up in the old season with no bound at all.
+    it("deletes an old season's leftover pending row after a season bump, rather than verifying it, even though its ruleset_version is still current", async () => {
+      const seed = 9500;
+      const fixture = recordRealReplay(seed);
+      const seedRow = (): Promise<string> =>
+        seedScoreRow(testDb.db, {
+          status: 'pending',
+          season_id: SEASON_ID, // stored during the season that is about to be bumped away from
+          seed,
+          inputs: fixture.rle,
+          score: fixture.score,
+          stage: fixture.stage,
+          duration_ticks: fixture.durationTicks,
+          ruleset_version: RULESET_VERSION, // deliberately still CURRENT: the version checks alone cannot catch this row
+          replay_format_version: REPLAY_FORMAT_VERSION,
+        });
+
+      const staleId = await seedRow();
+      const events: AuditEvent[] = [];
+      const bumped = await runAudit(baseOptions(testDb.db, { seasonId: SEASON_ID + 1, onEvent: (e) => events.push(e) }));
+      expect(await statusOf(staleId)).toBeNull(); // swept, not left pending forever
+      expect(bumped.verifiedCount).toBe(0); // and NOT confirmed into the dead season
+      expect(bumped.deletedConfirmedInvalidCount).toBe(1);
+      expect(events).toContainEqual({ type: 'entry-deleted-confirmed-invalid', id: staleId, reason: 'season-mismatch' });
+
+      // Control: the very same row IS confirmed when the audit runs for the
+      // season it actually belongs to — proving the deletion above came from
+      // the season check and not from anything else about this fixture.
+      const currentId = await seedRow();
+      const sameSeason = await runAudit(baseOptions(testDb.db, { seasonId: SEASON_ID }));
+      expect(sameSeason.verifiedCount).toBe(1);
+      expect(await statusOf(currentId)).toBe('verified');
     });
 
     it('deletes a pending row with malformed RLE data (verifyReplay malformed-replay -> confirmed invalid)', async () => {

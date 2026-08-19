@@ -17,6 +17,9 @@ afterEach(() => {
 
 const CONFIRM = { dx: 0 as const, dy: 0 as const, drawHeld: false, confirm: true };
 
+/** An arbitrary "current" season for these pure unit tests — deliberately not season.ts's real CURRENT_SEASON_ID, which is free to move. */
+const SEASON_ID = 3;
+
 /** A short, real, gameover-reaching replay — mirrors verifyReplay.test.ts's own fixture construction. */
 function recordRealReplay(seed: number): { rle: Uint8Array; score: number; stage: number; durationTicks: number } {
   const session = new GameSession({ seed });
@@ -50,6 +53,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({
       ok: true,
@@ -72,6 +77,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'malformed-replay' });
   });
@@ -89,6 +96,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'declared-score-mismatch' });
   });
@@ -106,6 +115,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'declared-stage-mismatch' });
   });
@@ -123,8 +134,39 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'declared-duration-mismatch' });
+  });
+
+  // User review, 2026-08-20: a season bump with RULESET_VERSION deliberately
+  // left unchanged (season.ts documents that as the supported "reset the
+  // ranking" operation) used to slip past the version checks entirely, so an
+  // old season's pending row got CONFIRMED as verified — into a season no
+  // ranking query ever reads and the TOP10 cleanup never trims.
+  it("rejects a season_id that no longer matches the server's current season, even with an otherwise perfect, current-ruleset replay (without resimulating at all)", async () => {
+    const seed = 5156;
+    const fixture = recordRealReplay(seed);
+    // Spied AFTER the fixture is recorded (recordRealReplay() calls
+    // verifyReplay() itself), so the call count below is verifyPendingEntry()'s
+    // alone.
+    const verifyReplaySpy = vi.spyOn(await import('./verifyReplay'), 'verifyReplay');
+    const result = verifyPendingEntry({
+      seed,
+      rle: fixture.rle,
+      declaredScore: fixture.score,
+      declaredStage: fixture.stage,
+      declaredDurationTicks: fixture.durationTicks,
+      declaredRulesetVersion: RULESET_VERSION, // current — the ruleset check alone would let this row through
+      declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID - 1, // last season
+      expectedSeasonId: SEASON_ID,
+      expectedRulesetVersion: RULESET_VERSION,
+      expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+    });
+    expect(result).toEqual({ ok: false, reason: 'season-mismatch' });
+    expect(verifyReplaySpy).not.toHaveBeenCalled(); // classified before (and instead of) any resimulation
   });
 
   it('rejects a ruleset_version that no longer matches the server\'s current value (without resimulating at all)', () => {
@@ -140,6 +182,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'ruleset-version-mismatch' });
   });
@@ -157,6 +201,8 @@ describe('verifyPendingEntry', () => {
       declaredReplayFormatVersion: REPLAY_FORMAT_VERSION - 1, // stale
       expectedRulesetVersion: RULESET_VERSION,
       expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+      declaredSeasonId: SEASON_ID,
+      expectedSeasonId: SEASON_ID,
     });
     expect(result).toEqual({ ok: false, reason: 'replay-format-version-mismatch' });
   });
@@ -185,6 +231,8 @@ describe('verifyPendingEntry', () => {
         declaredReplayFormatVersion: REPLAY_FORMAT_VERSION,
         expectedRulesetVersion: RULESET_VERSION,
         expectedReplayFormatVersion: REPLAY_FORMAT_VERSION,
+        declaredSeasonId: SEASON_ID,
+        expectedSeasonId: SEASON_ID,
       })
     ).toThrow(boom);
   });

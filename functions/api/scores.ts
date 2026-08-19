@@ -5,7 +5,9 @@
 // 10ms-CPU-per-request ceiling can't afford it (see this feature's
 // request.md background). Instead:
 //   - the client's score/stage claim is taken at face value structurally
-//     (an integer in-range) but NOT trusted for ranking correctness yet;
+//     (a safe integer, score >= 0 / stage >= 1 — no upper bound, see
+//     _lib/ranking/scoreValidation.ts) but NOT trusted for ranking
+//     correctness yet;
 //   - duration_ticks is derived server-side from an RLE DECODE-ONLY pass
 //     (functions/_lib/ranking/rleDuration.ts) — never a full resimulation;
 //   - a submission that can't possibly make the confirmed TOP10 is rejected

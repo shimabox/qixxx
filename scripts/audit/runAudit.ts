@@ -70,6 +70,7 @@ export interface RunAuditResult {
 interface PendingRow {
   rank_seq: number;
   id: string;
+  season_id: number;
   ruleset_version: number;
   replay_format_version: number;
   score: number;
@@ -212,7 +213,14 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
 
       const { results: rows } = await db
         .prepare(
-          `SELECT rank_seq, id, ruleset_version, replay_format_version, score, stage, seed, inputs, duration_ticks, audit_attempts
+          // Deliberately NOT filtered by season_id/ruleset_version: an old
+          // season's leftover pending rows have no other sweeper, so the
+          // audit must still pick them up — and then delete them, which
+          // verifyPendingEntry()'s 'season-mismatch'/'ruleset-version-
+          // mismatch' classification (below) is what makes happen. Filtering
+          // them out here instead would leave them pending forever, invisible
+          // to every ranking query yet still holding their replay BLOBs.
+          `SELECT rank_seq, id, season_id, ruleset_version, replay_format_version, score, stage, seed, inputs, duration_ticks, audit_attempts
            FROM scores
            WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
            ORDER BY rank_seq
@@ -236,6 +244,8 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
             declaredDurationTicks: row.duration_ticks,
             declaredRulesetVersion: row.ruleset_version,
             declaredReplayFormatVersion: row.replay_format_version,
+            declaredSeasonId: row.season_id,
+            expectedSeasonId: seasonId,
             expectedRulesetVersion: rulesetVersion,
             expectedReplayFormatVersion: replayFormatVersion,
             benchHooks: options.benchHooks,

@@ -30,6 +30,7 @@ import type { BenchVerifyHooks } from './benchHooks';
 
 export type PendingMismatchReason =
   | VerifyReplayRejectionReason
+  | 'season-mismatch'
   | 'ruleset-version-mismatch'
   | 'replay-format-version-mismatch'
   | 'declared-score-mismatch'
@@ -61,7 +62,10 @@ export interface VerifyPendingEntryInput {
   declaredDurationTicks: number;
   declaredRulesetVersion: number;
   declaredReplayFormatVersion: number;
-  /** The server's CURRENT values (season.ts's RULESET_VERSION/REPLAY_FORMAT_VERSION) at audit time — may have moved on since the row was accepted. */
+  /** The season the pending row was stamped with at POST time (server-assigned, never client-supplied — see season.ts). */
+  declaredSeasonId: number;
+  /** The server's CURRENT values (season.ts's CURRENT_SEASON_ID/RULESET_VERSION/REPLAY_FORMAT_VERSION) at audit time — may have moved on since the row was accepted. */
+  expectedSeasonId: number;
   expectedRulesetVersion: number;
   expectedReplayFormatVersion: number;
   /** Bench-only hook, mirroring verifyReplay()'s own — always undefined in production/real audit runs. */
@@ -69,9 +73,24 @@ export interface VerifyPendingEntryInput {
 }
 
 export function verifyPendingEntry(input: VerifyPendingEntryInput): VerifyPendingEntryResult {
-  // Cheapest check first: a version that has already moved on since this row
-  // was accepted is a confirmed-stale row, no resimulation needed to know
-  // that.
+  // Cheapest checks first: a season/version that has already moved on since
+  // this row was accepted is a confirmed-stale row, no resimulation needed to
+  // know that.
+  //
+  // The season check specifically (added after a user review, 2026-08-20):
+  // the audit's pending fetch is deliberately season-agnostic — it must pick
+  // up OLD seasons' leftover pending rows too, since nothing else ever
+  // sweeps them — but confirming one as 'verified' would be wrong twice
+  // over: the row can never appear in any ranking (every ranking/replay
+  // query filters on `season_id = CURRENT_SEASON_ID AND ruleset_version =
+  // RULESET_VERSION` together, see season.ts), and the TOP10 cleanup only
+  // ever trims the CURRENT season, so it would sit there as an unreachable,
+  // never-trimmed replay BLOB forever. A season bump with RULESET_VERSION
+  // left unchanged (season.ts documents that as a supported "reset the
+  // ranking" operation) is exactly the case the ruleset check alone misses.
+  if (input.declaredSeasonId !== input.expectedSeasonId) {
+    return { ok: false, reason: 'season-mismatch' };
+  }
   if (input.declaredRulesetVersion !== input.expectedRulesetVersion) {
     return { ok: false, reason: 'ruleset-version-mismatch' };
   }
