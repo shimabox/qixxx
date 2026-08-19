@@ -1,0 +1,77 @@
+# Async audit job for the Free-tier ranking design (docs/plans/2026-08-19-
+# ranking-free-async spec item 12). Runs scripts/audit/cli.ts, which
+# verifies pending score submissions and confirms/deletes them.
+#
+# SAFETY: this round intentionally ships with NO real D1 connection wired
+# up (see this feature's request.md "やらないこと" — production D1
+# authentication/connection is a follow-up task, not part of this round).
+# The `schedule` trigger below is commented out for exactly that reason: if
+# this workflow file were merged to the default branch as-is with `schedule`
+# active, it would fire every ${{ env.CRON_INTERVAL_MINUTES }} minutes with
+# no real DB to talk to and fail forever. `workflow_dispatch` (manual-only)
+# is the sole enabled trigger until a follow-up task wires up real D1 access
+# AND explicitly re-enables the schedule below.
+#
+# To enable the cron once real D1 access is wired up (see
+# docs/ranking-audit-runbook.md's "本番接続" section for the connection
+# design/decision this still needs):
+#   1. Implement the real D1 connection this job's `run` step below assumes
+#      (RemoteD1Adapter in scripts/audit/d1Adapter.ts is currently an
+#      unimplemented stub — see its doc comment for the two candidate
+#      approaches).
+#   2. Set repository variable AUDIT_CRON_ENABLED=true (Settings ->
+#      Secrets and variables -> Actions -> Variables) AND uncomment the
+#      `schedule:` block below (the `if:` guard alone is not enough while
+#      the trigger itself stays commented out — GitHub only evaluates
+#      `schedule` cron syntax for triggers that are actually present).
+#   3. Set the RANKING_IP_HASH_KEY secret (Settings -> Secrets and
+#      variables -> Actions -> Secrets) to the SAME value configured as the
+#      Cloudflare Pages secret for the ranking API — see
+#      docs/ranking-audit-runbook.md.
+name: Ranking async audit
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   # "目安 5 分間隔" (docs/plans/2026-08-19-ranking-free-async spec item 8)
+  #   # — a GUIDELINE, not a guarantee: GitHub Actions' `schedule` trigger can
+  #   # delay or altogether skip a scheduled run under load, so nothing in
+  #   # this job's own design (scripts/audit/constants.ts's
+  #   # AUDIT_CRON_INTERVAL_MINUTES, the lock lease, next_attempt_at) may
+  #   # assume this interval is exact.
+  #   - cron: '*/5 * * * *'
+
+concurrency:
+  # Belt-and-braces alongside the D1-side audit_lock table (scripts/audit/
+  # lock.ts) itself, which is the mechanism that actually matters — see this
+  # feature's spec item 9: "GitHub Actions の concurrency 設定は補助として
+  # 併用". Even if two runs somehow overlapped despite this, the D1 lock
+  # would still make the second one a no-op.
+  group: ranking-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    # Guards against an accidental `schedule` re-enable running before real
+    # D1 access exists — see this file's own top-of-file comment. Manual
+    # (`workflow_dispatch`) runs always proceed regardless of this variable,
+    # since a human deliberately clicking "Run workflow" already knows what
+    # they're doing.
+    if: github.event_name == 'workflow_dispatch' || vars.AUDIT_CRON_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run async audit
+        env:
+          RANKING_IP_HASH_KEY: ${{ secrets.RANKING_IP_HASH_KEY }}
+        run: npx vite-node scripts/audit/cli.ts

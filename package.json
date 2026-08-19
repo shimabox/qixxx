@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.functions.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.functions.json && tsc --noEmit -p tsconfig.scripts.json",
     "test": "vitest run",
     "e2e": "playwright test",
     "pages:dev": "wrangler pages dev dist"
