@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { claimArea, pruneDeadBorders } from './claim';
-import { CLAIMED_FAST, CLAIMED_SLOW, UNCLAIMED, BORDER } from './field';
+import { Field, CLAIMED_FAST, CLAIMED_SLOW, UNCLAIMED, BORDER } from './field';
 import { parseField, renderField, pathFrom, markerAt } from './fieldFixture';
 
 describe('claimArea', () => {
@@ -341,5 +341,27 @@ describe('pruneDeadBorders', () => {
     expect(parsed.field.get({ x: 3, y: 2 })).toBe(BORDER);
     // Far from the lone unclaimed cell, fully surrounded by claimed cells: pruned.
     expect(parsed.field.get({ x: 3, y: 4 })).toBe(CLAIMED_FAST);
+  });
+
+  it('gives a dead older border to the newer claim instead of leaving a bite of the older colour', () => {
+    const field = new Field(9, 7);
+    const olderFastLine = Array.from({ length: 5 }, (_, index) => ({ x: 3, y: index + 1 }));
+
+    // First claim: a FAST line leaves a blue area on the left while the
+    // former line remains an active border beside the unclaimed right side.
+    claimArea(field, olderFastLine, { x: 7, y: 3 }, 'fast');
+    expect(field.get({ x: 3, y: 3 })).toBe(BORDER);
+
+    // A later SLOW line at x=5 claims the strip between the two lines. That
+    // makes x=3's older FAST border obsolete; it is part of the new red
+    // claim and must not remain as a blue one-cell protrusion at the join.
+    const newerSlowLine = Array.from({ length: 5 }, (_, index) => ({ x: 5, y: index + 1 }));
+    claimArea(field, newerSlowLine, { x: 7, y: 3 }, 'slow');
+
+    for (const point of olderFastLine) {
+      expect(field.get(point)).toBe(CLAIMED_SLOW);
+    }
+    expect(field.get({ x: 4, y: 3 })).toBe(CLAIMED_SLOW);
+    expect(field.get({ x: 5, y: 3 })).toBe(BORDER);
   });
 });
