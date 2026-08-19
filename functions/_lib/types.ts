@@ -28,4 +28,15 @@ export interface ShareRecord extends ShareRequestPayload {
 export interface Env {
   SHARES: KVNamespace;
   DB: D1Database;
+  /**
+   * HMAC-SHA-256 key for functions/_lib/ranking/ipHash.ts's `ip_hash` column
+   * (docs/plans/2026-08-19-ranking-free-async spec item 7). A Cloudflare
+   * Pages secret in production, a `.dev.vars`-provided dev value locally
+   * (see .dev.vars.example — never committed with a real value). Optional in
+   * this type only because Pages Functions has no build-time guarantee a
+   * secret is bound; every entrypoint that needs it calls
+   * ipHash.ts's requireIpHashKey() to fail closed before any DB operation
+   * rather than trusting this field's mere presence in the type.
+   */
+  RANKING_IP_HASH_KEY?: string;
 }

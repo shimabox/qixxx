@@ -1,23 +1,40 @@
 // POST /api/scores, exercised through the REAL handler
-// (functions/api/scores.ts) with only D1/KV stubbed. Covers the two
-// failure-classification paths a user review flagged: an oversized body must
-// be rejected while it is still streaming (never buffered whole), and a D1
-// error must only be reported as 409 "duplicate replay" when it genuinely is
-// one — anything else is a 500 that leaks no database internals.
+// (functions/api/scores.ts) with only D1/KV stubbed — docs/plans/2026-08-19-
+// ranking-free-async task 9. Free-tier async-audit version: this handler
+// never calls verifyReplay() (see functions/api/scores.ts's own module
+// comment); score/stage are the client's claim, duration_ticks is derived
+// server-side from an RLE decode-only pass, and an accepted submission is
+// stored as `status='pending'`, never resolved to verified/rejected
+// synchronously.
 //
 // Lives here (beside the other ranking unit tests) rather than in
 // functions/api/, which is a Pages Functions route directory.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { onRequestPost, readBodyWithLimit, isUniqueConstraintViolation } from '../../api/scores';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
+import { encodeRle, type InputSample } from '../../../src/core/rle';
 
 const SELF_ORIGIN = 'https://qixxx.example';
+const IP_HASH_KEY = 'test-hmac-key-do-not-use-in-prod';
 
-/** A body that reaches verifyReplay() but is rejected there — enough to drive the handler past every input check. */
+/** A short but well-formed RLE stream (decodes cleanly; not a real gameplay recording — POST never resimulates it). */
+const SAMPLE_RLE: InputSample[] = [
+  { dx: 0, dy: 1, drawHeld: true, slow: false },
+  { dx: 1, dy: 0, drawHeld: false, slow: false },
+];
+const SAMPLE_RLE_BASE64 = (() => {
+  const bytes = encodeRle(SAMPLE_RLE);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+})();
+
 function validShapedBody(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     seed: 1264,
-    rleBase64: 'AAE=',
+    rleBase64: SAMPLE_RLE_BASE64,
+    score: 100,
+    stage: 2,
     name: 'TESTER',
     rulesetVersion: RULESET_VERSION,
     replayFormatVersion: REPLAY_FORMAT_VERSION,
@@ -28,28 +45,55 @@ function validShapedBody(overrides: Record<string, unknown> = {}) {
 function makeRequest(body: string | ReadableStream<Uint8Array>, headers: Record<string, string> = {}): Request {
   return new Request(`${SELF_ORIGIN}/api/scores`, {
     method: 'POST',
-    headers: { Origin: SELF_ORIGIN, 'Content-Type': 'application/json', ...headers },
+    headers: { Origin: SELF_ORIGIN, 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.1', ...headers },
     body,
     // Required by undici whenever the body is a stream.
     ...(typeof body === 'string' ? {} : { duplex: 'half' }),
   } as RequestInit);
 }
 
-/** Env with an always-allowing rate limiter and a D1 whose batch() behaves as configured. */
-function makeEnv(batchImpl: () => Promise<unknown>) {
+/**
+ * Env with an always-allowing rate limiter, a configured ip_hash key, and a
+ * D1 whose `prepare(sql).bind(...).run()`/`.first()` behave as configured.
+ * `thresholdScore` backs the pre-gate's "verified 10th place" SELECT — -1
+ * (the COALESCE default, i.e. "fewer than 10 verified rows") unless
+ * overridden.
+ */
+function makeEnv(opts: {
+  runImpl?: (sql: string, args: unknown[]) => Promise<{ meta: { changes: number } }> | { meta: { changes: number } };
+  thresholdScore?: number;
+  ipHashKey?: string;
+}) {
+  const { runImpl, thresholdScore = -1, ipHashKey = IP_HASH_KEY } = opts;
   return {
     SHARES: {
       get: async () => null,
       put: async () => undefined,
     },
     DB: {
-      prepare: () => ({ bind: () => ({}) }),
-      batch: batchImpl,
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          first: async () => ({ threshold: thresholdScore }),
+          run: async () => {
+            if (!runImpl) return { meta: { changes: 1 } };
+            return runImpl(sql, args);
+          },
+        }),
+      }),
     },
+    RANKING_IP_HASH_KEY: ipHashKey,
   };
 }
 
-async function callHandler(request: Request, env: ReturnType<typeof makeEnv>) {
+/** Env with RANKING_IP_HASH_KEY genuinely absent (not merely undefined-valued) — the shape an un-configured Pages secret actually has. */
+function makeEnvMissingIpHashKey() {
+  return {
+    SHARES: { get: async () => null, put: async () => undefined },
+    DB: { prepare: () => ({ bind: () => ({ first: async () => ({ threshold: -1 }), run: async () => ({ meta: { changes: 1 } }) }) }) },
+  };
+}
+
+async function callHandler(request: Request, env: ReturnType<typeof makeEnv> | ReturnType<typeof makeEnvMissingIpHashKey>) {
   type Ctx = Parameters<typeof onRequestPost>[0];
   const response = await onRequestPost({ request, env, params: {} } as unknown as Ctx);
   const body = (await response.json()) as Record<string, unknown>;
@@ -125,8 +169,10 @@ describe('POST /api/scores body size enforcement', () => {
         controller.close();
       },
     });
-    const env = makeEnv(async () => {
-      throw new Error('batch() must never be reached for an oversized body');
+    const env = makeEnv({
+      runImpl: () => {
+        throw new Error('run() must never be reached for an oversized body');
+      },
     });
     const { response, body } = await callHandler(makeRequest(stream), env);
     expect(response.status).toBe(413);
@@ -134,47 +180,146 @@ describe('POST /api/scores body size enforcement', () => {
   });
 
   it('still short-circuits on an oversized Content-Length header', async () => {
-    const env = makeEnv(async () => {
-      throw new Error('batch() must never be reached');
+    const env = makeEnv({
+      runImpl: () => {
+        throw new Error('run() must never be reached');
+      },
     });
     const { response } = await callHandler(makeRequest(validShapedBody(), { 'Content-Length': String(10 * 1024 * 1024) }), env);
     expect(response.status).toBe(413);
   });
 });
 
-describe('POST /api/scores D1 failure classification', () => {
-  // A replay that fails verification stops before D1, so these tests need a
-  // submission that actually reaches the batch. verifyReplay() is real here,
-  // so we assert on what it produces rather than faking it: an unverifiable
-  // replay yields 422 and never touches D1.
-  it('never reaches D1 when the replay fails verification', async () => {
-    let batched = false;
-    const env = makeEnv(async () => {
-      batched = true;
-      return [];
-    });
+describe('POST /api/scores ip_hash key gate (fail-closed)', () => {
+  it('fails closed with 500 before any D1 operation when RANKING_IP_HASH_KEY is not configured', async () => {
+    const env = makeEnvMissingIpHashKey();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(500);
     expect(body.accepted).toBe(false);
-    expect(batched).toBe(false);
+    expect(consoleError).toHaveBeenCalled();
   });
 
-  it('classifies a UNIQUE constraint violation as 409 duplicate replay, with no detail leaked', async () => {
-    const env = makeEnv(async () => {
-      throw new Error('D1_ERROR: UNIQUE constraint failed: scores.replay_hash');
-    });
-    // Reach the batch by making verifyReplay() accept: stub it at the module
-    // boundary the handler imports.
-    const verify = await import('../../_lib/ranking/verifyReplay');
-    vi.spyOn(verify, 'verifyReplay').mockReturnValue({
-      ok: true,
-      score: 100,
-      stage: 1,
-      durationTicks: 500,
-      totalClaims: 1,
-      gameOverReason: 'life',
-    });
+  it('also fails closed for an empty-string key', async () => {
+    const env = makeEnv({ ipHashKey: '' });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { response } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(500);
+  });
+});
 
+describe('POST /api/scores structural guarantee: verifyReplay() is never invoked', () => {
+  it('never calls verifyReplay() on the accept path', async () => {
+    const verifyModule = await import('./verifyReplay');
+    const spy = vi.spyOn(verifyModule, 'verifyReplay');
+    const env = makeEnv({});
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('never calls verifyReplay() on the out-of-range (pre-gate rejected) path', async () => {
+    const verifyModule = await import('./verifyReplay');
+    const spy = vi.spyOn(verifyModule, 'verifyReplay');
+    const env = makeEnv({ thresholdScore: 999_999 }); // nothing can beat this
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 5 })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('never calls verifyReplay() on the 429 (pending cap reached) path', async () => {
+    const verifyModule = await import('./verifyReplay');
+    const spy = vi.spyOn(verifyModule, 'verifyReplay');
+    const env = makeEnv({ runImpl: () => ({ meta: { changes: 0 } }) });
+    const { response } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(429);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/scores score/stage validation', () => {
+  it('rejects a negative score', async () => {
+    const env = makeEnv({});
+    const { response } = await callHandler(makeRequest(validShapedBody({ score: -1 })), env);
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a non-integer score', async () => {
+    const env = makeEnv({});
+    const { response } = await callHandler(makeRequest(validShapedBody({ score: 1.5 })), env);
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects stage 0 (stage must be >= 1)', async () => {
+    const env = makeEnv({});
+    const { response } = await callHandler(makeRequest(validShapedBody({ stage: 0 })), env);
+    expect(response.status).toBe(400);
+  });
+
+  it('accepts score 0 (0 is a valid, if unranked-in-practice, score)', async () => {
+    const env = makeEnv({});
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 0 })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+  });
+});
+
+describe('POST /api/scores duration_ticks server derivation', () => {
+  it('derives duration_ticks from the RLE sample count, not any client-supplied value', async () => {
+    const env = makeEnv({});
+    // The client never even has a duration field to lie with — ScoreSubmission
+    // has none — but assert the *value* is what the RLE actually decodes to.
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(200);
+    expect(body.durationTicks).toBe(SAMPLE_RLE.length);
+  });
+
+  it('rejects malformed RLE data with 400, before ever reaching D1', async () => {
+    let dbTouched = false;
+    const env = makeEnv({ runImpl: () => ((dbTouched = true), { meta: { changes: 1 } }) });
+    // 200 is not a valid sample code (src/core/rle.ts's decodeSampleByte()).
+    const malformedBase64 = btoa(String.fromCharCode(200, 1));
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ rleBase64: malformedBase64 })), env);
+    expect(response.status).toBe(400);
+    expect(body.accepted).toBe(false);
+    expect(dbTouched).toBe(false);
+  });
+});
+
+describe('POST /api/scores pre-pending gate (out-of-range submissions are never stored)', () => {
+  it('accepts unconditionally when fewer than 10 verified rows exist (threshold -1)', async () => {
+    const env = makeEnv({ thresholdScore: -1 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 0 })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+  });
+
+  it('rejects (without storing) a score equal to the verified 10th place — a tie is out of range', async () => {
+    let dbTouched = false;
+    const env = makeEnv({ thresholdScore: 100, runImpl: () => ((dbTouched = true), { meta: { changes: 1 } }) });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 100 })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(false);
+    expect(dbTouched).toBe(false);
+  });
+
+  it('accepts a score that strictly exceeds the verified 10th place', async () => {
+    const env = makeEnv({ thresholdScore: 99 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 100 })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+  });
+});
+
+describe('POST /api/scores D1 failure classification', () => {
+  it('classifies a UNIQUE constraint violation as 409 duplicate replay, with no detail leaked', async () => {
+    const env = makeEnv({
+      runImpl: () => {
+        throw new Error('D1_ERROR: UNIQUE constraint failed: scores.replay_hash');
+      },
+    });
     const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
     expect(response.status).toBe(409);
     expect(body.error).toBe('duplicate replay');
@@ -185,19 +330,11 @@ describe('POST /api/scores D1 failure classification', () => {
   it('classifies any other D1 failure as a generic 500 that leaks nothing, and logs it server-side', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const dbError = new Error('D1_ERROR: no such table: scores at offset 13');
-    const env = makeEnv(async () => {
-      throw dbError;
+    const env = makeEnv({
+      runImpl: () => {
+        throw dbError;
+      },
     });
-    const verify = await import('../../_lib/ranking/verifyReplay');
-    vi.spyOn(verify, 'verifyReplay').mockReturnValue({
-      ok: true,
-      score: 100,
-      stage: 1,
-      durationTicks: 500,
-      totalClaims: 1,
-      gameOverReason: 'life',
-    });
-
     const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
     expect(response.status).toBe(500);
     expect(body.error).toBe('internal error');
@@ -205,7 +342,24 @@ describe('POST /api/scores D1 failure classification', () => {
     // Nothing about the schema reaches the client...
     expect(JSON.stringify(body)).not.toMatch(/no such table|scores|offset/i);
     // ...but the operator can still see it.
-    expect(consoleError).toHaveBeenCalledWith('POST /api/scores: D1 batch failed', dbError);
+    expect(consoleError).toHaveBeenCalledWith('POST /api/scores: D1 insert failed', dbError);
+  });
+
+  it('returns 429 (not deleting existing pending rows) when the atomic insert reports zero changes', async () => {
+    const env = makeEnv({ runImpl: () => ({ meta: { changes: 0 } }) });
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(429);
+    expect(body.accepted).toBe(false);
+  });
+});
+
+describe('POST /api/scores success response', () => {
+  it('returns accepted:true, status:pending, and echoes score/stage/durationTicks', async () => {
+    const env = makeEnv({});
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 250, stage: 3 })), env);
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ accepted: true, status: 'pending', score: 250, stage: 3 });
+    expect(typeof body.id).toBe('string');
   });
 });
 

@@ -6,3 +6,8 @@ test-results/
 .wrangler/
 .DS_Store
 *.local
+
+# Local-dev secret values for wrangler pages dev / scripts/audit's cli.ts
+# (docs/plans/2026-08-19-ranking-free-async spec item 7 — RANKING_IP_HASH_KEY).
+# See .dev.vars.example for the variable this file should define.
+.dev.vars
