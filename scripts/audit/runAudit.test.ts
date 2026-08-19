@@ -80,6 +80,8 @@ describe('runAudit (real local D1)', () => {
     expect(result.acquired).toBe(true);
     expect(result.processedCount).toBe(0);
     expect(result.verifiedCount).toBe(0);
+    expect(result.leaseLostMidRun).toBe(false);
+    expect(result.lockReleased).toBe(true); // held its own lease all the way through, and gave it back
   });
 
   it('does not acquire (and touches nothing) while another run already holds the lock', async () => {
@@ -332,6 +334,61 @@ describe('runAudit (real local D1)', () => {
     // database so a rival owner silently steals the lock — exactly as
     // acquireLock() itself would once locked_until had genuinely lapsed —
     // right before one particular row's own write executes.
+    const RIVAL_TOKEN = 'rival-owner-token';
+
+    /**
+     * Simulates: the run's lease genuinely lapsed in real wall-clock time and
+     * a rival audit invocation's OWN acquireLock() legitimately took over —
+     * issued as exactly the conditional UPDATE acquireLock() itself issues.
+     */
+    async function stealLockAsRival(realDb: D1Database): Promise<void> {
+      await realDb.prepare(`UPDATE audit_lock SET locked_until = unixepoch() - 1 WHERE id = 1`).run();
+      await realDb.prepare(`UPDATE audit_lock SET owner_token = '${RIVAL_TOKEN}', locked_until = unixepoch() + 600 WHERE id = 1 AND locked_until < unixepoch()`).run();
+    }
+
+    /** Gives the rival's hold back, so tests running after this one can acquire normally. */
+    async function releaseRivalHold(): Promise<void> {
+      await testDb.db.prepare(`UPDATE audit_lock SET owner_token = NULL, locked_until = unixepoch() - 1 WHERE id = 1`).run();
+    }
+
+    // Unconditionally, even (especially) when a test above FAILED partway:
+    // a rival hold left behind would make every later test in this file fail
+    // to acquire the lock, burying the one real failure under a cascade of
+    // unrelated ones.
+    afterEach(releaseRivalHold);
+
+    /**
+     * Wraps a D1Database so `stealLockAsRival()` fires immediately before the
+     * first `.run()` of a statement whose SQL matches `stealBeforeSql` —
+     * i.e. the theft lands in the window between that write's own last
+     * ownership check and its execution, which is the only window the write's
+     * fencing (and nothing else) is supposed to cover.
+     */
+    function wrapDbForTheftBefore(realDb: D1Database, stealBeforeSql: (sql: string) => boolean): { db: D1Database; stolen: () => boolean } {
+      let stolen = false;
+      const wrapped = {
+        prepare(sql: string) {
+          if (!stealBeforeSql(sql)) return realDb.prepare(sql);
+          return {
+            bind(...args: unknown[]) {
+              const bound = realDb.prepare(sql).bind(...args);
+              return {
+                ...bound,
+                run: async () => {
+                  if (!stolen) {
+                    stolen = true;
+                    await stealLockAsRival(realDb);
+                  }
+                  return bound.run();
+                },
+              };
+            },
+          };
+        },
+      } as unknown as D1Database;
+      return { db: wrapped, stolen: () => stolen };
+    }
+
     function wrapDbForLeaseTheft(realDb: D1Database, stealAfterNRowWrites: number): { db: D1Database; rowWriteCount: () => number } {
       let rowWriteCount = 0;
       let stolen = false;
@@ -348,14 +405,7 @@ describe('runAudit (real local D1)', () => {
                   rowWriteCount++;
                   if (!stolen && rowWriteCount > stealAfterNRowWrites) {
                     stolen = true;
-                    // Simulate: this run's lease had genuinely lapsed in
-                    // real wall-clock time, and a rival audit invocation's
-                    // OWN acquireLock() legitimately took over — the same
-                    // conditional UPDATE acquireLock() itself issues.
-                    await realDb.prepare(`UPDATE audit_lock SET locked_until = unixepoch() - 1 WHERE id = 1`).run();
-                    await realDb
-                      .prepare(`UPDATE audit_lock SET owner_token = 'rival-owner-token', locked_until = unixepoch() + 600 WHERE id = 1 AND locked_until < unixepoch()`)
-                      .run();
+                    await stealLockAsRival(realDb);
                   }
                   return bound.run();
                 },
@@ -403,9 +453,6 @@ describe('runAudit (real local D1)', () => {
       // TOP10 cleanup must have been skipped entirely once lease loss was
       // detected (spec item 9/10's "そのチャンクの書き込みを一切発行せず").
       expect(result.top10CleanedCount).toBe(0);
-
-      // Cleanup for subsequent tests: release the rival's hold.
-      await testDb.db.prepare(`UPDATE audit_lock SET owner_token = NULL, locked_until = unixepoch() - 1 WHERE id = 1`).run();
     });
 
     it('a subsequent, legitimate run can still make progress on the rows the dispossessed run left behind', async () => {
@@ -421,11 +468,96 @@ describe('runAudit (real local D1)', () => {
       for (const id of ids) expect(await statusOf(id)).toBe('pending');
 
       // Release the rival, then run for real.
-      await testDb.db.prepare(`UPDATE audit_lock SET owner_token = NULL, locked_until = unixepoch() - 1 WHERE id = 1`).run();
+      await releaseRivalHold();
       const followUp = await runAudit(baseOptions(testDb.db));
       expect(followUp.leaseLostMidRun).toBe(false);
+      expect(followUp.lockReleased).toBe(true);
       expect(followUp.deletedConfirmedInvalidCount).toBe(2);
       for (const id of ids) expect(await statusOf(id)).toBeNull();
+    });
+
+    // The SECOND Sol cross-review finding (2026-08-20): the per-row writes
+    // above were fixed to check `meta.changes`, but the TOP10-cleanup DELETE
+    // — the one remaining fenced write — still read its `meta.changes` raw.
+    // A lease stolen after the final chunk but before that DELETE therefore
+    // fenced it into a silent no-op that was indistinguishable from the
+    // ordinary "nothing to trim" case: the run reported top10CleanedCount=0,
+    // leaseLostMidRun=false and finished "successfully", while out-of-TOP10
+    // verified rows stayed in the table and the failed releaseLock() (the
+    // lock being the rival's by then) went unreported entirely.
+    describe('lease stolen after the final chunk, before TOP10 cleanup', () => {
+      /** 12 verified rows (strictly increasing scores) — 2 of them out of the TOP10, i.e. real cleanup work. */
+      async function seedTwelveVerified(): Promise<string[]> {
+        const ids: string[] = [];
+        for (let i = 0; i < 12; i++) {
+          // `inputs` is irrelevant here: 'verified' rows are never re-verified
+          // by a run, only ranked/trimmed — so no replay fixture is needed.
+          ids.push(await seedScoreRow(testDb.db, { status: 'verified', score: 1000 + i }));
+        }
+        return ids;
+      }
+
+      async function verifiedIdsInDb(): Promise<string[]> {
+        const rows = await testDb.db
+          .prepare(`SELECT id FROM scores WHERE status = 'verified' AND season_id = ?1 AND ruleset_version = ?2 ORDER BY id`)
+          .bind(SEASON_ID, RULESET_VERSION)
+          .all<{ id: string }>();
+        return rows.results.map((r) => r.id);
+      }
+
+      it('leaves the out-of-TOP10 verified rows to the new owner, reports leaseLostMidRun=true, and reports the failed release', async () => {
+        const verifiedIds = await seedTwelveVerified();
+        // Two malformed pending rows: the chunk loop processes and deletes
+        // them normally FIRST, so the theft provably lands after the final
+        // chunk (not during one) — the exact window the per-row fix left open.
+        const pendingIds = [await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) }), await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) })];
+
+        const events: string[] = [];
+        const { db: theftDb, stolen } = wrapDbForTheftBefore(testDb.db, (sql) => sql.includes('rank_seq NOT IN'));
+        const result = await runAudit(baseOptions(theftDb, { onEvent: (e) => events.push(e.type) }));
+
+        expect(stolen()).toBe(true); // the cleanup DELETE really was reached (and the theft really did fire right before it)
+        // The final chunk completed normally before the theft.
+        expect(result.deletedConfirmedInvalidCount).toBe(2);
+        for (const id of pendingIds) expect(await statusOf(id)).toBeNull();
+
+        // 1. The cleanup DELETE was a no-op: ALL 12 verified rows survive,
+        //    including the 2 out-of-TOP10 ones — they are the new owner's to
+        //    trim now, not this dispossessed run's.
+        expect(await verifiedIdsInDb()).toEqual([...verifiedIds].sort());
+        expect(result.top10CleanedCount).toBe(0);
+
+        // 2. ...and that no-op is reported as lease loss, not as a completed run.
+        expect(result.leaseLostMidRun).toBe(true);
+        expect(events).toContain('lease-lost-before-top10-cleanup');
+        expect(events).not.toContain('top10-cleanup');
+
+        // 3. releaseLock() could not release a lock that was no longer ours,
+        //    and that shows up in the result (and the log), not just silently.
+        expect(result.lockReleased).toBe(false);
+        expect(await testDb.db.prepare(`SELECT owner_token FROM audit_lock WHERE id = 1`).first<{ owner_token: string }>()).toEqual({ owner_token: RIVAL_TOKEN });
+      });
+
+      it('reports a lease lost even in the last possible window — after the cleanup, at release time itself', async () => {
+        const verifiedIds = await seedTwelveVerified();
+        const events: string[] = [];
+        // Steal right before releaseLock()'s own UPDATE: every piece of audit
+        // work, TOP10 cleanup included, has already succeeded at this point,
+        // so the ONLY signal that this run did not end cleanly is
+        // releaseLock()'s false return.
+        const { db: theftDb, stolen } = wrapDbForTheftBefore(testDb.db, (sql) => sql.includes('SET owner_token = NULL'));
+        const result = await runAudit(baseOptions(theftDb, { onEvent: (e) => events.push(e.type) }));
+
+        expect(stolen()).toBe(true);
+        // The cleanup itself ran normally, before the theft: the 2
+        // lowest-scoring of the 12 verified rows are gone, 10 survive.
+        expect(result.top10CleanedCount).toBe(2);
+        expect(await verifiedIdsInDb()).toEqual(verifiedIds.slice(2).sort());
+
+        expect(result.lockReleased).toBe(false);
+        expect(result.leaseLostMidRun).toBe(true); // NOT reported as a clean run
+        expect(events).toContain('lease-lost-at-release');
+      });
     });
   });
 

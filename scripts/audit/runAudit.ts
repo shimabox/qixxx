@@ -37,7 +37,9 @@ export type AuditEvent =
   | { type: 'entry-deleted-attempts-exhausted'; id: string; attempts: number }
   | { type: 'lease-lost-mid-chunk' }
   | { type: 'time-limit-reached' }
+  | { type: 'lease-lost-before-top10-cleanup' }
   | { type: 'top10-cleanup'; deletedCount: number }
+  | { type: 'lease-lost-at-release' }
   | { type: 'lock-released'; released: boolean };
 
 export interface RunAuditResult {
@@ -52,6 +54,17 @@ export interface RunAuditResult {
   top10CleanedCount: number;
   reachedTimeLimit: boolean;
   leaseLostMidRun: boolean;
+  /**
+   * Whether this run's own releaseLock() actually released a lease it still
+   * owned. `false` means the lock was NOT ours anymore at release time (lease
+   * expired, or already taken over by a rival owner) — the lock itself is
+   * free/owned-by-someone-else either way, but the run must NOT be reported
+   * as a clean completion: it means the lease was lost at some point after
+   * the last fenced write this run checked, so `leaseLostMidRun` is forced
+   * true alongside it (see runAudit()'s `finally` block). Always `false` when
+   * `acquired` is false — a run that never held the lock never released one.
+   */
+  lockReleased: boolean;
 }
 
 interface PendingRow {
@@ -81,6 +94,12 @@ async function stillHoldsLock(db: D1Database, ownerToken: string): Promise<boole
 
 type FencedWriteOutcome = 'applied' | 'lease-lost' | 'no-op-still-owner';
 
+interface FencedWriteResult {
+  outcome: FencedWriteOutcome;
+  /** `meta.changes` of the write — 0 for both no-op outcomes, >0 only for 'applied'. */
+  changes: number;
+}
+
 /**
  * Runs one fenced (LOCK_FENCE_SQL_FRAGMENT-guarded) UPDATE/DELETE and
  * classifies its outcome — the fix for a Sol cross-review finding (2026-08-
@@ -101,11 +120,22 @@ type FencedWriteOutcome = 'applied' | 'lease-lost' | 'no-op-still-owner';
  * row no longer being 'pending' for some other legitimate reason) is
  * reported as a no-op the caller should simply skip, never as a success —
  * and, critically, never mistaken for lease loss either.
+ *
+ * Used by EVERY fenced write in this file, per-row and set-based alike: the
+ * TOP10 cleanup DELETE (a second Sol cross-review finding, 2026-08-20) was
+ * originally the one fenced write left reading `meta.changes` raw, so a lease
+ * stolen after the final chunk but before the cleanup turned it into a silent
+ * no-op that still reported `top10CleanedCount: 0` on an otherwise
+ * "successful" run — leaving out-of-TOP10 verified rows in place with nothing
+ * in the result saying so. Note the cleanup's `changes === 0` legitimately
+ * happens on most runs (nothing to trim), which is exactly why the ownership
+ * re-check, not the raw count, has to be what distinguishes the two.
  */
-async function runFencedWrite(db: D1Database, ownerToken: string, statement: D1PreparedStatement): Promise<FencedWriteOutcome> {
+async function runFencedWrite(db: D1Database, ownerToken: string, statement: D1PreparedStatement): Promise<FencedWriteResult> {
   const result = await statement.run();
-  if (result.meta.changes > 0) return 'applied';
-  return (await stillHoldsLock(db, ownerToken)) ? 'no-op-still-owner' : 'lease-lost';
+  const changes = result.meta.changes;
+  if (changes > 0) return { outcome: 'applied', changes };
+  return { outcome: (await stillHoldsLock(db, ownerToken)) ? 'no-op-still-owner' : 'lease-lost', changes: 0 };
 }
 
 const EMPTY_RESULT: Omit<RunAuditResult, 'acquired' | 'runStartedAt'> = {
@@ -118,6 +148,7 @@ const EMPTY_RESULT: Omit<RunAuditResult, 'acquired' | 'runStartedAt'> = {
   top10CleanedCount: 0,
   reachedTimeLimit: false,
   leaseLostMidRun: false,
+  lockReleased: false,
 };
 
 /**
@@ -219,7 +250,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // once the retry budget (maxAttempts) is exhausted.
           const nextAttempts = row.audit_attempts + 1;
           if (nextAttempts >= maxAttempts) {
-            const outcome = await runFencedWrite(
+            const { outcome } = await runFencedWrite(
               db,
               ownerToken,
               db.prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`).bind(row.rank_seq, ownerToken)
@@ -237,7 +268,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
             // specific row was already not 'pending' — nothing to count,
             // nothing to report as a failure either. Move on.
           } else {
-            const outcome = await runFencedWrite(
+            const { outcome } = await runFencedWrite(
               db,
               ownerToken,
               db
@@ -266,7 +297,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // is exactly what verdict.ok===true means — this write is
           // defensive/explicit per spec's own "確定値で上書き" wording, not
           // a correction) and flip to verified.
-          const outcome = await runFencedWrite(
+          const { outcome } = await runFencedWrite(
             db,
             ownerToken,
             db
@@ -289,7 +320,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // Layer 1 (spec item 3): a confirmed-invalid result
           // (VerifyReplayResult.ok===false, or a verifyPendingEntry()-level
           // declared-value/version mismatch) — delete immediately, no retry.
-          const outcome = await runFencedWrite(
+          const { outcome } = await runFencedWrite(
             db,
             ownerToken,
             db.prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`).bind(row.rank_seq, ownerToken)
@@ -311,29 +342,59 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
 
     // 3. TOP10 cleanup (spec item 10): verified-scoped on BOTH the inner
     // (candidate TOP10) and outer (delete target) queries, so an unrelated
-    // TOP10-outranked *pending* row is never touched by this step.
+    // TOP10-outranked *pending* row is never touched by this step. Fenced and
+    // outcome-checked exactly like the per-row writes above (runFencedWrite())
+    // — the fence alone would make a dispossessed run's cleanup a silent
+    // no-op, indistinguishable from the (very common) "nothing to trim" case,
+    // so the ownership re-check is what keeps a lease lost between the final
+    // chunk and this statement from being reported as a clean run.
     if (!result.leaseLostMidRun) {
-      const cleanup = await db
-        .prepare(
-          `DELETE FROM scores
-           WHERE status = 'verified' AND season_id = ?1 AND ruleset_version = ?2
-             AND rank_seq NOT IN (
-               SELECT rank_seq FROM scores
-               WHERE status = 'verified' AND season_id = ?1 AND ruleset_version = ?2
-               ORDER BY score DESC, rank_seq ASC
-               LIMIT 10
-             )
-             AND ${LOCK_FENCE_SQL_FRAGMENT}`
-        )
-        .bind(seasonId, rulesetVersion, ownerToken)
-        .run();
-      result.top10CleanedCount = cleanup.meta.changes;
-      emit({ type: 'top10-cleanup', deletedCount: result.top10CleanedCount });
+      const { outcome, changes } = await runFencedWrite(
+        db,
+        ownerToken,
+        db
+          .prepare(
+            `DELETE FROM scores
+             WHERE status = 'verified' AND season_id = ?1 AND ruleset_version = ?2
+               AND rank_seq NOT IN (
+                 SELECT rank_seq FROM scores
+                 WHERE status = 'verified' AND season_id = ?1 AND ruleset_version = ?2
+                 ORDER BY score DESC, rank_seq ASC
+                 LIMIT 10
+               )
+               AND ${LOCK_FENCE_SQL_FRAGMENT}`
+          )
+          .bind(seasonId, rulesetVersion, ownerToken)
+      );
+      if (outcome === 'lease-lost') {
+        // Out-of-TOP10 verified rows are deliberately left in place: they are
+        // the new owner's to trim now, and this run must report itself as
+        // stopped, not as a completed one that happened to trim nothing.
+        result.leaseLostMidRun = true;
+        emit({ type: 'lease-lost-before-top10-cleanup' });
+      } else {
+        result.top10CleanedCount = changes;
+        emit({ type: 'top10-cleanup', deletedCount: result.top10CleanedCount });
+      }
     }
 
     return result;
   } finally {
+    // `result` is the very object the `return` above hands back (the return
+    // expression is evaluated BEFORE this block runs, but it evaluated to
+    // this object's reference), so mutating it here IS observable to the
+    // caller — the release outcome belongs to the run's result, not just to
+    // the log.
     const released = await releaseLock(db, ownerToken);
+    result.lockReleased = released;
+    if (!released && !result.leaseLostMidRun) {
+      // The lease was still ours at the last fenced write we checked, yet gone
+      // by release time: it WAS lost mid-run, we simply found out at the last
+      // possible moment. Reporting it as anything other than a lease-lost run
+      // would be the same silent "success" this whole check exists to prevent.
+      result.leaseLostMidRun = true;
+      emit({ type: 'lease-lost-at-release' });
+    }
     emit({ type: 'lock-released', released });
   }
 }

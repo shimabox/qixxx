@@ -95,8 +95,16 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 [audit] {"type":"entry-verified","id":"..."}
 [audit] {"type":"top10-cleanup","deletedCount":0}
 [audit] {"type":"lock-released","released":true}
-[audit] done. runStartedAt(D1 unixepoch)=... processed=1 verified=1 ...
+[audit] done. runStartedAt(D1 unixepoch)=... processed=1 verified=1 ... leaseLostMidRun=false lockReleased=true
 ```
+
+最終行が `done.` ではなく `INCOMPLETE (lease lost mid-run ...)` になり、
+終了コードが 1 になる場合(`leaseLostMidRun=true` または `lockReleased=false`)は、
+実行の途中でリース(`audit_lock`)を失っており、**残りの pending 行や TOP10 整理を
+意図的に中断している**。リース10分 > 最大実行時間5分(spec item 8)の設計上
+本来起きないはずの状態なので、起きたら実行時間・D1 の応答遅延を確認すること。
+未処理分は次回実行が引き継ぐため、DB 自体は壊れていない
+(中断後の書き込みはフェンシングで一切適用されない)。
 
 `GET /api/ranking` の `entries`(確定 TOP10)に移り、`pendingEntries` から消える。
 `GET /api/ranking/:id/replay` が 200 で見られるようになる(pending の間は 404)。

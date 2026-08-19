@@ -57,12 +57,22 @@ async function main(): Promise<void> {
       return;
     }
 
+    // A run that lost its lease mid-way (or found the lock no longer its own
+    // at release time — `lockReleased === false`) did NOT finish its work:
+    // some pending rows and/or the TOP10 cleanup were deliberately skipped.
+    // That is not the same "normal, expected outcome" as failing to acquire
+    // the lock above, so it must not be logged (or exited) as a clean run —
+    // it means a lease outlived by the run itself, which the 10-minute lease
+    // vs 5-minute runtime budget (spec item 8) is supposed to make impossible.
+    const incomplete = result.leaseLostMidRun || !result.lockReleased;
     console.log(
-      `[audit] done. runStartedAt(D1 unixepoch)=${result.runStartedAt} expiredDeleted=${result.expiredDeletedCount} processed=${result.processedCount} ` +
+      `[audit] ${incomplete ? 'INCOMPLETE (lease lost mid-run — see leaseLostMidRun/lockReleased below; the next run resumes the remaining work).' : 'done.'} ` +
+        `runStartedAt(D1 unixepoch)=${result.runStartedAt} expiredDeleted=${result.expiredDeletedCount} processed=${result.processedCount} ` +
         `verified=${result.verifiedCount} deletedConfirmedInvalid=${result.deletedConfirmedInvalidCount} retried=${result.retriedCount} ` +
         `deletedAttemptsExhausted=${result.deletedAttemptsExhaustedCount} top10Cleaned=${result.top10CleanedCount} ` +
-        `reachedTimeLimit=${result.reachedTimeLimit} leaseLostMidRun=${result.leaseLostMidRun}`
+        `reachedTimeLimit=${result.reachedTimeLimit} leaseLostMidRun=${result.leaseLostMidRun} lockReleased=${result.lockReleased}`
     );
+    if (incomplete) process.exitCode = 1;
   } finally {
     await adapter.dispose();
   }
