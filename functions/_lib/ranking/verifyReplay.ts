@@ -11,6 +11,7 @@
 // everything this module and its core/ dependencies use).
 import { simulateReplayFromRle, ReplayResult } from '../../../src/core/replayEngine';
 import { GameOverReason } from '../../../src/core/session';
+import { RleDecodeError } from '../../../src/core/rle';
 import { TIME_LIMIT_TICKS, MAX_VERIFIED_CLAIMS } from '../../../src/config';
 import type { BenchVerifyHooks } from './benchHooks';
 
@@ -69,8 +70,22 @@ export function verifyReplay(seed: number, rle: Uint8Array, benchHooks?: BenchVe
       // of a reimplementation of it.
       gameFactory: benchHooks?.gameFactory,
     });
-  } catch {
-    return { ok: false, reason: 'malformed-replay' };
+  } catch (err) {
+    // docs/plans/2026-08-19-ranking-free-async task 2's confirmed contract:
+    // ONLY an RLE decode failure (src/core/rle.ts's RleDecodeError, thrown
+    // while core/replayEngine.ts's simulateReplayFromRle() walks
+    // decodeRleRuns()) is folded into the existing 'malformed-replay'
+    // return value, preserving verifyReplay()'s external contract exactly
+    // as verifyReplay.test.ts already requires. Any other exception (e.g. a
+    // genuine bug deep inside GameSession) is NOT this function's to
+    // classify — it propagates to the caller, which for the async-audit
+    // caller (functions/_lib/ranking/verifyPendingEntry.ts / the audit
+    // script) means "unexpected runtime error, retry later" rather than
+    // "confirmed invalid replay, delete immediately".
+    if (err instanceof RleDecodeError) {
+      return { ok: false, reason: 'malformed-replay' };
+    }
+    throw err;
   }
 
   if (!result.reachedGameOver) {

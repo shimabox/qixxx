@@ -21,6 +21,29 @@ export interface InputSample {
   slow: boolean;
 }
 
+/**
+ * Thrown for every decode-time validation failure in this module (an invalid
+ * sample byte, a truncated/over-long varint, an invalid run length, or a
+ * cumulative sample count past the cap) — docs/plans/2026-08-19-ranking-
+ * free-async task 2's confirmed spec.
+ *
+ * Introduced (replacing this module's previous plain `Error` throws) so that
+ * functions/_lib/ranking/verifyReplay.ts can catch *specifically* an RLE
+ * decode failure and continue converting it to its existing
+ * `{ok:false, reason:'malformed-replay'}` return value, while letting any
+ * OTHER, genuinely-unexpected exception (e.g. from deep inside GameSession)
+ * propagate instead of being silently folded into "malformed replay" too.
+ * Kept as a single class (no error-code enum) — nothing downstream branches
+ * on which specific decode failure occurred, only on "was it an RLE decode
+ * failure at all", so a code enum would be unused surface, not safety.
+ */
+export class RleDecodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RleDecodeError';
+  }
+}
+
 const AXIS_VALUES: readonly Axis[] = [-1, 0, 1];
 
 /** Packs one sample into a single byte in [0, 35]. */
@@ -30,10 +53,10 @@ export function encodeSampleByte(s: InputSample): number {
   return dxIdx * 12 + dyIdx * 4 + (s.drawHeld ? 2 : 0) + (s.slow ? 1 : 0);
 }
 
-/** Unpacks a single byte back into a sample. Throws on any value outside [0, 35] (an invalid/corrupt code). */
+/** Unpacks a single byte back into a sample. Throws RleDecodeError on any value outside [0, 35] (an invalid/corrupt code). */
 export function decodeSampleByte(code: number): InputSample {
   if (!Number.isInteger(code) || code < 0 || code > 35) {
-    throw new Error(`rle: invalid sample code ${code}`);
+    throw new RleDecodeError(`rle: invalid sample code ${code}`);
   }
   const dxIdx = Math.floor(code / 12);
   const rem1 = code % 12;
@@ -116,8 +139,8 @@ export function* decodeRleRuns(
     let varintBytes = 0;
     let byte: number;
     do {
-      if (offset >= data.length) throw new Error('rle: truncated varint');
-      if (varintBytes >= MAX_VARINT_BYTES) throw new Error(`rle: varint exceeds ${MAX_VARINT_BYTES} bytes`);
+      if (offset >= data.length) throw new RleDecodeError('rle: truncated varint');
+      if (varintBytes >= MAX_VARINT_BYTES) throw new RleDecodeError(`rle: varint exceeds ${MAX_VARINT_BYTES} bytes`);
       byte = data[offset];
       offset++;
       varintBytes++;
@@ -131,10 +154,10 @@ export function* decodeRleRuns(
     // rejects NaN, ±Infinity, and any non-integer outright; MAX_VARINT_BYTES
     // caps `shift` at 28, so a well-formed varint here is always exact.
     if (!Number.isSafeInteger(runLength) || runLength <= 0) {
-      throw new Error(`rle: invalid run length ${runLength}`);
+      throw new RleDecodeError(`rle: invalid run length ${runLength}`);
     }
     total += runLength;
-    if (total > maxTotalSamples) throw new Error(`rle: exceeds max sample count (${maxTotalSamples})`);
+    if (total > maxTotalSamples) throw new RleDecodeError(`rle: exceeds max sample count (${maxTotalSamples})`);
 
     yield { sample, runLength };
   }
