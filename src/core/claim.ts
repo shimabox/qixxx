@@ -71,8 +71,11 @@ export function floodFillUnclaimed(field: Field, start: Point): Set<number> {
  * outer ring to CLAIMED_*, which — combined with Field.getOccupancy()'s
  * fixed interior-only denominator — could push occupancy past 100%.
  *
- * The claimed state chosen for a pruned cell follows the majority of its
- * claimed neighbors (ties resolve to CLAIMED_FAST).
+ * When called from claimArea(), a pruned border takes the colour of the claim
+ * that made it obsolete. This makes a later claim visually own the former
+ * boundary instead of leaving a one-cell bite of the older colour. Standalone
+ * callers without a claim state fall back to the majority of claimed
+ * neighbors; fallback ties resolve to CLAIMED_FAST.
  */
 interface NeighborStats {
   hasUnclaimedNeighbor: boolean;
@@ -104,7 +107,10 @@ function collectNeighborStats(field: Field, p: Point): NeighborStats {
   return stats;
 }
 
-export function pruneDeadBorders(field: Field): void {
+export function pruneDeadBorders(
+  field: Field,
+  claimState?: typeof CLAIMED_FAST | typeof CLAIMED_SLOW
+): void {
   const width = field.getWidth();
   const height = field.getHeight();
   const borderCells = field.getCellsOfState(BORDER);
@@ -115,7 +121,7 @@ export function pruneDeadBorders(field: Field): void {
 
     const { hasUnclaimedNeighbor, fastCount, slowCount } = collectNeighborStats(field, p);
     if (!hasUnclaimedNeighbor) {
-      field.set(p, slowCount > fastCount ? CLAIMED_SLOW : CLAIMED_FAST);
+      field.set(p, claimState ?? (slowCount > fastCount ? CLAIMED_SLOW : CLAIMED_FAST));
     }
   }
 }
@@ -157,6 +163,8 @@ export function pruneDeadBorders(field: Field): void {
  * a (false-positive) split.
  */
 export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[], speed: LineSpeed): ClaimResult {
+  const claimState = speed === 'slow' ? CLAIMED_SLOW : CLAIMED_FAST;
+
   for (const p of line) {
     field.set(p, BORDER);
   }
@@ -176,8 +184,6 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[]
     }
   }
 
-  const claimState = speed === 'slow' ? CLAIMED_SLOW : CLAIMED_FAST;
-
   let claimedCells = 0;
   for (const p of field.getCellsOfState(UNCLAIMED)) {
     const idx = p.y * width + p.x;
@@ -187,7 +193,7 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[]
     }
   }
 
-  pruneDeadBorders(field);
+  pruneDeadBorders(field, claimState);
 
   return { claimedCells, occupancy: field.getOccupancy(), split };
 }
