@@ -67,6 +67,47 @@ interface PendingRow {
   audit_attempts: number;
 }
 
+/**
+ * Re-checks current lock ownership directly (the same EXISTS(...) condition
+ * every fenced write's own WHERE clause carries — LOCK_FENCE_SQL_FRAGMENT),
+ * used ONLY to disambiguate a fenced write that reported `meta.changes ===
+ * 0` (see runFencedWrite()'s own doc comment for why that disambiguation is
+ * necessary at all).
+ */
+async function stillHoldsLock(db: D1Database, ownerToken: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT ${LOCK_FENCE_SQL_FRAGMENT} AS held`).bind(ownerToken).first<{ held: number }>();
+  return row?.held === 1;
+}
+
+type FencedWriteOutcome = 'applied' | 'lease-lost' | 'no-op-still-owner';
+
+/**
+ * Runs one fenced (LOCK_FENCE_SQL_FRAGMENT-guarded) UPDATE/DELETE and
+ * classifies its outcome — the fix for a Sol cross-review finding (2026-08-
+ * 20): every per-row audit write is fenced so it silently becomes a no-op
+ * once this run's lease has expired (spec item 9's design), but the ORIGINAL
+ * code never inspected `meta.changes` at all — it unconditionally counted
+ * every write as a success and kept looping, so a lease lost between one
+ * chunk's heartbeat (renewLock()) and its own per-row writes let a
+ * dispossessed run "complete successfully" while quietly writing nothing,
+ * violating the completion requirement that a lease-losing run must
+ * actually STOP (`leaseLostMidRun`), not just fail to mutate anything.
+ *
+ * `changes === 0` is not by itself proof of lease loss — under this
+ * design's own single-owner invariant it practically always IS (nothing
+ * else can un-pending a row this run hasn't touched yet), but a direct
+ * re-check of ownership (stillHoldsLock()) is cheap and removes any doubt:
+ * if ownership is confirmed intact, the write's own effect (e.g. the target
+ * row no longer being 'pending' for some other legitimate reason) is
+ * reported as a no-op the caller should simply skip, never as a success —
+ * and, critically, never mistaken for lease loss either.
+ */
+async function runFencedWrite(db: D1Database, ownerToken: string, statement: D1PreparedStatement): Promise<FencedWriteOutcome> {
+  const result = await statement.run();
+  if (result.meta.changes > 0) return 'applied';
+  return (await stillHoldsLock(db, ownerToken)) ? 'no-op-still-owner' : 'lease-lost';
+}
+
 const EMPTY_RESULT: Omit<RunAuditResult, 'acquired' | 'runStartedAt'> = {
   expiredDeletedCount: 0,
   processedCount: 0,
@@ -178,22 +219,43 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // once the retry budget (maxAttempts) is exhausted.
           const nextAttempts = row.audit_attempts + 1;
           if (nextAttempts >= maxAttempts) {
-            await db
-              .prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`)
-              .bind(row.rank_seq, ownerToken)
-              .run();
-            result.deletedAttemptsExhaustedCount++;
-            emit({ type: 'entry-deleted-attempts-exhausted', id: row.id, attempts: nextAttempts });
+            const outcome = await runFencedWrite(
+              db,
+              ownerToken,
+              db.prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`).bind(row.rank_seq, ownerToken)
+            );
+            if (outcome === 'lease-lost') {
+              result.leaseLostMidRun = true;
+              emit({ type: 'lease-lost-mid-chunk' });
+              break chunkLoop;
+            }
+            if (outcome === 'applied') {
+              result.deletedAttemptsExhaustedCount++;
+              emit({ type: 'entry-deleted-attempts-exhausted', id: row.id, attempts: nextAttempts });
+            }
+            // 'no-op-still-owner': the lease is confirmed intact but this
+            // specific row was already not 'pending' — nothing to count,
+            // nothing to report as a failure either. Move on.
           } else {
-            await db
-              .prepare(
-                `UPDATE scores SET audit_attempts = ?1, next_attempt_at = unixepoch() + ?2
-                 WHERE rank_seq = ?3 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`
-              )
-              .bind(nextAttempts, AUDIT_RETRY_DELAY_SECONDS, row.rank_seq, ownerToken)
-              .run();
-            result.retriedCount++;
-            emit({ type: 'entry-retry-scheduled', id: row.id, attempts: nextAttempts });
+            const outcome = await runFencedWrite(
+              db,
+              ownerToken,
+              db
+                .prepare(
+                  `UPDATE scores SET audit_attempts = ?1, next_attempt_at = unixepoch() + ?2
+                   WHERE rank_seq = ?3 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`
+                )
+                .bind(nextAttempts, AUDIT_RETRY_DELAY_SECONDS, row.rank_seq, ownerToken)
+            );
+            if (outcome === 'lease-lost') {
+              result.leaseLostMidRun = true;
+              emit({ type: 'lease-lost-mid-chunk' });
+              break chunkLoop;
+            }
+            if (outcome === 'applied') {
+              result.retriedCount++;
+              emit({ type: 'entry-retry-scheduled', id: row.id, attempts: nextAttempts });
+            }
           }
           continue;
         }
@@ -204,25 +266,43 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // is exactly what verdict.ok===true means — this write is
           // defensive/explicit per spec's own "確定値で上書き" wording, not
           // a correction) and flip to verified.
-          await db
-            .prepare(
-              `UPDATE scores SET status = 'verified', score = ?1, stage = ?2, duration_ticks = ?3
-               WHERE rank_seq = ?4 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`
-            )
-            .bind(verdict!.score, verdict!.stage, verdict!.durationTicks, row.rank_seq, ownerToken)
-            .run();
-          result.verifiedCount++;
-          emit({ type: 'entry-verified', id: row.id });
+          const outcome = await runFencedWrite(
+            db,
+            ownerToken,
+            db
+              .prepare(
+                `UPDATE scores SET status = 'verified', score = ?1, stage = ?2, duration_ticks = ?3
+                 WHERE rank_seq = ?4 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`
+              )
+              .bind(verdict!.score, verdict!.stage, verdict!.durationTicks, row.rank_seq, ownerToken)
+          );
+          if (outcome === 'lease-lost') {
+            result.leaseLostMidRun = true;
+            emit({ type: 'lease-lost-mid-chunk' });
+            break chunkLoop;
+          }
+          if (outcome === 'applied') {
+            result.verifiedCount++;
+            emit({ type: 'entry-verified', id: row.id });
+          }
         } else {
           // Layer 1 (spec item 3): a confirmed-invalid result
           // (VerifyReplayResult.ok===false, or a verifyPendingEntry()-level
           // declared-value/version mismatch) — delete immediately, no retry.
-          await db
-            .prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`)
-            .bind(row.rank_seq, ownerToken)
-            .run();
-          result.deletedConfirmedInvalidCount++;
-          emit({ type: 'entry-deleted-confirmed-invalid', id: row.id, reason: verdict!.reason });
+          const outcome = await runFencedWrite(
+            db,
+            ownerToken,
+            db.prepare(`DELETE FROM scores WHERE rank_seq = ?1 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`).bind(row.rank_seq, ownerToken)
+          );
+          if (outcome === 'lease-lost') {
+            result.leaseLostMidRun = true;
+            emit({ type: 'lease-lost-mid-chunk' });
+            break chunkLoop;
+          }
+          if (outcome === 'applied') {
+            result.deletedConfirmedInvalidCount++;
+            emit({ type: 'entry-deleted-confirmed-invalid', id: row.id, reason: verdict!.reason });
+          }
         }
       }
 
