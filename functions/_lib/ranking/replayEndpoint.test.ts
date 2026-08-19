@@ -18,6 +18,7 @@ interface StubRow {
   replay_format_version: number;
   seed: number;
   inputs: ArrayBuffer;
+  status?: 'verified' | 'pending';
 }
 
 const INPUT_BYTES = new Uint8Array([0x04, 0x0a, 0x11, 0x02]);
@@ -29,11 +30,18 @@ function currentRow(overrides: Partial<StubRow> = {}): StubRow {
     replay_format_version: REPLAY_FORMAT_VERSION,
     seed: 1264,
     inputs: INPUT_BYTES.slice().buffer,
+    status: 'verified',
     ...overrides,
   };
 }
 
-/** A D1 stub that answers `first()` with `row` and records every statement it was asked to prepare. */
+/**
+ * A D1 stub that answers `first()` with `row` and records every statement it
+ * was asked to prepare. Simulates the real `WHERE id = ? AND status =
+ * 'verified'` clause (docs/plans/2026-08-19-ranking-free-async spec item 6)
+ * by returning null instead of `row` whenever `row.status !== 'verified'` —
+ * matching how a real D1 query simply wouldn't match a pending row at all.
+ */
 function makeEnv(row: StubRow | null) {
   const statements: string[] = [];
   const bindings: unknown[][] = [];
@@ -44,7 +52,7 @@ function makeEnv(row: StubRow | null) {
         return {
           bind(...args: unknown[]) {
             bindings.push(args);
-            return { first: async () => row };
+            return { first: async () => (row !== null && row.status !== 'verified' ? null : row) };
           },
         };
       },
@@ -121,5 +129,27 @@ describe('GET /api/ranking/:id/replay', () => {
     const { response, bindings } = await callHandler(currentRow(), { id: ['abc123', 'ignored'] });
     expect(response.status).toBe(200);
     expect(bindings[0]).toEqual(['abc123']);
+  });
+
+  // docs/plans/2026-08-19-ranking-free-async spec item 6: pending IDs must
+  // never be servable, even by a direct request bypassing the UI entirely.
+  describe('Free-tier async-audit: verified-only access', () => {
+    it('the SQL query enforces status = verified, not just the UI', async () => {
+      const { statements } = await callHandler(currentRow());
+      expect(statements[0]).toMatch(/status\s*=\s*'verified'/i);
+    });
+
+    it('returns 404 (not 410) for a pending row at the current season/ruleset/format — distinct from the version-mismatch 410', async () => {
+      const { response, body } = await callHandler(currentRow({ status: 'pending' }));
+      expect(response.status).toBe(404);
+      expect(body.error).toBe('not found');
+      expect(body.rleBase64).toBeUndefined();
+    });
+
+    it('a pending row never leaks any replay data even though the row itself "exists"', async () => {
+      const { response, body } = await callHandler(currentRow({ status: 'pending' }));
+      expect(response.status).not.toBe(200);
+      expect(JSON.stringify(body)).not.toMatch(/rleBase64/);
+    });
   });
 });

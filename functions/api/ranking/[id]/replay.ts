@@ -1,9 +1,19 @@
-// GET /api/ranking/:id/replay (docs/plans/2026-08-16-score-ranking task 3):
-// returns the (seed, RLE input list, version info) needed to replay a
-// ranked run. Only ever served when the row's season_id, ruleset_version,
-// AND replay_format_version all match the server's current values — an old
-// ID whose season/ruleset/format has since moved on gets 410 (data is kept,
+// GET /api/ranking/:id/replay (docs/plans/2026-08-16-score-ranking task 3,
+// extended by docs/plans/2026-08-19-ranking-free-async spec item 6): returns
+// the (seed, RLE input list, version info) needed to replay a ranked run.
+// Only ever served when the row's season_id, ruleset_version, AND
+// replay_format_version all match the server's current values — an old ID
+// whose season/ruleset/format has since moved on gets 410 (data is kept,
 // never deleted; see task 3's confirmed spec).
+//
+// Free-async addition: the lookup itself now requires `status = 'verified'`
+// — a pending row's replay is not served at all. This is enforced in SQL
+// (`WHERE id = ? AND status = 'verified'`), not just in the UI: a pending
+// row simply doesn't match the WHERE clause, so `first()` returns null and
+// this handler's existing "row not found" path (404) fires naturally —
+// deliberately distinct from the 410 below (which means "row exists, but
+// this endpoint refuses to serve it for this season/ruleset/format"). A
+// pending ID is never served even by a direct, UI-bypassing request.
 import type { Env } from '../../../_lib/types';
 import { jsonResponse } from '../../../_lib/response';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../../_lib/ranking/season';
@@ -32,7 +42,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   const row = await env.DB.prepare(
     `SELECT season_id, ruleset_version, replay_format_version, seed, inputs
-     FROM scores WHERE id = ?`
+     FROM scores WHERE id = ? AND status = 'verified'`
   )
     .bind(id)
     .first<ReplayRow>();
