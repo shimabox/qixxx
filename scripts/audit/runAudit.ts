@@ -8,6 +8,7 @@
 // all under the audit_lock mutex (scripts/audit/lock.ts), with every write
 // statement fenced by LOCK_FENCE_SQL_FRAGMENT (spec item 9's "二重防御").
 import { verifyPendingEntry } from '../../functions/_lib/ranking/verifyPendingEntry';
+import { pendingFreshnessCutoff } from '../../functions/_lib/ranking/pendingGate';
 import type { BenchVerifyHooks } from '../../functions/_lib/ranking/benchHooks';
 import { acquireLock, renewLock, releaseLock, LOCK_FENCE_SQL_FRAGMENT } from './lock';
 import { safeErrorName, safeErrorDetail } from './logSafety';
@@ -202,12 +203,17 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
   const result: RunAuditResult = { acquired: true, runStartedAt, ...EMPTY_RESULT };
 
   try {
-    // 1. Expired-pending sweep (spec item 7's "監査ジョブの冒頭で削除").
+    // 1. Expired-pending sweep ("監査ジョブの冒頭で削除"), against the SAME
+    // 24h boundary every reader uses (the spec's 24時間境界の統一定義:
+    // expired = `created_at <= cutoff`) — pendingFreshnessCutoff() is shared
+    // with GET /api/ranking, POST /api/scores and the replay endpoint, so the
+    // sweep can never delete a row a reader still considered fresh.
+    //
     // created_at is milliseconds (Date.now()-based at POST time);
     // runStartedAt is D1-side unixepoch() SECONDS — converted to the same
     // millisecond epoch so the whole audit run reasons about "now" using
     // exactly one clock (D1's), never Node's.
-    const expiryCutoffMs = runStartedAt * 1000 - 24 * 60 * 60 * 1000;
+    const expiryCutoffMs = pendingFreshnessCutoff(runStartedAt * 1000);
     const expiredDelete = await db
       .prepare(`DELETE FROM scores WHERE status = 'pending' AND created_at <= ?1 AND ${LOCK_FENCE_SQL_FRAGMENT}`)
       .bind(expiryCutoffMs, ownerToken)

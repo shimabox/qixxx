@@ -25,7 +25,7 @@ import { validateName, validateXHandle } from '../_lib/ranking/nameValidation';
 import { validateSeed } from '../_lib/ranking/seedValidation';
 import { validateScore, validateStage } from '../_lib/ranking/scoreValidation';
 import { deriveDurationTicksFromRle } from '../_lib/ranking/rleDuration';
-import { getVerifiedTenthPlaceThreshold, isWithinProvisionalRange, PENDING_EXPIRY_MS } from '../_lib/ranking/pendingGate';
+import { getVerifiedTenthPlaceThreshold, isWithinProvisionalRange, pendingFreshnessCutoff } from '../_lib/ranking/pendingGate';
 import { requireIpHashKey, computeIpHash, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
@@ -283,7 +283,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const id = generateShareId();
   const createdAt = Date.now();
   const ipHash = await computeIpHash(ip, ipHashKey);
-  const expiryCutoff = createdAt - PENDING_EXPIRY_MS;
+  // The shared 24h boundary (the spec's 24時間境界の統一定義): rows with
+  // `created_at > cutoff` are fresh and therefore counted; `<= cutoff` are
+  // expired and ignored. Same helper the display query, the replay endpoint
+  // and the audit sweep all use.
+  const expiryCutoff = pendingFreshnessCutoff(createdAt);
 
   // 3. Atomic pending-cap INSERT (spec item 7's confirmed design): a single
   // INSERT...SELECT...WHERE statement, so the two COUNT(*) checks and the

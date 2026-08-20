@@ -40,11 +40,12 @@ ALTER TABLE scores ADD COLUMN ip_hash TEXT;
 ALTER TABLE scores ADD COLUMN audit_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE scores ADD COLUMN next_attempt_at INTEGER;
 
--- Serves BOTH the confirmed-TOP10 query (status='verified') and the
--- pendingEntries / pre-gate threshold query (status='pending') — same
--- (season_id, ruleset_version, score DESC, rank_seq ASC) ordering either
--- way, just filtered by a different `status` value, so one composite index
--- with `status` leading covers both call sites (functions/_lib/ranking/
+-- Serves BOTH the confirmed-TOP10 query (status='verified', used for
+-- `entries` and the pre-gate's 10th-place threshold) and the display-pending
+-- candidate query (status='pending', LIMIT 3, merged into `displayEntries`)
+-- — same (season_id, ruleset_version, score DESC, rank_seq ASC) ordering
+-- either way, just filtered by a different `status` value, so one composite
+-- index with `status` leading covers both call sites (functions/_lib/ranking/
 -- pendingGate.ts, functions/api/ranking.ts).
 CREATE INDEX idx_scores_status_season_ruleset_rank
   ON scores(status, season_id, ruleset_version, score DESC, rank_seq ASC);

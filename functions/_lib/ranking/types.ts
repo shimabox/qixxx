@@ -61,28 +61,35 @@ export interface RankingEntry {
 }
 
 /**
- * One row of GET /api/ranking's `pendingEntries` (docs/plans/2026-08-19-
- * ranking-free-async spec item 5): deliberately carries no rank number — the
- * UI renders these as an unranked "検証待ち" list above the confirmed board,
- * never inserted into it. `id` is included only for a stable UI list key
- * (it is already a public identifier elsewhere); it grants no extra access —
- * GET /api/ranking/:id/replay is verified-only regardless of whether the
- * caller learned an id from here.
+ * One row of GET /api/ranking's `displayEntries` (docs/plans/2026-08-19-
+ * ranking-free-async spec item 5, 2026-08-20 revision): the SINGLE merged
+ * board the UI actually draws — verified rows plus the freshest few pending
+ * ones, ordered by the same official rule (score DESC, rank_seq ASC) and
+ * capped at 10.
+ *
+ * Deliberately an EXTENSION of RankingEntry rather than a parallel shape:
+ * every field the UI already relies on (`replayAvailable` above all) is
+ * present on a pending row too, so one rendering path — and one
+ * `replayAvailable` check — covers both. `status` is the only addition, and
+ * is limited to these two values.
+ *
+ * The array's own order IS the displayed ranking; there is no rank-number
+ * field (and `rank_seq` itself never leaves the server — it is an internal
+ * tie-break key only).
  */
-export interface PendingRankingEntry {
-  id: string;
-  createdAt: string; // ISO 8601
-  score: number;
-  stage: number;
-  name: string;
-  xHandle: string | null;
-  unverified: true;
-}
+export type DisplayRankingEntry = RankingEntry & { status: 'pending' | 'verified' };
 
-/** GET /api/ranking/:id/replay's success response. */
+/**
+ * GET /api/ranking/:id/replay's success response.
+ *
+ * `status` (spec item 7's 2026-08-20 revision): a fresh pending row IS
+ * replayable now, so the viewer has to be told which kind of row it is
+ * watching in order to keep the VERIFYING notice up for the whole playback.
+ */
 export interface ReplayPayload {
   seed: number;
   rleBase64: string;
   rulesetVersion: number;
   replayFormatVersion: number;
+  status: 'pending' | 'verified';
 }
