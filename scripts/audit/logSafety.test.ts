@@ -3,7 +3,7 @@
 // run never emits a forbidden field — lives in runAudit.test.ts's
 // "public-log hygiene" describe; this file covers the primitives.
 import { describe, it, expect } from 'vitest';
-import { safeErrorName, safeErrorDetail, errorDetailEnabled, ERROR_DETAIL_ENV_VAR, MAX_ERROR_DETAIL_CHARS } from './logSafety';
+import { safeErrorName, safeErrorDetail, errorDetailEnabled, ERROR_DETAIL_ENV_VAR, MAX_ERROR_DETAIL_CHARS, ALLOWED_ERROR_NAMES } from './logSafety';
 
 /** A realistically hostile error: a multi-line message with a path/connection-shaped first line, plus a real stack. */
 function messyError(): Error {
@@ -24,16 +24,61 @@ describe('safeErrorName', () => {
     expect(summary).not.toContain('/Users/');
   });
 
+  it('returns the repo-defined audit-stack error names', () => {
+    const missingKey = new Error('...');
+    missingKey.name = 'MissingIpHashKeyError';
+    expect(safeErrorName(missingKey)).toBe('MissingIpHashKeyError');
+    const decode = new Error('...');
+    decode.name = 'RleDecodeError';
+    expect(safeErrorName(decode)).toBe('RleDecodeError');
+  });
+
   it('refuses a name that is not a plain identifier (a forged/interpolated one)', () => {
     const forged = new Error('boom');
     forged.name = 'Error: leaked /etc/passwd';
     expect(safeErrorName(forged)).toBe('UnknownError');
   });
 
+  // The user-review finding (2026-08-20): an identifier-SHAPED name used to
+  // pass, so a thrown object could publish arbitrary text just by naming
+  // itself. `name` is a writable property — only a fixed allowlist is
+  // evidence that a name is a real, vetted class name.
+  it('refuses an identifier-shaped but unlisted name (the smuggling case)', () => {
+    const forged = new Error('boom');
+    forged.name = 'Secret_supersecret';
+    expect(safeErrorName(forged)).toBe('UnknownError');
+    const camouflaged = new Error('boom');
+    camouflaged.name = 'ErrorFromHost_db_prod_internal_example_com';
+    expect(safeErrorName(camouflaged)).toBe('UnknownError');
+  });
+
+  it('refuses a real Error subclass that is not on the allowlist', () => {
+    class TotallyLegitimateError extends Error {
+      constructor() {
+        super('boom');
+        this.name = 'TotallyLegitimateError';
+      }
+    }
+    expect(safeErrorName(new TotallyLegitimateError())).toBe('UnknownError');
+  });
+
   it('refuses an over-long name rather than echoing it', () => {
     const forged = new Error('boom');
     forged.name = 'A'.repeat(200);
     expect(safeErrorName(forged)).toBe('UnknownError');
+  });
+
+  it('every allowlisted name is echoed as itself (the list is the whole contract)', () => {
+    for (const name of ALLOWED_ERROR_NAMES) {
+      const err = new Error('boom');
+      err.name = name;
+      expect(safeErrorName(err)).toBe(name);
+    }
+  });
+
+  it('the allowlist itself stays small and identifier-shaped (no room for a smuggled entry)', () => {
+    expect(ALLOWED_ERROR_NAMES.length).toBeLessThanOrEqual(16);
+    for (const name of ALLOWED_ERROR_NAMES) expect(name).toMatch(/^[A-Za-z][A-Za-z0-9]{0,39}$/);
   });
 
   it('handles non-Error throws without echoing them', () => {

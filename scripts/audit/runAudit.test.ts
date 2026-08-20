@@ -610,12 +610,19 @@ describe('runAudit (real local D1)', () => {
   // the event type.
   describe('public-log hygiene (events are published output)', () => {
     /**
-     * The complete set of fields each event kind may carry. Deliberately
-     * exhaustive and deliberately annoying to extend: adding a field to an
-     * AuditEvent fails here until it is consciously added to this list (and,
-     * per docs/ranking-audit-runbook.md §"ログ方針", justified as publishable).
+     * The complete set of fields each event kind may carry.
+     *
+     * The mapped type over `AuditEvent['type']` is the point: a new event kind
+     * added to the union makes THIS OBJECT fail to compile (`npm run
+     * typecheck` covers scripts/**\/*.ts, this file included), so a kind can
+     * never reach the published log without being listed here and justified
+     * against docs/ranking-audit-runbook.md §5's log policy. A user review
+     * (2026-08-20) caught the earlier `Record<string, ...>` version, which
+     * silently accepted new kinds and left the ones no test happens to
+     * trigger (lease-lost-*, time-limit-reached, attempts-exhausted)
+     * unchecked entirely.
      */
-    const ALLOWED_EVENT_FIELDS: Record<string, readonly string[]> = {
+    const ALLOWED_EVENT_FIELDS: { [K in AuditEvent['type']]: readonly string[] } = {
       'lock-not-acquired': [],
       'lock-acquired': ['runStartedAt'],
       'expired-pending-deleted': ['count'],
@@ -632,6 +639,31 @@ describe('runAudit (real local D1)', () => {
       'lock-released': ['released'],
     };
 
+    /**
+     * One fully-populated instance of EVERY event kind, again mapped over the
+     * union so a new kind fails to compile until it has a fixture here. Each
+     * fixture carries every OPTIONAL field too (errorDetail), so the checks
+     * below see the widest shape a kind can take — a real run only ever emits
+     * a subset, and several kinds (lease-lost-*, time-limit-reached,
+     * attempts-exhausted) need contrived conditions to reach at all.
+     */
+    const EVENT_FIXTURES: { [K in AuditEvent['type']]: Extract<AuditEvent, { type: K }> } = {
+      'lock-not-acquired': { type: 'lock-not-acquired' },
+      'lock-acquired': { type: 'lock-acquired', runStartedAt: 1787187884 },
+      'expired-pending-deleted': { type: 'expired-pending-deleted', count: 3 },
+      'chunk-fetched': { type: 'chunk-fetched', count: 50 },
+      'entry-verified': { type: 'entry-verified', id: 'kX7pQ2mB' },
+      'entry-deleted-confirmed-invalid': { type: 'entry-deleted-confirmed-invalid', id: 'kX7pQ2mB', reason: 'declared-score-mismatch' },
+      'entry-retry-scheduled': { type: 'entry-retry-scheduled', id: 'kX7pQ2mB', attempts: 1, errorName: 'TypeError', errorDetail: 'a first line' },
+      'entry-deleted-attempts-exhausted': { type: 'entry-deleted-attempts-exhausted', id: 'kX7pQ2mB', attempts: 3, errorName: 'TypeError', errorDetail: 'a first line' },
+      'lease-lost-mid-chunk': { type: 'lease-lost-mid-chunk' },
+      'time-limit-reached': { type: 'time-limit-reached' },
+      'lease-lost-before-top10-cleanup': { type: 'lease-lost-before-top10-cleanup' },
+      'top10-cleanup': { type: 'top10-cleanup', deletedCount: 2 },
+      'lease-lost-at-release': { type: 'lease-lost-at-release' },
+      'lock-released': { type: 'lock-released', released: true },
+    };
+
     function assertOnlyAllowedFields(events: AuditEvent[]): void {
       expect(events.length).toBeGreaterThan(0);
       for (const event of events) {
@@ -642,6 +674,16 @@ describe('runAudit (real local D1)', () => {
           expect(allowed, `event '${event.type}' carries an unexpected field '${key}'`).toContain(key);
         }
       }
+    }
+
+    /** Field-level patterns that must never appear in a published log line, whatever the event kind. */
+    function assertNoForbiddenContent(events: AuditEvent[], extraForbiddenStrings: readonly string[] = []): void {
+      const printed = events.map((e) => JSON.stringify(e)).join('\n');
+      expect(printed).not.toMatch(/[0-9a-f]{32}/); // owner_token / ip_hash / any other hash-shaped value
+      expect(printed).not.toMatch(/\bat .*\.ts:\d+/); // stack frames
+      expect(printed).not.toMatch(/\/(Users|home|root|var)\//); // absolute paths
+      expect(printed).not.toMatch(/ip_hash|owner_token|RANKING_IP_HASH_KEY/i);
+      for (const forbidden of extraForbiddenStrings) expect(printed).not.toContain(forbidden);
     }
 
     /** Captures the audit lock's owner_token as acquireLock() binds it, so the assertions below can look for the REAL secret, not a stand-in. */
@@ -662,6 +704,32 @@ describe('runAudit (real local D1)', () => {
     }
 
     const IP_HASH = 'ip-hash-8f3b1c2d4e5a6b7c8d9e0f1a2b3c4d5e';
+
+    // The checks below run against REAL runs, which can only reach the event
+    // kinds their scenario produces. This one covers the union exhaustively —
+    // including the kinds no test can easily provoke — so every kind's widest
+    // possible shape is inspected, not just the convenient ones.
+    it('EVERY event kind (typed fixtures over the whole AuditEvent union) carries only allowlisted, publishable fields', () => {
+      const fixtures = Object.values(EVENT_FIXTURES) as AuditEvent[];
+
+      // The fixture table and the field table must both stay complete: the
+      // mapped types make that a compile-time guarantee, and these two
+      // assertions make a mismatch visible at runtime too (a stale key left
+      // behind after a rename, say).
+      expect(Object.keys(EVENT_FIXTURES).sort()).toEqual(Object.keys(ALLOWED_EVENT_FIELDS).sort());
+      for (const [key, fixture] of Object.entries(EVENT_FIXTURES)) expect(fixture.type).toBe(key);
+
+      // Each fixture must actually exercise every field its kind may carry —
+      // otherwise "the fixture is clean" would say nothing about a field no
+      // fixture populates.
+      for (const fixture of fixtures) {
+        const allowed = ALLOWED_EVENT_FIELDS[fixture.type];
+        expect(Object.keys(fixture).filter((k) => k !== 'type').sort(), `fixture for '${fixture.type}' must populate every allowlisted field`).toEqual([...allowed].sort());
+      }
+
+      assertOnlyAllowedFields(fixtures);
+      assertNoForbiddenContent(fixtures);
+    });
 
     it('a run covering every ordinary outcome leaks no ip_hash, no owner_token and no raw error text', async () => {
       const seed = 9700;
@@ -694,14 +762,8 @@ describe('runAudit (real local D1)', () => {
       assertOnlyAllowedFields(events);
 
       // What the CLI would actually print, checked as text.
-      const printed = events.map((e) => JSON.stringify(e)).join('\n');
-      expect(printed).not.toContain(IP_HASH);
-      expect(printed).not.toContain('ip_hash');
       expect(ownerToken()).toMatch(/^[0-9a-f]{32}$/); // the wrapper really did capture it
-      expect(printed).not.toContain(ownerToken()!);
-      expect(printed).not.toMatch(/[0-9a-f]{32}/); // nor anything else token/hash-shaped
-      expect(printed).not.toMatch(/\bat .*\.ts:\d+/); // no stack frames
-      expect(printed).not.toContain('/Users/'); // no absolute paths
+      assertNoForbiddenContent(events, [IP_HASH, ownerToken()!]);
 
       // The confirmed-invalid event reports the KIND of rejection only —
       // never the declared-vs-resimulated values behind it.
@@ -726,15 +788,28 @@ describe('runAudit (real local D1)', () => {
       await runAudit(baseOptions(testDb.db, { onEvent: (e) => events.push(e) }));
 
       const retry = events.find((e) => e.type === 'entry-retry-scheduled');
-      expect(retry).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'D1ConnectionError' });
+      // 'D1ConnectionError' is a plausible-looking but UNLISTED class name, so
+      // it is reported as 'UnknownError' rather than echoed (logSafety.ts's
+      // ALLOWED_ERROR_NAMES) — the class name itself is attacker-influenceable
+      // in the general case.
+      expect(retry).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'UnknownError' });
       assertOnlyAllowedFields(events);
+      assertNoForbiddenContent(events, ['ECONNREFUSED', '10.1.2.3', 'D1ConnectionError', 'second line of the message']);
+    });
 
-      const printed = events.map((e) => JSON.stringify(e)).join('\n');
-      expect(printed).not.toContain('ECONNREFUSED');
-      expect(printed).not.toContain('10.1.2.3');
-      expect(printed).not.toContain('abcdef0123456789abcdef0123456789');
-      expect(printed).not.toContain('second line of the message');
-      expect(printed).not.toMatch(/\bat .*\.ts:\d+/);
+    it('an allowlisted error class IS named, so a retry stays diagnosable', async () => {
+      await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([0, 1]) });
+      const verifyPendingEntryModule = await import('../../functions/_lib/ranking/verifyPendingEntry');
+      vi.spyOn(verifyPendingEntryModule, 'verifyPendingEntry').mockImplementation(() => {
+        throw new TypeError('cannot read properties of undefined (reading "x")');
+      });
+
+      const events: AuditEvent[] = [];
+      await runAudit(baseOptions(testDb.db, { onEvent: (e) => events.push(e) }));
+
+      expect(events.find((e) => e.type === 'entry-retry-scheduled')).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'TypeError' });
+      assertOnlyAllowedFields(events);
+      assertNoForbiddenContent(events, ['cannot read properties']);
     });
 
     it('opting into error detail (local debugging only) adds the first message line, still without the stack', async () => {

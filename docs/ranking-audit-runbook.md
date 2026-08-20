@@ -196,12 +196,34 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 ローカル実行時に環境変数 `AUDIT_LOG_ERROR_DETAIL=1` を付けたときだけ出る
 — **workflow では絶対に設定しない**。
 
+クラス名は**固定の許可リスト**(`ALLOWED_ERROR_NAMES`)と照合し、載っていない名前は
+すべて `UnknownError` にする。`Error#name` は書き換え可能なただのプロパティなので、
+「識別子の形をしている」ことは本物のクラス名である証拠にならない
+(`{name:"Secret_supersecret"}` がそのまま公開ログに出てしまう)。
+許可リストに足すのは **どこで throw されるかを確認したクラスだけ**。
+未収載のクラスは `UnknownError` になるが、それはローカル再実行1回で特定できる
+コストであり、素性不明の文字列を公開する損失とは釣り合わない。
+
+### 5.2 エントリポイントの構造(初期化例外の取りこぼし防止)
+
+`scripts/audit/cli.ts` は **最小の bootstrap** であり、コマンド本体は
+`./auditCommand` を **動的 import** して読み込む。静的 import にすると
+**モジュール初期化中の throw** が bootstrap の catch より前に発生し、
+vite-node が生スタック(絶対パス込み)を公開ログに出してしまうため
+(`scripts/audit/constants.ts` はトップレベル `throw` で不変条件を検査しており、
+この経路は実在する)。
+
+- `cli.ts` の静的 import は **`./logSafety` の1つだけ**に保つこと。
+  logSafety.ts は依存ゼロ・副作用なし(定数と正規表現と Set のみ)で、
+  それ自身が初期化時に throw しないことが構造的に保証されている。
+- この2点は `scripts/audit/cli.test.ts` が静的検査 + 実サブプロセス起動で担保する。
+
 ```sh
 # ローカルで詳細を見たいときだけ
 AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli.ts
 ```
 
-### 5.2 イベントを追加するときのチェック項目
+### 5.3 イベントを追加するときのチェック項目
 
 `AuditEvent` に種別やフィールドを足すときは、以下を**すべて**確認する。
 
@@ -210,11 +232,14 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
       `seed` / `inputs` も監査ログには不要 — 必要なのは `id` だけ)。
 - [ ] 例外を扱うイベントなら、`safeErrorName()` / `safeErrorDetail()` を通しているか
       (`err` をそのまま埋め込んでいないか)。
-- [ ] `scripts/audit/runAudit.test.ts` の `ALLOWED_EVENT_FIELDS` に追加したか。
-      **ここを更新しないとテストが落ちる**(意図的なゲート。落ちたら上のチェックを
-      通ってから追加する)。
-- [ ] 新しい種別を足したなら、`scripts/audit/logSafety.test.ts` / 同 hygiene テストが
-      その種別を実際に通過する経路になっているか。
+- [ ] `scripts/audit/runAudit.test.ts` の `ALLOWED_EVENT_FIELDS` と `EVENT_FIXTURES`
+      の**両方**に追加したか。どちらも `AuditEvent['type']` のマップ型なので、
+      種別を足すと **`npm run typecheck` がコンパイルエラーで落ちる**
+      (意図的なゲート。上のチェックを通してから追加する)。
+- [ ] fixture は**その種別が持ちうる全フィールド**(任意フィールド含む)を
+      埋めたか。テストが「fixture の鍵集合 == 許可フィールド集合」を検査するため、
+      埋め忘れると落ちる。実際に発生させるのが難しい種別(`lease-lost-*` 等)も
+      fixture 経由で必ず衛生チェックを通る。
 
 ## 6. 既知の残余リスク・未決事項
 

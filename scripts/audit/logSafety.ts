@@ -30,19 +30,58 @@ export const ERROR_DETAIL_ENV_VAR = 'AUDIT_LOG_ERROR_DETAIL';
 /** Hard cap on an opted-in error detail, so even a local log can't be flooded by a megabyte-long message. */
 export const MAX_ERROR_DETAIL_CHARS = 200;
 
-// A class name is an identifier by construction; anything else reaching this
-// (a thrown string, a forged `name` property, an Error subclass built from
-// interpolated text) is NOT a class name and is not echoed.
-const SAFE_ERROR_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+/**
+ * The ONLY error class names this module will ever echo — a fixed allowlist,
+ * not a shape test. An earlier revision accepted any identifier-shaped `name`,
+ * which meant a thrown object could publish attacker- or environment-chosen
+ * text simply by naming itself `Secret_supersecret` (a user review caught
+ * this, 2026-08-20): `name` is an ordinary writable property, so "looks like a
+ * class name" is not evidence that it IS one.
+ *
+ * Each entry is a class the audit stack can actually reach:
+ *
+ *   - The 8 ECMAScript built-in error constructors: what the runtime itself
+ *     throws (a bug in the simulator surfaces as TypeError/RangeError, D1 and
+ *     Node/undici failures surface as plain Error, Promise.any as
+ *     AggregateError). Their names are fixed by the language spec.
+ *   - MissingIpHashKeyError — functions/_lib/ranking/ipHash.ts, thrown by
+ *     requireIpHashKey() at this command's own entrypoint check.
+ *   - RleDecodeError — src/core/rle.ts, thrown while decoding a replay BLOB.
+ *     verifyReplay() converts the ones it expects into a 'malformed-replay'
+ *     result, but the class is reachable from any other decode call site.
+ *   - ReplayAbortedError — src/core/replayEngine.ts, thrown by the chunked
+ *     replay driver verifyReplay() itself calls (simulateReplayFromRle).
+ *
+ * Anything else — including a genuine but unlisted class — is reported as
+ * 'UnknownError'. That is the intended trade: an unlisted class costs one
+ * local re-run with AUDIT_LOG_ERROR_DETAIL to identify, while echoing an
+ * unvetted `name` costs a public leak. Add to this list only after confirming
+ * where the class is thrown.
+ */
+export const ALLOWED_ERROR_NAMES: readonly string[] = [
+  'Error',
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'EvalError',
+  'URIError',
+  'AggregateError',
+  'MissingIpHashKeyError',
+  'RleDecodeError',
+  'ReplayAbortedError',
+];
+
+const ALLOWED_ERROR_NAME_SET = new Set(ALLOWED_ERROR_NAMES);
 
 /**
- * The publishable summary of a thrown value: its error class name, or
- * 'UnknownError' when it has none this module is willing to echo. Never
- * includes the message or the stack — see this module's doc comment.
+ * The publishable summary of a thrown value: its error class name when that
+ * name is on ALLOWED_ERROR_NAMES, otherwise 'UnknownError'. Never includes the
+ * message or the stack — see this module's doc comment.
  */
 export function safeErrorName(err: unknown): string {
   const name = (err as { name?: unknown } | null | undefined)?.name;
-  if (typeof name === 'string' && SAFE_ERROR_NAME.test(name)) return name;
+  if (typeof name === 'string' && ALLOWED_ERROR_NAME_SET.has(name)) return name;
   return 'UnknownError';
 }
 
