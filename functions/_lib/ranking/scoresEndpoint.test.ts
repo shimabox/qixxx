@@ -239,6 +239,62 @@ describe('POST /api/scores structural guarantee: verifyReplay() is never invoked
   });
 });
 
+// A Japanese name is a first-class case, not an edge case (this game's
+// players type them): nameValidation.ts allows Unicode letters of any script
+// and only bans control/invisible characters. Pinned end-to-end through the
+// real handler after a device report (2026-08-20) about the submission form,
+// so "the name survived the form" and "the server stores it verbatim" are
+// both covered rather than assumed.
+describe('POST /api/scores name/x_handle character handling', () => {
+  it('accepts a Japanese name and stores it verbatim (no transliteration, no stripping)', async () => {
+    const boundArgs: unknown[][] = [];
+    const env = makeEnv({
+      runImpl: (_sql, args) => {
+        boundArgs.push(args);
+        return { meta: { changes: 1 } };
+      },
+    });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ name: 'しまぶ 太郎' })), env);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    // The INSERT really carried the name through unchanged.
+    expect(boundArgs.some((args) => args.includes('しまぶ 太郎'))).toBe(true);
+  });
+
+  it('trims surrounding whitespace but leaves the Japanese text itself alone', async () => {
+    const boundArgs: unknown[][] = [];
+    const env = makeEnv({
+      runImpl: (_sql, args) => {
+        boundArgs.push(args);
+        return { meta: { changes: 1 } };
+      },
+    });
+    const { response } = await callHandler(makeRequest(validShapedBody({ name: '  しまぶ  ' })), env);
+    expect(response.status).toBe(200);
+    expect(boundArgs.some((args) => args.includes('しまぶ'))).toBe(true);
+  });
+
+  it('rejects a Japanese string used as an X HANDLE, with the reason naming the allowed pattern', async () => {
+    // The UI now seeds the handle field from the name, so a Japanese name can
+    // reach this field; nothing silently converts it, and this is the
+    // rejection the player is shown (src/ui/ranking.ts surfaces `error` as
+    // "NOT ACCEPTED (...)").
+    const env = makeEnv({});
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ name: '', xHandle: 'しまぶ' })), env);
+    expect(response.status).toBe(400);
+    expect(String(body.error)).toContain('x_handle must match');
+  });
+
+  it('rejects a name carrying invisible/control characters (the case that IS filtered)', async () => {
+    const env = makeEnv({});
+    // U+200B (zero-width space) written as an escape, per nameValidation.ts's
+    // own convention — a literal invisible character in source is unreviewable.
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ name: 'しまぶ\u200B' })), env);
+    expect(response.status).toBe(400);
+    expect(String(body.error)).toContain('control or invisible');
+  });
+});
+
 describe('POST /api/scores score/stage validation', () => {
   it('rejects a negative score', async () => {
     const env = makeEnv({});

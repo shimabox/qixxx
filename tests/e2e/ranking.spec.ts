@@ -618,6 +618,67 @@ test.describe('name-input submission flow', () => {
     expect(await page.locator('#ranking-submit-hint').innerHTML()).not.toContain('<b>');
   });
 
+  // A Japanese name is an ordinary case for this game's players, and the
+  // carry-over above can now push one into the X-handle field — where it is
+  // NOT valid. Both halves are pinned here: the name reaches the POST
+  // verbatim, and a Japanese handle is refused with a message that says so
+  // rather than being silently mangled. (That the SERVER is what refuses it
+  // is covered by functions/_lib/ranking/scoresEndpoint.test.ts, against the
+  // real handler; this asserts the form's half of the exchange.)
+  test('submits a Japanese name verbatim, and surfaces the rejection when one is carried into the handle field', async ({ page }) => {
+    const JP_NAME = 'しまぶ 太郎';
+    const HANDLE_ERROR = 'x_handle must match ^[A-Za-z0-9_]{1,15}$ (after removing a leading @)';
+    const postedBodies: Record<string, unknown>[] = [];
+    await mockFullBoardRelativeToLiveScore(page, -1);
+    await page.route('**/api/scores', (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      const posted = route.request().postDataJSON() as Record<string, unknown>;
+      postedBodies.push(posted);
+      // Mirrors the real handler: a non-ASCII handle is a 400 with the
+      // pattern in the message; a name-only submission is accepted.
+      if (posted.xHandle) return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: HANDLE_ERROR }) });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ accepted: true, status: 'pending', message: 'provisionally accepted — pending verification' }),
+      });
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+
+    const nameInput = page.getByPlaceholder('NAME');
+    const handleInput = page.getByPlaceholder('@handle');
+    const handleCheckbox = page.getByRole('checkbox', { name: 'USE X HANDLE INSTEAD' });
+
+    await nameInput.fill(JP_NAME);
+
+    // Carried into the handle field unchanged — no transliteration, no
+    // stripping — and submitting it is refused, in as many words.
+    await handleCheckbox.check();
+    await expect(handleInput).toHaveValue(JP_NAME);
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await expect(page.getByText(`NOT ACCEPTED (${HANDLE_ERROR}).`)).toBeVisible();
+    expect(postedBodies).toHaveLength(1);
+    expect(postedBodies[0].xHandle).toBe(JP_NAME); // sent as typed, for the server to judge
+    // Rejected INPUT is fixable, so the form stays open and submittable —
+    // this used to read "SUBMIT FAILED — YOU CAN TRY AGAIN" with the reason
+    // discarded, which is the one message that helps nobody here.
+    await expect(page.getByText('SUBMIT FAILED — YOU CAN TRY AGAIN.')).toBeHidden();
+    await expect(page.getByRole('button', { name: 'SUBMIT' })).toBeEnabled();
+
+    // Switching back submits it as a NAME, where it is perfectly valid — and
+    // the name survived the whole round trip.
+    await handleCheckbox.uncheck();
+    await expect(nameInput).toHaveValue(JP_NAME);
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
+    expect(postedBodies).toHaveLength(2);
+    expect(postedBodies[1].name).toBe(JP_NAME);
+  });
+
   test('SKIP dismisses the submission overlay without ever POSTing', async ({ page }) => {
     let scoresPostCount = 0;
     await mockRanking(page, []);

@@ -914,7 +914,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       });
       const data = (await res.json()) as { accepted: boolean; status?: string; reason?: string; error?: string };
       if (responseIsStale()) return;
-      if (!res.ok && res.status !== 429 && res.status !== 409) {
+      // A 400 is the server rejecting what was TYPED (most often an X handle
+      // that isn't one — which the name carry-over makes easy to hit with a
+      // Japanese name). It used to fall into the catch below and surface as
+      // "SUBMIT FAILED — YOU CAN TRY AGAIN", which is both wrong and cruel:
+      // retrying unchanged input fails identically, and the one thing the
+      // player needed — WHICH field is unacceptable — was the part thrown
+      // away. It is now reported with the server's own reason, and the form
+      // stays open and submittable so the value can actually be fixed.
+      const inputRejected = res.status === 400;
+      if (!res.ok && res.status !== 429 && res.status !== 409 && !inputRejected) {
         throw new Error(data.error ?? `unexpected status ${res.status}`);
       }
       // Free-tier async-audit response contract: a 200 accepted:true never
@@ -932,6 +941,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
       } else {
         submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
+      }
+      if (inputRejected) {
+        // Fixable: leave SUBMIT where it is, ready for the corrected value.
+        postButton.disabled = false;
+        return;
       }
       postButton.style.display = 'none';
       skipButton.textContent = 'OK';
