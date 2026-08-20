@@ -1126,24 +1126,21 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     button.style.top = '8px';
     button.style.right = '8px';
     button.style.font = HUD_FONT;
-    // Deliberately larger/louder than the other overlay buttons (user
-    // feedback on the real device, 2026-08-20: the original 0.75em outline
-    // read as a disabled caption and went unnoticed on the Title screen).
-    // It stays within the neon vocabulary — same accent green, same rounded
-    // outline — just at full HUD size, bold, with the accent glow the screen
-    // overlay already uses (`#screen`'s textShadow in main.ts) and a tinted
-    // fill instead of a near-transparent one. `em`-relative sizing keeps it
-    // scaling with the canvas-wrap font size exactly as before, so nothing
-    // here is pinned to a pixel viewport.
+    // BIGGER THAN MUTE, BUT STYLED EXACTLY LIKE IT. Two rounds of device
+    // feedback (2026-08-20) landed here: the original 0.75em thin outline
+    // read as a disabled caption and went unnoticed on the Title screen, but
+    // the glowing, bold, tinted answer to that was too loud. So the size
+    // stays (full HUD font size, generous padding — that is what makes it
+    // findable) while every decoration matches main.ts's MUTE button
+    // verbatim: same accent colour, same near-transparent fill, same 1px
+    // border and 4px radius, and no glow or weight of its own.
+    // `em`-relative sizing keeps it scaling with canvas-wrap exactly as
+    // before, so nothing here is pinned to a pixel viewport.
     button.style.fontSize = '1em';
-    button.style.fontWeight = 'bold';
-    button.style.letterSpacing = '0.08em';
     button.style.color = HUD_ACCENT_COLOR;
-    button.style.background = 'rgba(0, 255, 65, 0.14)';
-    button.style.border = `2px solid ${HUD_ACCENT_COLOR}`;
-    button.style.borderRadius = '6px';
-    button.style.boxShadow = `0 0 12px ${HUD_ACCENT_COLOR}`;
-    button.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
+    button.style.background = 'rgba(10, 14, 39, 0.7)';
+    button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    button.style.borderRadius = '4px';
     button.style.padding = '8px 16px';
     // Never let the button spill out of the canvas box on a narrow phone —
     // it is absolutely positioned inside canvas-wrap, so without this a wide
