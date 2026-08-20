@@ -4,6 +4,16 @@
 // こと". Only D1 itself is stubbed — the version comparison, the status
 // codes, and the payload encoding are all the shipped code's own.
 //
+// The bulk of this file is the acceptance matrix for spec item 7's FIXED
+// judgement order (docs/plans/2026-08-19-ranking-free-async, 2026-08-20
+// revision):
+//   1. no row / deleted by the audit        -> 404
+//   2. pending AND expired (created_at <= now-24h) -> 404
+//   3. season/ruleset/format mismatch       -> 410 (pending or verified)
+//   4. otherwise                            -> 200 + status
+// The order matters as much as the outcomes: an expired pending row at a
+// stale version must resolve as 404 (rule 2) and never reach rule 3.
+//
 // Lives here (next to the other ranking unit tests) rather than beside the
 // handler: `functions/api/ranking/[id]/` is a Pages Functions *route*
 // directory, where a stray .test.ts would be one more file the router has to
@@ -18,10 +28,16 @@ interface StubRow {
   replay_format_version: number;
   seed: number;
   inputs: ArrayBuffer;
-  status?: 'verified' | 'pending';
+  status: 'verified' | 'pending';
+  created_at: number;
 }
 
 const INPUT_BYTES = new Uint8Array([0x04, 0x0a, 0x11, 0x02]);
+const HOUR_MS = 60 * 60 * 1000;
+/** Comfortably inside the 24h freshness window (spec item 5's created_at > cutoff). */
+const FRESH_AT = () => Date.now() - HOUR_MS;
+/** Comfortably outside it (created_at <= cutoff). */
+const EXPIRED_AT = () => Date.now() - 25 * HOUR_MS;
 
 function currentRow(overrides: Partial<StubRow> = {}): StubRow {
   return {
@@ -31,16 +47,19 @@ function currentRow(overrides: Partial<StubRow> = {}): StubRow {
     seed: 1264,
     inputs: INPUT_BYTES.slice().buffer,
     status: 'verified',
+    created_at: FRESH_AT(),
     ...overrides,
   };
 }
 
 /**
  * A D1 stub that answers `first()` with `row` and records every statement it
- * was asked to prepare. Simulates the real `WHERE id = ? AND status =
- * 'verified'` clause (docs/plans/2026-08-19-ranking-free-async spec item 6)
- * by returning null instead of `row` whenever `row.status !== 'verified'` —
- * matching how a real D1 query simply wouldn't match a pending row at all.
+ * was asked to prepare.
+ *
+ * Note what it deliberately does NOT do anymore: filter by status. The
+ * lookup is by id alone now (spec item 7's revision — pending rows are
+ * servable), so every status/age/version decision is the handler's own and
+ * is visible to these tests.
  */
 function makeEnv(row: StubRow | null) {
   const statements: string[] = [];
@@ -52,7 +71,7 @@ function makeEnv(row: StubRow | null) {
         return {
           bind(...args: unknown[]) {
             bindings.push(args);
-            return { first: async () => (row !== null && row.status !== 'verified' ? null : row) };
+            return { first: async () => row };
           },
         };
       },
@@ -83,27 +102,9 @@ describe('GET /api/ranking/:id/replay', () => {
     expect(body.seed).toBe(1264);
     expect(body.rulesetVersion).toBe(RULESET_VERSION);
     expect(body.replayFormatVersion).toBe(REPLAY_FORMAT_VERSION);
+    expect(body.status).toBe('verified');
     expect([...base64ToBytes(body.rleBase64 as string)]).toEqual([...INPUT_BYTES]);
     expect(bindings[0]).toEqual(['abc123']); // looked the row up by the requested public id
-  });
-
-  it('returns 410 for a stale replay_format_version', async () => {
-    const { response, body } = await callHandler(currentRow({ replay_format_version: REPLAY_FORMAT_VERSION + 1 }));
-    expect(response.status).toBe(410);
-    expect(body.replayAvailable).toBe(false);
-    expect(body.rleBase64).toBeUndefined(); // no replay data leaks out on the refusal path
-  });
-
-  it('returns 410 for a previous season, even at the current ruleset/format', async () => {
-    const { response, body } = await callHandler(currentRow({ season_id: CURRENT_SEASON_ID - 1 }));
-    expect(response.status).toBe(410);
-    expect(body.replayAvailable).toBe(false);
-  });
-
-  it('returns 410 for a previous ruleset_version', async () => {
-    const { response, body } = await callHandler(currentRow({ ruleset_version: RULESET_VERSION - 1 }));
-    expect(response.status).toBe(410);
-    expect(body.replayAvailable).toBe(false);
   });
 
   it('keeps the row: a 410 issues no DELETE/UPDATE, only the SELECT', async () => {
@@ -112,12 +113,6 @@ describe('GET /api/ranking/:id/replay', () => {
     expect(statements).toHaveLength(1);
     expect(statements[0]).toMatch(/^\s*SELECT/i);
     expect(statements.join(' ')).not.toMatch(/DELETE|UPDATE|INSERT/i);
-  });
-
-  it('returns 404 for an unknown id (distinct from the 410 "exists but not replayable" case)', async () => {
-    const { response, body } = await callHandler(null);
-    expect(response.status).toBe(404);
-    expect(body.error).toBe('not found');
   });
 
   it('returns 400 when the route parameter is missing', async () => {
@@ -131,25 +126,92 @@ describe('GET /api/ranking/:id/replay', () => {
     expect(bindings[0]).toEqual(['abc123']);
   });
 
-  // docs/plans/2026-08-19-ranking-free-async spec item 6: pending IDs must
-  // never be servable, even by a direct request bypassing the UI entirely.
-  describe('Free-tier async-audit: verified-only access', () => {
-    it('the SQL query enforces status = verified, not just the UI', async () => {
-      const { statements } = await callHandler(currentRow());
-      expect(statements[0]).toMatch(/status\s*=\s*'verified'/i);
+  // docs/plans/2026-08-19-ranking-free-async spec item 7's acceptance matrix.
+  describe('fixed judgement order', () => {
+    describe('1. row missing (never existed, or deleted by the audit) -> 404', () => {
+      it('returns 404 for an unknown id (distinct from the 410 "exists but not replayable" case)', async () => {
+        const { response, body } = await callHandler(null);
+        expect(response.status).toBe(404);
+        expect(body.error).toBe('not found');
+        expect(body.rleBase64).toBeUndefined();
+      });
     });
 
-    it('returns 404 (not 410) for a pending row at the current season/ruleset/format — distinct from the version-mismatch 410', async () => {
-      const { response, body } = await callHandler(currentRow({ status: 'pending' }));
-      expect(response.status).toBe(404);
-      expect(body.error).toBe('not found');
-      expect(body.rleBase64).toBeUndefined();
+    describe('2. pending AND expired -> 404 (evaluated BEFORE the version check)', () => {
+      it('returns 404 for an expired pending row at the current season/ruleset/format', async () => {
+        const { response, body } = await callHandler(currentRow({ status: 'pending', created_at: EXPIRED_AT() }));
+        expect(response.status).toBe(404);
+        expect(body.error).toBe('not found');
+        expect(body.rleBase64).toBeUndefined();
+      });
+
+      it('returns 404 — NOT 410 — for an expired pending row that ALSO has a version mismatch (no overlap between rules 2 and 3)', async () => {
+        const { response, body } = await callHandler(
+          currentRow({ status: 'pending', created_at: EXPIRED_AT(), replay_format_version: REPLAY_FORMAT_VERSION + 1, season_id: CURRENT_SEASON_ID - 1 })
+        );
+        expect(response.status).toBe(404);
+        expect(body.error).toBe('not found');
+        expect(body.replayAvailable).toBeUndefined(); // the 410 body's own field never appears
+      });
+
+      it('never applies rule 2 to a verified row: an ancient verified row is still served', async () => {
+        const { response, body } = await callHandler(currentRow({ status: 'verified', created_at: Date.now() - 400 * 24 * HOUR_MS }));
+        expect(response.status).toBe(200);
+        expect(body.status).toBe('verified');
+      });
     });
 
-    it('a pending row never leaks any replay data even though the row itself "exists"', async () => {
-      const { response, body } = await callHandler(currentRow({ status: 'pending' }));
-      expect(response.status).not.toBe(200);
-      expect(JSON.stringify(body)).not.toMatch(/rleBase64/);
+    describe('3. version mismatch -> 410, for pending and verified alike', () => {
+      it('returns 410 for a stale replay_format_version', async () => {
+        const { response, body } = await callHandler(currentRow({ replay_format_version: REPLAY_FORMAT_VERSION + 1 }));
+        expect(response.status).toBe(410);
+        expect(body.replayAvailable).toBe(false);
+        expect(body.rleBase64).toBeUndefined(); // no replay data leaks out on the refusal path
+      });
+
+      it('returns 410 for a previous season, even at the current ruleset/format', async () => {
+        const { response, body } = await callHandler(currentRow({ season_id: CURRENT_SEASON_ID - 1 }));
+        expect(response.status).toBe(410);
+        expect(body.replayAvailable).toBe(false);
+      });
+
+      it('returns 410 for a previous ruleset_version', async () => {
+        const { response, body } = await callHandler(currentRow({ ruleset_version: RULESET_VERSION - 1 }));
+        expect(response.status).toBe(410);
+        expect(body.replayAvailable).toBe(false);
+      });
+
+      it('returns 410 for a FRESH pending row whose version has moved on (status makes no difference to rule 3)', async () => {
+        for (const mismatch of [
+          { season_id: CURRENT_SEASON_ID - 1 },
+          { ruleset_version: RULESET_VERSION - 1 },
+          { replay_format_version: REPLAY_FORMAT_VERSION + 1 },
+        ]) {
+          const { response, body } = await callHandler(currentRow({ status: 'pending', created_at: FRESH_AT(), ...mismatch }));
+          expect(response.status).toBe(410);
+          expect(body.rleBase64).toBeUndefined();
+        }
+      });
+    });
+
+    describe('4. otherwise -> 200 with `status`', () => {
+      it('serves a FRESH pending row and reports status:"pending"', async () => {
+        const { response, body } = await callHandler(currentRow({ status: 'pending', created_at: FRESH_AT() }));
+        expect(response.status).toBe(200);
+        expect(body.status).toBe('pending');
+        expect([...base64ToBytes(body.rleBase64 as string)]).toEqual([...INPUT_BYTES]);
+      });
+
+      it('reports status:"verified" for a verified row, so the viewer shows no VERIFYING notice', async () => {
+        const { body } = await callHandler(currentRow({ status: 'verified' }));
+        expect(body.status).toBe('verified');
+      });
+
+      it('looks rows up by id ALONE — the old status="verified" SQL filter is gone, so pending rows are reachable', async () => {
+        const { statements } = await callHandler(currentRow({ status: 'pending' }));
+        expect(statements[0]).not.toMatch(/status\s*=\s*'verified'/i);
+        expect(statements[0]).toMatch(/WHERE\s+id\s*=\s*\?/i);
+      });
     });
   });
 });
