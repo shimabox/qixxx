@@ -24,23 +24,26 @@ export interface RankingEntry {
 }
 
 /**
- * A provisionally-in-range, not-yet-audited submission (docs/plans/2026-08
- * -19-ranking-free-async spec item 5) — GET /api/ranking's `pendingEntries`.
- * Deliberately has no rank: the UI renders these in their own unranked
- * "検証待ち" section above the confirmed board, never merged into it, and
- * never offers a REPLAY button for one (the server itself refuses to serve
- * a pending row's replay — GET /api/ranking/:id/replay requires
- * status='verified' — so `id` here is carried only for a stable list key,
- * not treated as replayable).
+ * One row of the board the UI actually DRAWS (docs/plans/2026-08-19-ranking-
+ * free-async spec item 5, as revised 2026-08-20) — GET /api/ranking's
+ * `displayEntries`: verified rows and fresh pending rows merged into a single
+ * ranked list under the same ordering rule.
+ *
+ * A superset of RankingEntry, which is what makes one rendering path enough:
+ * `replayAvailable` is present and meaningful on a pending row too (the
+ * server serves a fresh pending row's replay now — spec item 7), so the
+ * REPLAY button is gated on exactly the same field regardless of `status`.
+ *
+ * `status` drives presentation only: a VERIFYING badge, and a plain-text
+ * (never linked) handle while the row is unaudited — an unverified claim to
+ * someone's handle should not send anyone to that profile.
+ *
+ * NOTE the deliberate asymmetry with the SUBMISSION side: whether the name
+ * form opens is decided from `entries` (verified only) and never from this
+ * list, so pending rows cannot lock anyone out — see decideSubmissionOffer().
  */
-export interface PendingRankingEntry {
-  id: string;
-  createdAt: string;
-  score: number;
-  stage: number;
-  name: string;
-  xHandle: string | null;
-  unverified: true;
+export interface DisplayRankingEntry extends RankingEntry {
+  status: 'pending' | 'verified';
 }
 
 /**
@@ -157,6 +160,8 @@ export interface ReplayPayload {
   rleBase64: string;
   rulesetVersion: number;
   replayFormatVersion: number;
+  /** Absent from an older server's response — treated as 'verified' (i.e. no VERIFYING notice) rather than guessed at. */
+  status?: 'pending' | 'verified';
 }
 
 export interface RankingUIOptions {
@@ -373,16 +378,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
   listOverlay.appendChild(disclaimer);
-  // Unranked "検証待ち" section (docs/plans/2026-08-19-ranking-free-async
-  // spec item 5) — a SEPARATE container from listBody below, inserted
-  // ABOVE the confirmed board, never merged/inserted into it. Hidden
-  // (no children) whenever pendingEntries is empty.
-  const pendingBody = document.createElement('div');
-  pendingBody.style.display = 'flex';
-  pendingBody.style.flexDirection = 'column';
-  pendingBody.style.gap = '4px';
-  pendingBody.style.width = '100%';
-  listOverlay.appendChild(pendingBody);
+  // ONE board (docs/plans/2026-08-19-ranking-free-async spec item 5, as
+  // revised 2026-08-20): verified and pending rows share this container and
+  // this ranking. There is deliberately no separate "pending" section —
+  // a pending row is shown at the position it actually holds, wearing a
+  // VERIFYING badge until the audit confirms (or removes) it.
   const listBody = document.createElement('div');
   listBody.style.display = 'flex';
   listBody.style.flexDirection = 'column';
@@ -431,10 +431,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     abortReplayWork();
   }
 
-  /** Replaces the list body with a single status line (LOADING/error) — also clears the pending section, since a failed/loading fetch has nothing trustworthy to show there either. */
+  /** Replaces the list body with a single status line (LOADING/error). */
   function showListStatus(text: string): void {
     listBody.textContent = '';
-    pendingBody.textContent = '';
     const line = document.createElement('div');
     line.textContent = text;
     listBody.appendChild(line);
@@ -442,68 +441,23 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function clearListStatus(): void {
     listBody.textContent = '';
-    pendingBody.textContent = '';
   }
 
   /**
-   * Renders the unranked "検証待ち" section (docs/plans/2026-08-19-ranking-
-   * free-async spec item 5): no rank number, no REPLAY button (the server
-   * itself refuses to serve a pending row's replay — see
-   * PendingRankingEntry's own doc comment), a distinct dimmer/badged style
-   * so it reads as provisional rather than as part of the confirmed board.
-   * No-op (renders nothing) when `pending` is empty.
+   * The small, deliberately quiet marker a not-yet-audited row wears (spec
+   * item 5's "控えめな VERIFYING バッジ"). Same wording as the replay
+   * viewer's own notice, so the two read as one state rather than two.
    */
-  function renderPendingEntries(pending: PendingRankingEntry[]): void {
-    pendingBody.textContent = '';
-    if (pending.length === 0) return;
-
-    const heading = document.createElement('div');
-    heading.textContent = 'PENDING VERIFICATION';
-    heading.style.fontSize = '0.75em';
-    heading.style.opacity = '0.75';
-    heading.style.marginTop = '2px';
-    pendingBody.appendChild(heading);
-
-    pending.forEach((entry) => {
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.alignItems = 'center';
-      row.style.gap = '8px';
-      row.style.width = '100%';
-      row.style.justifyContent = 'space-between';
-      row.style.opacity = '0.65'; // visually distinct from the confirmed board below
-
-      const left = document.createElement('div');
-      left.style.textAlign = 'left';
-      // A long name must wrap inside its own column rather than pushing the
-      // REPLAY button off the (now fixed-width) panel.
-      left.style.minWidth = '0';
-      left.style.overflowWrap = 'anywhere';
-      const line = document.createElement('div');
-      // No rank number here — deliberately, per this section's own contract
-      // (never implies a confirmed position on the board).
-      line.textContent = `${entry.score}  STAGE ${entry.stage}  `;
-      const nameSpan = document.createElement('span');
-      // Same name/handle/"(no name)" precedence as the confirmed board — a
-      // handle-only pending row showed neither before, which read as an
-      // anonymous entry. Plain text, not a link: this row is provisional, and
-      // an unverified claim to a handle should not send anyone to that
-      // profile until the audit has confirmed the row.
-      nameSpan.textContent = resolveDisplayName(entry);
-      line.appendChild(nameSpan);
-      left.appendChild(line);
-      row.appendChild(left);
-
-      const badge = document.createElement('span');
-      badge.textContent = 'PENDING';
-      badge.style.fontSize = '0.7em';
-      badge.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-      badge.style.borderRadius = '4px';
-      badge.style.padding = '2px 6px';
-      row.appendChild(badge);
-
-      pendingBody.appendChild(row);
-    });
+  function createVerifyingBadge(): HTMLSpanElement {
+    const badge = document.createElement('span');
+    badge.textContent = 'VERIFYING';
+    badge.style.fontSize = '0.6em';
+    badge.style.opacity = '0.75';
+    badge.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    badge.style.borderRadius = '4px';
+    badge.style.padding = '2px 5px';
+    badge.style.whiteSpace = 'nowrap';
+    return badge;
   }
 
   async function showList(): Promise<void> {
@@ -513,14 +467,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     showListStatus('LOADING...');
     listOverlay.style.display = 'flex';
 
-    let entries: RankingEntry[] | null = null;
-    let pendingEntries: PendingRankingEntry[] = [];
+    let entries: DisplayRankingEntry[] | null = null;
     try {
       const res = await fetch('/api/ranking');
       if (!res.ok) throw new Error(`ranking fetch failed: ${res.status}`);
-      const data = (await res.json()) as { entries: RankingEntry[]; pendingEntries?: PendingRankingEntry[] };
-      entries = data.entries ?? [];
-      pendingEntries = data.pendingEntries ?? [];
+      const data = (await res.json()) as { entries?: RankingEntry[]; displayEntries?: DisplayRankingEntry[] };
+      // `displayEntries` is what this list draws. The `entries` fallback
+      // covers only a server that predates the merged board (it would
+      // otherwise render an empty list against a perfectly healthy TOP10);
+      // those rows are verified by definition.
+      entries = data.displayEntries ?? (data.entries ?? []).map((entry) => ({ ...entry, status: 'verified' as const }));
     } catch {
       entries = null;
     }
@@ -536,8 +492,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       return;
     }
 
-    renderPendingEntries(pendingEntries);
-
     listBody.textContent = '';
     if (entries.length === 0) {
       const empty = document.createElement('div');
@@ -547,6 +501,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
 
     entries.forEach((entry, index) => {
+      const isPending = entry.status === 'pending';
       const row = document.createElement('div');
       row.style.display = 'flex';
       row.style.alignItems = 'center';
@@ -569,8 +524,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // A handle-only row puts the handle in the name slot — as the link
       // itself, so the profile stays one click away and the handle is not
       // printed twice (the meta line below then carries only the date).
+      // EXCEPT while the row is pending: an unaudited row's handle is shown
+      // as plain text (spec item 5), because the claim to that handle is
+      // exactly as unverified as the score is.
       const nameIsHandle = entry.name === '' && entry.xHandle !== null;
-      if (nameIsHandle) {
+      if (nameIsHandle && !isPending) {
         rankLine.appendChild(createHandleLink(entry.xHandle!));
       } else {
         const nameSpan = document.createElement('span');
@@ -593,12 +551,32 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       metaLine.appendChild(dateSpan);
 
       if (entry.xHandle && !nameIsHandle) {
-        const handleLink = createHandleLink(entry.xHandle);
-        handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
-        metaLine.appendChild(handleLink);
+        if (isPending) {
+          // Plain text, same reason as the name slot above — no link out of
+          // an unaudited row.
+          const handleText = document.createElement('span');
+          handleText.style.fontSize = '1.15em';
+          handleText.textContent = `@${entry.xHandle}`;
+          metaLine.appendChild(handleText);
+        } else {
+          const handleLink = createHandleLink(entry.xHandle);
+          handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
+          metaLine.appendChild(handleLink);
+        }
       }
       left.appendChild(metaLine);
       row.appendChild(left);
+
+      // Right-hand side: the VERIFYING badge (pending rows only) sits beside
+      // the REPLAY button rather than replacing it — a fresh pending row IS
+      // replayable now (spec item 7), so `replayAvailable` alone decides the
+      // button, exactly as it does for a verified row.
+      const right = document.createElement('div');
+      right.style.display = 'flex';
+      right.style.alignItems = 'center';
+      right.style.gap = '6px';
+      right.style.flex = '0 0 auto';
+      if (isPending) right.appendChild(createVerifyingBadge());
 
       const replayButton = styledButton('REPLAY');
       replayButton.disabled = !entry.replayAvailable;
@@ -607,7 +585,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         replayButton.style.cursor = 'not-allowed';
       }
       replayButton.addEventListener('click', () => void startReplayFor(entry.id));
-      row.appendChild(replayButton);
+      right.appendChild(replayButton);
+      row.appendChild(right);
 
       listBody.appendChild(row);
     });
@@ -679,7 +658,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     hideList();
-    mountReplayControls();
+    // An unaudited replay is labelled for its ENTIRE playback (spec item 7),
+    // not just announced once: a viewer who joins mid-replay (or looks away
+    // and back) must still be able to tell that what they are watching has
+    // not been verified yet. An older server that omits `status` is treated
+    // as 'verified' — no notice — rather than guessed at.
+    mountReplayControls(payload.status === 'pending' ? 'pending' : 'verified');
     options.onReplayStart(engine);
   }
 
@@ -1048,6 +1032,34 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   replayStageLabel.style.maxWidth = '100%';
   replayStageLabel.style.textAlign = 'center';
 
+  // The board-level half of the VERIFYING notice (spec item 7 asks for both
+  // "ステータス行と盤面上のラベル"): a standalone label pinned to the top of
+  // the field, visible for the whole playback of a pending row's replay and
+  // absent entirely for a verified one. Mounted on `anchor` (canvas-wrap)
+  // rather than inside the control bar at the bottom, so it sits where the
+  // eye already is — on the field.
+  const replayVerifyingLabel = document.createElement('div');
+  replayVerifyingLabel.id = 'replay-verifying-label';
+  replayVerifyingLabel.textContent = 'VERIFYING — NOT YET AUDITED';
+  replayVerifyingLabel.style.position = 'absolute';
+  replayVerifyingLabel.style.top = '8px';
+  replayVerifyingLabel.style.left = '50%';
+  replayVerifyingLabel.style.transform = 'translateX(-50%)';
+  replayVerifyingLabel.style.font = HUD_FONT;
+  replayVerifyingLabel.style.fontSize = '0.7em';
+  replayVerifyingLabel.style.color = HUD_ACCENT_COLOR;
+  replayVerifyingLabel.style.background = 'rgba(10, 14, 39, 0.7)';
+  replayVerifyingLabel.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+  replayVerifyingLabel.style.borderRadius = '4px';
+  replayVerifyingLabel.style.padding = '4px 8px';
+  replayVerifyingLabel.style.maxWidth = 'calc(100% - 16px)';
+  replayVerifyingLabel.style.textAlign = 'center';
+  replayVerifyingLabel.style.pointerEvents = 'none';
+  replayVerifyingLabel.style.userSelect = 'none';
+  replayVerifyingLabel.style.zIndex = '20';
+  replayVerifyingLabel.style.display = 'none';
+  anchor.appendChild(replayVerifyingLabel);
+
   const replayButtonRow = document.createElement('div');
   replayButtonRow.style.display = 'flex';
   replayButtonRow.style.gap = '8px';
@@ -1062,6 +1074,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   let activeReplayEngine: ReplayEngine | null = null;
   let lastReplayStageText: string | null = null;
   let lastSkipVisible: boolean | null = null;
+  /** The audit status of the replay on screen — drives the two VERIFYING notices below. */
+  let activeReplayStatus: 'pending' | 'verified' = 'verified';
 
   /**
    * The status line's text for the replay currently on screen. `finalStage`
@@ -1072,7 +1086,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function replayStageText(engine: ReplayEngine): string {
     const finalStage = engine.getResult().stage;
     const currentStage = Math.min(engine.getSession().getStage(), finalStage);
-    const counter = `STAGE ${currentStage} / ${finalStage}`;
+    const counter =
+      // The status-line half of the VERIFYING notice: carried on EVERY line
+      // this function can produce (playing, final stage, ended, gameover), so
+      // it cannot disappear at some point during playback.
+      activeReplayStatus === 'pending' ? `VERIFYING - STAGE ${currentStage} / ${finalStage}` : `STAGE ${currentStage} / ${finalStage}`;
     // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
     // recorded input simply runs out mid-play (a truncated or
     // differently-configured recording — main.ts's own end-of-replay overlay
@@ -1118,9 +1136,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
-  function mountReplayControls(): void {
+  function mountReplayControls(status: 'pending' | 'verified'): void {
+    activeReplayStatus = status;
+    replayVerifyingLabel.style.display = status === 'pending' ? 'block' : 'none';
     lastReplayStageText = null;
-    replayStageLabel.textContent = 'REPLAY';
+    replayStageLabel.textContent = status === 'pending' ? 'VERIFYING - REPLAY' : 'REPLAY';
     // Starts hidden and is revealed by the first frame's sync if this replay
     // actually has a later stage to skip to — never flashed for a frame at a
     // single-stage run.
@@ -1131,6 +1151,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   exitReplayButton.addEventListener('click', () => {
     replayControls.style.display = 'none';
+    replayVerifyingLabel.style.display = 'none';
+    activeReplayStatus = 'verified';
     // Cleared BEFORE aborting, so the skip's own .finally() sees that its
     // engine is no longer current and doesn't resume playback on a discarded
     // one — and so a leftover SKIPPING... label can't survive into the next

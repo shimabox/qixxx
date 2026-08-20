@@ -42,23 +42,31 @@ interface RankingEntry {
   replayAvailable: boolean;
 }
 
-interface PendingRankingEntry {
-  id: string;
-  createdAt: string;
-  score: number;
-  stage: number;
-  name: string;
-  xHandle: string | null;
-  unverified: true;
+/**
+ * GET /api/ranking's `displayEntries` (docs/plans/2026-08-19-ranking-free-
+ * async spec item 5, 2026-08-20 revision) — the merged board the UI draws:
+ * every RankingEntry field plus `status`.
+ */
+interface DisplayRankingEntry extends RankingEntry {
+  status: 'pending' | 'verified';
 }
 
-async function mockRanking(page: Page, entries: RankingEntry[], pendingEntries: PendingRankingEntry[] = []): Promise<void> {
+/**
+ * Mocks GET /api/ranking's two field families.
+ *
+ * `entries` is the submission-eligibility basis (verified only) and
+ * `displayEntries` is what the list renders. When only `entries` is given,
+ * the display board is derived from it as all-verified — the ordinary case,
+ * where the two agree.
+ */
+async function mockRanking(page: Page, entries: RankingEntry[], displayEntries?: DisplayRankingEntry[]): Promise<void> {
+  const display = displayEntries ?? entries.map((entry) => ({ ...entry, status: 'verified' as const }));
   await page.route('**/api/ranking', (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries, pendingEntries }),
+      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries, displayEntries: display }),
     });
   });
 }
@@ -81,7 +89,11 @@ async function mockRanking(page: Page, entries: RankingEntry[], pendingEntries: 
  * *negative* (no overlay) can first prove the decision point was reached at
  * all rather than passing vacuously.
  */
-async function mockFullBoardRelativeToLiveScore(page: Page, tenthPlaceOffset: number): Promise<() => number> {
+async function mockFullBoardRelativeToLiveScore(
+  page: Page,
+  tenthPlaceOffset: number,
+  displayPending: DisplayRankingEntry[] = []
+): Promise<() => number> {
   let getCount = 0;
   await page.route('**/api/ranking', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -96,11 +108,18 @@ async function mockFullBoardRelativeToLiveScore(page: Page, tenthPlaceOffset: nu
       xHandle: null,
       replayAvailable: false,
     }));
+    // `displayPending` models the anti-griefing scenario (spec item 15a):
+    // pending rows sitting at the TOP of the merged board while `entries` —
+    // the only thing the offer decision may read — is unchanged.
+    const displayEntries: DisplayRankingEntry[] = [
+      ...displayPending,
+      ...entries.map((entry) => ({ ...entry, status: 'verified' as const })),
+    ].slice(0, 10);
     getCount++;
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries }),
+      body: JSON.stringify({ seasonId: 1, rulesetVersion: RULESET_VERSION, entries, displayEntries }),
     });
   });
   return () => getCount;
@@ -315,76 +334,116 @@ test.describe('ranking display', () => {
       { id: 'n', createdAt: '2026-01-03T12:00:00Z', score: 800, stage: 2, name: '', xHandle: null, replayAvailable: true },
       { id: 'b', createdAt: '2026-01-04T12:00:00Z', score: 700, stage: 1, name: 'BOTH', xHandle: 'both_handle', replayAvailable: true },
     ];
-    const pendingEntries: PendingRankingEntry[] = [
-      { id: 'ph', createdAt: '2026-01-05T12:00:00Z', score: 950, stage: 5, name: '', xHandle: 'pendinghandle', unverified: true },
-      { id: 'pn', createdAt: '2026-01-06T12:00:00Z', score: 940, stage: 4, name: '', xHandle: null, unverified: true },
+    // Two pending rows on the merged board, one handle-only and one with
+    // neither name nor handle — same precedence rules, minus the link.
+    const displayEntries: DisplayRankingEntry[] = [
+      { id: 'ph', createdAt: '2026-01-05T12:00:00Z', score: 950, stage: 5, name: '', xHandle: 'pendinghandle', replayAvailable: true, status: 'pending' },
+      { id: 'pn', createdAt: '2026-01-06T12:00:00Z', score: 940, stage: 4, name: '', xHandle: null, replayAvailable: true, status: 'pending' },
+      ...entries.map((entry) => ({ ...entry, status: 'verified' as const })),
     ];
-    await mockRanking(page, entries, pendingEntries);
+    await mockRanking(page, entries, displayEntries);
     await page.goto(APP_URL);
     await page.locator('#ranking-button').click();
 
-    // Confirmed board: handle in the name slot, and as the row's ONE link
-    // (the meta line no longer repeats it) — so the profile stays reachable
-    // without printing the handle twice.
-    await expect(page.getByText('#1  900  STAGE 3  @handleonly')).toBeVisible();
+    // Verified rows (ranked #3-#5 here, behind the two pending rows): handle
+    // in the name slot, and as the row's ONE link (the meta line no longer
+    // repeats it) — so the profile stays reachable without printing the
+    // handle twice.
+    await expect(page.getByText('#3  900  STAGE 3  @handleonly')).toBeVisible();
     const handleOnlyLinks = page.locator('a', { hasText: '@handleonly' });
     await expect(handleOnlyLinks).toHaveCount(1);
     await expect(handleOnlyLinks).toHaveAttribute('href', 'https://x.com/handleonly');
 
     // Neither name nor handle: still "(no name)", which now means exactly that.
-    await expect(page.getByText('#2  800  STAGE 2  (no name)')).toBeVisible();
+    await expect(page.getByText('#4  800  STAGE 2  (no name)')).toBeVisible();
 
     // A row with BOTH is unchanged: name in the slot, handle on the meta line.
-    await expect(page.getByText('#3  700  STAGE 1  BOTH')).toBeVisible();
+    await expect(page.getByText('#5  700  STAGE 1  BOTH')).toBeVisible();
     await expect(page.locator('a', { hasText: '@both_handle' })).toHaveAttribute('href', 'https://x.com/both_handle');
 
-    // The pending section follows the same precedence — it showed neither
-    // before. Plain text there, not a link: the row is still provisional.
-    await expect(page.getByText('950  STAGE 5  @pendinghandle')).toBeVisible();
+    // Pending rows follow the same name/handle precedence, but the handle is
+    // PLAIN TEXT (spec item 5): an unaudited row's claim to a handle must not
+    // send anyone to that profile.
+    await expect(page.getByText('#1  950  STAGE 5  @pendinghandle')).toBeVisible();
     await expect(page.locator('a', { hasText: '@pendinghandle' })).toHaveCount(0);
-    await expect(page.getByText('940  STAGE 4  (no name)')).toBeVisible();
+    await expect(page.getByText('#2  940  STAGE 4  (no name)')).toBeVisible();
   });
 
-  // docs/plans/2026-08-19-ranking-free-async spec item 5: pendingEntries
-  // renders as an unranked section ABOVE the confirmed board — never merged
-  // into it, no rank number, no REPLAY button (the server itself refuses to
-  // serve a pending row's replay regardless of what the UI does or doesn't
-  // offer — see functions/api/ranking/[id]/replay.ts's status='verified'
-  // requirement, covered separately by its own unit tests).
-  test('renders pendingEntries as an unranked "PENDING VERIFICATION" section above the confirmed TOP10, never affecting its ranks/order', async ({ page }) => {
+  // docs/plans/2026-08-19-ranking-free-async spec item 5 (2026-08-20
+  // revision): ONE board. A pending row is drawn at the rank it actually
+  // holds, carrying a quiet VERIFYING badge and a REPLAY button gated on the
+  // same `replayAvailable` field every other row uses. There is no separate
+  // "pending" section anywhere on the panel.
+  test('renders pending rows inline in the single ranked board, badged VERIFYING, with no separate pending section', async ({ page }) => {
     const entries: RankingEntry[] = [
       { id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'CONFIRMED1', xHandle: null, replayAvailable: true },
       { id: 'v2', createdAt: '2026-01-03T12:00:00Z', score: 800, stage: 2, name: 'CONFIRMED2', xHandle: null, replayAvailable: true },
     ];
-    const pendingEntries: PendingRankingEntry[] = [
-      { id: 'p1', createdAt: '2026-01-04T12:00:00Z', score: 950, stage: 5, name: 'PENDING1', xHandle: null, unverified: true },
+    const displayEntries: DisplayRankingEntry[] = [
+      { id: 'p1', createdAt: '2026-01-04T12:00:00Z', score: 950, stage: 5, name: 'PENDING1', xHandle: null, replayAvailable: true, status: 'pending' },
+      ...entries.map((entry) => ({ ...entry, status: 'verified' as const })),
     ];
-    await mockRanking(page, entries, pendingEntries);
+    await mockRanking(page, entries, displayEntries);
     await page.goto(APP_URL);
 
     await page.locator('#ranking-button').click();
-    await expect(page.getByText('PENDING VERIFICATION')).toBeVisible();
-    // The pending row's score/stage/name appear, but with NO rank number
-    // (unlike '#1 900 STAGE 3 CONFIRMED1' below) and a PENDING badge instead
-    // of a REPLAY button.
-    await expect(page.getByText('950  STAGE 5')).toBeVisible();
-    await expect(page.getByText('#1  950')).toHaveCount(0); // never assigned a rank, even though it outscores both confirmed entries
-    await expect(page.getByText('PENDING', { exact: true })).toBeVisible();
+    // The pending row holds #1 — the position its score earns it.
+    await expect(page.getByText('#1  950  STAGE 5  PENDING1')).toBeVisible();
+    await expect(page.getByText('#2  900  STAGE 3')).toBeVisible();
+    await expect(page.getByText('#3  800  STAGE 2')).toBeVisible();
 
-    // The confirmed board is untouched: still exactly 2 ranked rows, in
-    // their own score order, unaffected by the pending entry's higher score.
-    await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
-    await expect(page.getByText('#2  800  STAGE 2')).toBeVisible();
+    // Exactly one VERIFYING badge (the pending row's), and no trace of the
+    // old separate section.
+    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(1);
+    await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
+
+    // Every row — pending included — gets a REPLAY button, because a fresh
+    // pending row's replay is servable now (spec item 7).
     const replayButtons = page.getByRole('button', { name: 'REPLAY' });
-    await expect(replayButtons).toHaveCount(2); // only the confirmed rows get a REPLAY button, never the pending one
+    await expect(replayButtons).toHaveCount(3);
+    await expect(replayButtons.nth(0)).toBeEnabled();
   });
 
-  test('renders no "PENDING VERIFICATION" section at all when pendingEntries is empty', async ({ page }) => {
-    await mockRanking(page, [{ id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'SOLO', xHandle: null, replayAvailable: true }], []);
+  test('shows no VERIFYING badge at all when every displayed row is verified', async ({ page }) => {
+    await mockRanking(page, [{ id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'SOLO', xHandle: null, replayAvailable: true }]);
     await page.goto(APP_URL);
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
-    await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
+    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(0);
+  });
+
+  test('a pending row whose replay format has moved on gets the same disabled REPLAY button a verified one would', async ({ page }) => {
+    const displayEntries: DisplayRankingEntry[] = [
+      { id: 'p1', createdAt: '2026-01-04T12:00:00Z', score: 950, stage: 5, name: 'OLDFORMAT', xHandle: null, replayAvailable: false, status: 'pending' },
+    ];
+    await mockRanking(page, [], displayEntries);
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('#1  950  STAGE 5  OLDFORMAT')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'REPLAY' })).toBeDisabled();
+  });
+
+  // Spec item 5's promised experience: "順位を維持したままバッジだけが消える".
+  test('when a pending row is verified, its rank is unchanged and only the badge goes away', async ({ page }) => {
+    const verified: RankingEntry[] = [
+      { id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'RIVAL', xHandle: null, replayAvailable: true },
+    ];
+    const row = { id: 'p1', createdAt: '2026-01-04T12:00:00Z', score: 950, stage: 5, name: 'CLIMBER', xHandle: null, replayAvailable: true };
+    await mockRanking(page, verified, [{ ...row, status: 'pending' }, ...verified.map((e) => ({ ...e, status: 'verified' as const }))]);
+    await page.goto(APP_URL);
+
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('#1  950  STAGE 5  CLIMBER')).toBeVisible();
+    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(1);
+
+    // The audit confirms it: same row, same score, now verified.
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await mockRanking(page, [row, ...verified]);
+    await page.getByRole('button', { name: 'CLOSE' }).click();
+    await page.locator('#ranking-button').click();
+
+    await expect(page.getByText('#1  950  STAGE 5  CLIMBER')).toBeVisible(); // same rank
+    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(0); // badge gone
   });
 });
 
@@ -489,13 +548,36 @@ test.describe('name-input submission flow', () => {
   // surrounding assertions/waits without masking a genuine hang.
   test.setTimeout(120_000);
 
-  test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission, and SUBMIT posts score/stage and shows the pending-verification confirmation', async ({ page }) => {
+  // Doubles as the browser half of the ANTI-GRIEFING pair (docs/plans/2026
+  // -08-19-ranking-free-async spec item 15a): pending rows share the board
+  // with verified ones now, so the obvious attack is to flood the DISPLAY
+  // with fake pending scores and hope that locks everyone else out. It must
+  // not — the offer decision reads `entries` (verified only) and never
+  // `displayEntries`. Folded into this run rather than given a test of its
+  // own on purpose: each gameplay test here costs ~22s of real, wall-clock
+  // -timed play, and this file's load already has to stay clear of the other
+  // worker's timing-sensitive suites (see this describe's own note above).
+  // Its server-side twin — a real submission actually being ACCEPTED under
+  // the same conditions — is functions/_lib/ranking/mergedBoardIntegration.test.ts.
+  test('a real (non-tainted, non-seeded) gameover that beats a FULL board offers submission even while fake pending rows own the display board, and SUBMIT posts score/stage', async ({ page }) => {
     let scoresPostCount = 0;
     let lastPostedBody: Record<string, unknown> | undefined;
+    // Absurd scores, so the run being played loses to every one of them on
+    // the DISPLAY board while still strictly beating the verified 10th place.
+    const fakePending: DisplayRankingEntry[] = Array.from({ length: 3 }, (_, i) => ({
+      id: `fake${i}`,
+      createdAt: '2026-01-01T12:00:00Z',
+      score: 999_000 - i,
+      stage: 9,
+      name: `FAKE${i}`,
+      xHandle: null,
+      replayAvailable: false,
+      status: 'pending' as const,
+    }));
     // A full 10-entry board whose 10th place is exactly one point *below*
     // the achieved score: the strictly-better side of the boundary, which
     // an `entries: []` mock (see the SKIP test below) never exercises.
-    await mockFullBoardRelativeToLiveScore(page, -1);
+    await mockFullBoardRelativeToLiveScore(page, -1, fakePending);
     await page.route('**/api/scores', (route) => {
       if (route.request().method() !== 'POST') return route.fallback();
       scoresPostCount++;
@@ -540,6 +622,14 @@ test.describe('name-input submission flow', () => {
     // either version — confirms this round didn't accidentally add one.
     expect(lastPostedBody?.durationTicks).toBeUndefined();
     expect(lastPostedBody?.duration_ticks).toBeUndefined();
+
+    // ...and the fakes really were dominating the board the player saw, so
+    // the "form still opened" half above is not a vacuous pass.
+    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await page.locator('#ranking-button').click();
+    await expect(page.getByText('#1  999000  STAGE 9  FAKE0')).toBeVisible();
+    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(3);
   });
 
   // Reported from a real device (2026-08-20) as "checking USE X HANDLE
@@ -1003,6 +1093,68 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
     await page.waitForTimeout(600);
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
+  });
+
+  // docs/plans/2026-08-19-ranking-free-async spec item 7: a fresh pending
+  // row IS replayable now, so the viewer must say so for the WHOLE playback —
+  // in the status line and on the board — rather than announcing it once.
+  test('replaying a pending row shows the VERIFYING notice on the board and in the status line, for the whole playback', async ({ page }) => {
+    const rleBase64 = recordShortReplay(2026, 4);
+    await mockRanking(page, [], [
+      { id: 'pend', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: 1, name: 'UNAUDITED', xHandle: null, replayAvailable: true, status: 'pending' },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: 2026, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION, status: 'pending' }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    const boardLabel = page.locator('#replay-verifying-label');
+    await expect(boardLabel).toBeVisible();
+    await expect(boardLabel).toHaveText('VERIFYING — NOT YET AUDITED');
+    await expect(page.getByText('VERIFYING - STAGE 1 / 1')).toBeVisible();
+
+    // Still there several frames later, including once playback has ended —
+    // the notice is a property of the row, not an opening announcement.
+    await page.waitForTimeout(800);
+    await expect(boardLabel).toBeVisible();
+    await expect(page.getByText(/VERIFYING - /)).toBeVisible();
+
+    // ...and it leaves with the replay.
+    await page.getByRole('button', { name: 'EXIT' }).click();
+    await expect(boardLabel).toBeHidden();
+  });
+
+  test('replaying a verified row shows no VERIFYING notice anywhere', async ({ page }) => {
+    const rleBase64 = recordShortReplay(2026, 4);
+    await mockRanking(page, [{ id: 'ok', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: 1, name: 'AUDITED', xHandle: null, replayAvailable: true }]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: 2026, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION, status: 'verified' }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    await expect(page.getByText('STAGE 1 / 1')).toBeVisible();
+    // The board label exists in the DOM either way (it is mounted once at
+    // init); what matters is that it stays hidden, and that it is the ONLY
+    // place the word appears — the status line above says plain "STAGE 1 / 1".
+    const verifyingText = page.getByText(/VERIFYING/);
+    await expect(verifyingText).toHaveCount(1);
+    await expect(verifyingText).toBeHidden();
   });
 
   test('a 410 from the replay endpoint shows a graceful message instead of a silent failure', async ({ page }) => {
