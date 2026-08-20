@@ -564,12 +564,19 @@ test.describe('name-input submission flow', () => {
 
     await nameInput.fill('SHIMABU');
 
-    // ON: the handle field takes over, empty — and the name is stated as kept.
+    // ON: the handle field takes over ALREADY CARRYING the name — it is
+    // almost always the same word, and an empty box here read as "my typing
+    // was wiped". Nothing to note as "kept" while both sides say the same
+    // thing.
     await handleCheckbox.check();
     await expect(handleInput).toBeVisible();
-    await expect(handleInput).toHaveValue('');
-    await expect(page.getByText('NAME KEPT: SHIMABU')).toBeVisible();
+    await expect(handleInput).toHaveValue('SHIMABU');
+    await expect(page.locator('#ranking-submit-hint')).toBeHidden();
+
+    // Editing it makes the two sides differ, which is exactly when the kept
+    // name is worth stating.
     await handleInput.fill('e2e_handle');
+    await expect(page.getByText('NAME KEPT: SHIMABU')).toBeVisible();
 
     // OFF: the typed name is still there, untouched, and now the handle is
     // the one being kept.
@@ -578,13 +585,32 @@ test.describe('name-input submission flow', () => {
     await expect(nameInput).toHaveValue('SHIMABU');
     await expect(page.getByText('X HANDLE KEPT: e2e_handle')).toBeVisible();
 
-    // ON again: the handle typed earlier survived the round trip too.
+    // ON again: an edited handle is NEVER overwritten by a later toggle — the
+    // carry-over only ever seeds an empty field.
     await handleCheckbox.check();
     await expect(handleInput).toHaveValue('e2e_handle');
     await expect(page.getByText('NAME KEPT: SHIMABU')).toBeVisible();
 
-    // A name that is only whitespace-free ASCII here, but the hint echoes raw
-    // user input — assert it lands as inert text, never as markup.
+    // Emptying the handle re-arms the carry-over: it is "seed the empty box",
+    // not "seed it once ever".
+    await handleInput.fill('');
+    await handleCheckbox.uncheck();
+    await handleCheckbox.check();
+    await expect(handleInput).toHaveValue('SHIMABU');
+
+    // A name that is not a legal X handle is carried over verbatim — no
+    // silent transliteration or truncation — for the player to see and for
+    // submit-time validation to judge. (Each fill() happens while its own
+    // field is the visible one; the hidden side cannot be typed into.)
+    await handleInput.fill('');
+    await handleCheckbox.uncheck();
+    await nameInput.fill('しまぶ 太郎');
+    await handleCheckbox.check();
+    await expect(handleInput).toHaveValue('しまぶ 太郎');
+
+    // The hint echoes raw user input — assert it lands as inert text, never
+    // as markup.
+    await handleInput.fill('plainhandle');
     await handleCheckbox.uncheck();
     await nameInput.fill('<b>BOLD</b>');
     await handleCheckbox.check();

@@ -753,12 +753,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   stopKeyPropagation(handleInput); // see nameInput's own comment above
   submitOverlay.appendChild(handleInput);
 
-  // The two fields hold their values independently, and always have — the
-  // checkbox only ever swapped which one is visible/submitted. But swapping a
-  // filled NAME box for an empty @handle box in the same spot LOOKS exactly
-  // like the typed name being wiped, and that is how it was reported from a
-  // real device (2026-08-20). So say what happened: while one side is hidden,
-  // its retained value is shown, verbatim, right under the active field.
+  // The two fields hold their values independently. Ticking the checkbox used
+  // to swap a filled NAME box for an empty @handle box in the same spot, which
+  // reads as the typed name being wiped — reported from a real device
+  // (2026-08-20), and what the player actually wanted was the obvious thing:
+  // carry the name over, since it is almost always the same word. See
+  // carryNameIntoHandle() below; this hint covers what is left over, i.e. the
+  // cases where the two sides genuinely differ.
   const retainedValueHint = document.createElement('div');
   retainedValueHint.id = 'ranking-submit-hint';
   retainedValueHint.style.fontSize = '0.7em';
@@ -768,10 +769,18 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   retainedValueHint.style.display = 'none';
   submitOverlay.appendChild(retainedValueHint);
 
-  /** Shows the hidden side's kept value (if any). textContent, never innerHTML — this echoes raw user input back to the screen. */
+  /**
+   * Shows the hidden side's kept value when it DIFFERS from the one being
+   * submitted. Identical values (the usual case right after the carry-over
+   * below) need no note — repeating the word already on screen is noise, and
+   * the whole point of the hint is "your other value is still there and it is
+   * not this one". textContent, never innerHTML: this echoes raw user input
+   * back to the screen.
+   */
   function syncRetainedValueHint(): void {
     const hidden = handleCheckbox.checked ? { label: 'NAME', value: nameInput.value } : { label: 'X HANDLE', value: handleInput.value };
-    if (hidden.value === '') {
+    const active = handleCheckbox.checked ? handleInput.value : nameInput.value;
+    if (hidden.value === '' || hidden.value === active) {
       retainedValueHint.style.display = 'none';
       retainedValueHint.textContent = '';
       return;
@@ -780,11 +789,35 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     retainedValueHint.style.display = 'block';
   }
 
+  /**
+   * Seeds the @handle field from the name when switching to it — but only
+   * while it is still empty, so a handle the player has actually edited is
+   * never overwritten by a later toggle.
+   *
+   * Copied verbatim, with no filtering of any kind: a name that is not a
+   * legal X handle (Japanese characters, spaces, or one longer than
+   * handleInput's own maxLength, which only constrains typing and not an
+   * assignment) is left exactly as typed for the player to see and fix, and
+   * is caught by the same submit-time validation as any other bad handle.
+   * Silently transliterating or truncating someone's name would be a worse
+   * surprise than showing them what they wrote.
+   */
+  function carryNameIntoHandle(): void {
+    if (handleInput.value === '') handleInput.value = nameInput.value;
+  }
+
   handleCheckbox.addEventListener('change', () => {
+    if (handleCheckbox.checked) carryNameIntoHandle();
     handleInput.style.display = handleCheckbox.checked ? 'block' : 'none';
     nameInput.style.display = handleCheckbox.checked ? 'none' : 'block';
     syncRetainedValueHint();
   });
+
+  // The hint depends on BOTH values, so editing the visible one can change it
+  // (typing a different handle over a carried-over name makes the kept name
+  // worth mentioning again).
+  nameInput.addEventListener('input', syncRetainedValueHint);
+  handleInput.addEventListener('input', syncRetainedValueHint);
 
   const submitStatus = document.createElement('div');
   submitStatus.style.fontSize = '0.75em';
