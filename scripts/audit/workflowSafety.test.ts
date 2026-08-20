@@ -52,4 +52,20 @@ describe('.github/workflows/ranking-audit.yml safety', () => {
     expect(text).toMatch(/RANKING_IP_HASH_KEY/);
     expect(text).toMatch(/RemoteD1Adapter/);
   });
+
+  // Public-repository log hygiene (docs/ranking-audit-runbook.md §5): this
+  // workflow's run log is world-readable, and AUDIT_LOG_ERROR_DETAIL opts the
+  // audit job into printing exception MESSAGE text (paths, connection
+  // details) — a local-debugging affordance only. Guarded here rather than
+  // only in a comment, since setting it would be a one-line, plausible-
+  // looking edit while debugging a red run.
+  it('AUDIT_LOG_ERROR_DETAIL is not set anywhere in the workflow (uncommented)', () => {
+    const uncommented = lines.filter((line) => !/^\s*#/.test(line)).join('\n');
+    expect(uncommented).not.toMatch(/AUDIT_LOG_ERROR_DETAIL/);
+  });
+
+  it('the public-log policy is pointed at from the file itself', () => {
+    expect(text).toMatch(/ranking-audit-runbook\.md/);
+    expect(text).toMatch(/AUDIT_LOG_ERROR_DETAIL/); // in the warning comment
+  });
 });

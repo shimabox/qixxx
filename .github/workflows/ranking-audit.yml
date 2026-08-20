@@ -71,6 +71,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # PUBLIC LOG. This repository is public, so this step's output is
+      # readable by anyone — see docs/ranking-audit-runbook.md §5 "ログ方針"
+      # for what the audit job may and may not print. In particular: do NOT
+      # add AUDIT_LOG_ERROR_DETAIL here (it opts the job into printing
+      # exception message text, which is a local-debugging-only affordance),
+      # and do not add any echo/debug step that dumps a row, an env var or a
+      # raw error object.
       - name: Run async audit
         env:
           RANKING_IP_HASH_KEY: ${{ secrets.RANKING_IP_HASH_KEY }}

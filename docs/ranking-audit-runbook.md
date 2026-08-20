@@ -170,7 +170,53 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 - 鍵が未設定の場合、POST ハンドラ・監査コマンドの両方が **DB 操作前に** 検出して
   fail-closed する(`functions/_lib/ranking/ipHash.ts`)。生 IP へのフォールバックはしない。
 
-## 5. 既知の残余リスク・未決事項
+## 5. ログ方針(公開ログ前提)
+
+**このリポジトリは公開されており、GitHub Actions の実行ログは誰でも閲覧できる。**
+監査ジョブが出力するものは「運用者のコンソール」ではなく **公開された成果物** として扱う。
+対象は `scripts/audit/cli.ts` の標準出力/標準エラー、`runAudit()` が emit する
+`AuditEvent` 全種(cli がそのまま JSON で印字する)、および workflow の run ステップ出力。
+
+### 5.1 出してよいもの / いけないもの
+
+| 分類 | 例 | 可否 | 理由 |
+| --- | --- | --- | --- |
+| 集計値 | 件数(`count` / `deletedCount` / `attempts`)、`reachedTimeLimit`、処理時間 | **可** | 個人と結びつかない |
+| イベント種別 | `entry-verified` / `top10-cleanup` / `lease-lost-*` 等 | **可** | 挙動の説明のみ |
+| 公開 API で既に見える値 | 行の `id`(共有 ID)、確定スコア、`runStartedAt` | **可** | `GET /api/ranking` で誰でも取得できる |
+| 却下理由の**種別** | `reason:"declared-score-mismatch"` / `"season-mismatch"` | **可** | 種別止まり。**申告値と実測値の対比は出さない**(entry id まで) |
+| `ip_hash` | `ip_hash` 列の値、その一部 | **不可** | ハッシュでも同一人物の投稿を横断突合でき、既知 IP との照合も可能 |
+| `owner_token` | `audit_lock.owner_token` | **不可** | 他プロセスがフェンスを詐称できる |
+| 鍵に類する値 | `RANKING_IP_HASH_KEY`、接続文字列、認証情報 | **不可** | 言うまでもなく |
+| 生のエラーオブジェクト | `console.error('...', err)`、`String(err)`、スタック | **不可** | メッセージ/スタックに絶対パス・接続先・SQL 断片が混ざり得る |
+
+エラーは `scripts/audit/logSafety.ts` で **クラス名だけに丸めて** 出す
+(`errorName:"TypeError"`)。`TypeError` と D1 障害を区別してリトライ判断するには
+これで十分。メッセージ本文の**先頭1行のみ**(スタックなし・200字で打ち切り)は
+ローカル実行時に環境変数 `AUDIT_LOG_ERROR_DETAIL=1` を付けたときだけ出る
+— **workflow では絶対に設定しない**。
+
+```sh
+# ローカルで詳細を見たいときだけ
+AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli.ts
+```
+
+### 5.2 イベントを追加するときのチェック項目
+
+`AuditEvent` に種別やフィールドを足すときは、以下を**すべて**確認する。
+
+- [ ] 追加フィールドは 5.1 の「可」に該当するか(集計値・種別・公開済みの値のいずれか)。
+- [ ] 行の内容をそのまま載せていないか(`ip_hash` はもちろん、`name` / `x_handle` /
+      `seed` / `inputs` も監査ログには不要 — 必要なのは `id` だけ)。
+- [ ] 例外を扱うイベントなら、`safeErrorName()` / `safeErrorDetail()` を通しているか
+      (`err` をそのまま埋め込んでいないか)。
+- [ ] `scripts/audit/runAudit.test.ts` の `ALLOWED_EVENT_FIELDS` に追加したか。
+      **ここを更新しないとテストが落ちる**(意図的なゲート。落ちたら上のチェックを
+      通ってから追加する)。
+- [ ] 新しい種別を足したなら、`scripts/audit/logSafety.test.ts` / 同 hygiene テストが
+      その種別を実際に通過する経路になっているか。
+
+## 6. 既知の残余リスク・未決事項
 
 - Actions からの実 D1 接続方式(§3 の1)は未実装・未決定。
 - Free 10ms CPU 適合の最終確定(実測 `cpuTime`)は本ラウンドのスコープ外

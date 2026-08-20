@@ -10,6 +10,7 @@
 import { verifyPendingEntry } from '../../functions/_lib/ranking/verifyPendingEntry';
 import type { BenchVerifyHooks } from '../../functions/_lib/ranking/benchHooks';
 import { acquireLock, renewLock, releaseLock, LOCK_FENCE_SQL_FRAGMENT } from './lock';
+import { safeErrorName, safeErrorDetail } from './logSafety';
 import { AUDIT_CHUNK_SIZE, AUDIT_MAX_RUNTIME_MS, AUDIT_MAX_ATTEMPTS, AUDIT_RETRY_DELAY_SECONDS } from './constants';
 
 export interface RunAuditOptions {
@@ -22,10 +23,30 @@ export interface RunAuditOptions {
   maxAttempts?: number;
   /** Test-only hook, mirroring verifyReplay()'s own — never set in a real audit run. */
   benchHooks?: BenchVerifyHooks;
+  /**
+   * Adds an unexpected exception's (first-line, truncated) message text to
+   * the retry/exhausted events. OFF by default and never enabled on the
+   * workflow: an error message can carry paths/connection details that must
+   * not reach a public log (scripts/audit/logSafety.ts). The CLI sets this
+   * from AUDIT_LOG_ERROR_DETAIL for local debugging only.
+   */
+  includeErrorDetail?: boolean;
   /** Progress/log callback — never required for correctness, purely observational (the CLI entrypoint wires this to console.log). */
   onEvent?: (event: AuditEvent) => void;
 }
 
+/**
+ * Every event below is written to a PUBLIC log (the CLI entrypoint prints
+ * them verbatim as JSON, and this repository's GitHub Actions run logs are
+ * world-readable) — so each field here is part of the published output, not
+ * an operator-only diagnostic. Fields are restricted to event kinds,
+ * aggregate counts, already-public row `id`s and rejection reason KINDS;
+ * never ip_hash, never the lock's owner_token, never raw error text. Adding a
+ * field means re-checking it against docs/ranking-audit-runbook.md §5's
+ * "ログ方針" table — runAudit.test.ts's ALLOWED_EVENT_FIELDS ("public-log
+ * hygiene") fails until a new field is added there too, so one cannot appear
+ * in the published log without that decision being made deliberately.
+ */
 export type AuditEvent =
   | { type: 'lock-not-acquired' }
   | { type: 'lock-acquired'; runStartedAt: number }
@@ -33,8 +54,8 @@ export type AuditEvent =
   | { type: 'chunk-fetched'; count: number }
   | { type: 'entry-verified'; id: string }
   | { type: 'entry-deleted-confirmed-invalid'; id: string; reason: string }
-  | { type: 'entry-retry-scheduled'; id: string; attempts: number }
-  | { type: 'entry-deleted-attempts-exhausted'; id: string; attempts: number }
+  | { type: 'entry-retry-scheduled'; id: string; attempts: number; errorName: string; errorDetail?: string }
+  | { type: 'entry-deleted-attempts-exhausted'; id: string; attempts: number; errorName: string; errorDetail?: string }
   | { type: 'lease-lost-mid-chunk' }
   | { type: 'time-limit-reached' }
   | { type: 'lease-lost-before-top10-cleanup' }
@@ -166,6 +187,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
   const chunkSize = options.chunkSize ?? AUDIT_CHUNK_SIZE;
   const maxRuntimeMs = options.maxRuntimeMs ?? AUDIT_MAX_RUNTIME_MS;
   const maxAttempts = options.maxAttempts ?? AUDIT_MAX_ATTEMPTS;
+  const includeErrorDetail = options.includeErrorDetail ?? false;
   const emit = options.onEvent ?? (() => {});
   const wallClockStart = Date.now();
 
@@ -258,6 +280,17 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // Layer 2 (spec item 3): a genuinely unexpected, non-typed
           // exception — retry via audit_attempts/next_attempt_at, or delete
           // once the retry budget (maxAttempts) is exhausted.
+          //
+          // The exception is REDACTED to its class name before it can reach
+          // the (public) log — scripts/audit/logSafety.ts explains why an
+          // error's own message/stack is never publishable. Enough survives
+          // to tell "the simulator threw a TypeError" from "D1 timed out",
+          // which is all this path needs; the message's first line is
+          // available locally behind AUDIT_LOG_ERROR_DETAIL.
+          const errorFields = {
+            errorName: safeErrorName(unexpectedError),
+            ...(includeErrorDetail ? { errorDetail: safeErrorDetail(unexpectedError) } : {}),
+          };
           const nextAttempts = row.audit_attempts + 1;
           if (nextAttempts >= maxAttempts) {
             const { outcome } = await runFencedWrite(
@@ -272,7 +305,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
             }
             if (outcome === 'applied') {
               result.deletedAttemptsExhaustedCount++;
-              emit({ type: 'entry-deleted-attempts-exhausted', id: row.id, attempts: nextAttempts });
+              emit({ type: 'entry-deleted-attempts-exhausted', id: row.id, attempts: nextAttempts, ...errorFields });
             }
             // 'no-op-still-owner': the lease is confirmed intact but this
             // specific row was already not 'pending' — nothing to count,
@@ -295,7 +328,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
             }
             if (outcome === 'applied') {
               result.retriedCount++;
-              emit({ type: 'entry-retry-scheduled', id: row.id, attempts: nextAttempts });
+              emit({ type: 'entry-retry-scheduled', id: row.id, attempts: nextAttempts, ...errorFields });
             }
           }
           continue;

@@ -16,9 +16,23 @@ import { LocalPlatformProxyD1Adapter } from './d1Adapter';
 import { runAudit, type AuditEvent } from './runAudit';
 import { requireIpHashKey, MissingIpHashKeyError } from '../../functions/_lib/ranking/ipHash';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../functions/_lib/ranking/season';
+import { safeErrorName, safeErrorDetail, errorDetailEnabled, ERROR_DETAIL_ENV_VAR } from './logSafety';
 
+// EVERYTHING THIS FILE PRINTS IS PUBLIC. The GitHub Actions run log for
+// .github/workflows/ranking-audit.yml is world-readable (public repository),
+// so this entrypoint's stdout/stderr is published output — see
+// docs/ranking-audit-runbook.md §"ログ方針" for the field-by-field policy and
+// scripts/audit/logSafety.ts for the error-redaction helpers that implement
+// it. AuditEvent's own doc comment carries the same rule for the event
+// payloads printed verbatim below.
 function logEvent(event: AuditEvent): void {
   console.log(`[audit] ${JSON.stringify(event)}`);
+}
+
+/** The publishable one-line rendering of a thrown value (class name only, plus an opted-in local detail). */
+function describeError(err: unknown): string {
+  const detail = errorDetailEnabled(process.env) ? ` ${safeErrorDetail(err)}` : '';
+  return `${safeErrorName(err)}${detail}`;
 }
 
 async function main(): Promise<void> {
@@ -49,6 +63,8 @@ async function main(): Promise<void> {
       seasonId: CURRENT_SEASON_ID,
       rulesetVersion: RULESET_VERSION,
       replayFormatVersion: REPLAY_FORMAT_VERSION,
+      // Local-debugging opt-in only; the workflow never sets this variable.
+      includeErrorDetail: errorDetailEnabled(process.env),
       onEvent: logEvent,
     });
 
@@ -79,6 +95,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[audit] fatal error:', err);
+  // Deliberately NOT `console.error('...', err)`: printing the error object
+  // publishes its message AND stack — absolute file paths, and for a D1/
+  // network failure potentially endpoint or account details. The class name
+  // is what a public log gets; re-run locally with AUDIT_LOG_ERROR_DETAIL=1
+  // (never on the workflow) to see the message's first line too.
+  console.error(`[audit] fatal error: ${describeError(err)} (re-run locally with ${ERROR_DETAIL_ENV_VAR}=1 for the error message)`);
   process.exitCode = 1;
 });

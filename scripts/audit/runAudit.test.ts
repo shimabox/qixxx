@@ -603,6 +603,157 @@ describe('runAudit (real local D1)', () => {
     });
   });
 
+  // Public-log hygiene (2026-08-20): this repository is public, so the audit
+  // workflow's GitHub Actions run log — which is just these events, printed
+  // verbatim as JSON by scripts/audit/cli.ts — is world-readable. These tests
+  // pin down what may appear in it, against a REAL run rather than by reading
+  // the event type.
+  describe('public-log hygiene (events are published output)', () => {
+    /**
+     * The complete set of fields each event kind may carry. Deliberately
+     * exhaustive and deliberately annoying to extend: adding a field to an
+     * AuditEvent fails here until it is consciously added to this list (and,
+     * per docs/ranking-audit-runbook.md §"ログ方針", justified as publishable).
+     */
+    const ALLOWED_EVENT_FIELDS: Record<string, readonly string[]> = {
+      'lock-not-acquired': [],
+      'lock-acquired': ['runStartedAt'],
+      'expired-pending-deleted': ['count'],
+      'chunk-fetched': ['count'],
+      'entry-verified': ['id'],
+      'entry-deleted-confirmed-invalid': ['id', 'reason'],
+      'entry-retry-scheduled': ['id', 'attempts', 'errorName', 'errorDetail'],
+      'entry-deleted-attempts-exhausted': ['id', 'attempts', 'errorName', 'errorDetail'],
+      'lease-lost-mid-chunk': [],
+      'time-limit-reached': [],
+      'lease-lost-before-top10-cleanup': [],
+      'top10-cleanup': ['deletedCount'],
+      'lease-lost-at-release': [],
+      'lock-released': ['released'],
+    };
+
+    function assertOnlyAllowedFields(events: AuditEvent[]): void {
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        const allowed = ALLOWED_EVENT_FIELDS[event.type];
+        expect(allowed, `unknown event type '${event.type}' — add it to ALLOWED_EVENT_FIELDS and check it against the runbook's log policy`).toBeDefined();
+        for (const key of Object.keys(event)) {
+          if (key === 'type') continue;
+          expect(allowed, `event '${event.type}' carries an unexpected field '${key}'`).toContain(key);
+        }
+      }
+    }
+
+    /** Captures the audit lock's owner_token as acquireLock() binds it, so the assertions below can look for the REAL secret, not a stand-in. */
+    function wrapDbCapturingOwnerToken(realDb: D1Database): { db: D1Database; ownerToken: () => string | null } {
+      let token: string | null = null;
+      const wrapped = {
+        prepare(sql: string) {
+          if (!sql.includes('UPDATE audit_lock') || !sql.includes('SET owner_token = ?1')) return realDb.prepare(sql);
+          return {
+            bind(...args: unknown[]) {
+              if (typeof args[0] === 'string' && args[0] !== '') token = args[0];
+              return realDb.prepare(sql).bind(...args);
+            },
+          };
+        },
+      } as unknown as D1Database;
+      return { db: wrapped, ownerToken: () => token };
+    }
+
+    const IP_HASH = 'ip-hash-8f3b1c2d4e5a6b7c8d9e0f1a2b3c4d5e';
+
+    it('a run covering every ordinary outcome leaks no ip_hash, no owner_token and no raw error text', async () => {
+      const seed = 9700;
+      const fixture = recordRealReplay(seed);
+      // One row per outcome the log can report: verified, confirmed-invalid,
+      // and (via the 12 verified rows) a TOP10 cleanup.
+      await seedScoreRow(testDb.db, {
+        status: 'pending',
+        seed,
+        inputs: fixture.rle,
+        score: fixture.score,
+        stage: fixture.stage,
+        duration_ticks: fixture.durationTicks,
+        ip_hash: IP_HASH,
+      });
+      await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]), ip_hash: IP_HASH });
+      await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 25 * HOUR_MS, ip_hash: IP_HASH });
+      for (let i = 0; i < 12; i++) await seedScoreRow(testDb.db, { status: 'verified', score: 500 + i, ip_hash: IP_HASH });
+
+      const events: AuditEvent[] = [];
+      const { db: captureDb, ownerToken } = wrapDbCapturingOwnerToken(testDb.db);
+      await runAudit(baseOptions(captureDb, { onEvent: (e) => events.push(e) }));
+
+      // The run really did produce the interesting events, so the assertions
+      // below are not vacuously true.
+      const types = events.map((e) => e.type);
+      expect(types).toContain('entry-verified');
+      expect(types).toContain('entry-deleted-confirmed-invalid');
+      expect(types).toContain('top10-cleanup');
+      assertOnlyAllowedFields(events);
+
+      // What the CLI would actually print, checked as text.
+      const printed = events.map((e) => JSON.stringify(e)).join('\n');
+      expect(printed).not.toContain(IP_HASH);
+      expect(printed).not.toContain('ip_hash');
+      expect(ownerToken()).toMatch(/^[0-9a-f]{32}$/); // the wrapper really did capture it
+      expect(printed).not.toContain(ownerToken()!);
+      expect(printed).not.toMatch(/[0-9a-f]{32}/); // nor anything else token/hash-shaped
+      expect(printed).not.toMatch(/\bat .*\.ts:\d+/); // no stack frames
+      expect(printed).not.toContain('/Users/'); // no absolute paths
+
+      // The confirmed-invalid event reports the KIND of rejection only —
+      // never the declared-vs-resimulated values behind it.
+      const rejection = events.find((e) => e.type === 'entry-deleted-confirmed-invalid');
+      expect(rejection).toEqual({ type: 'entry-deleted-confirmed-invalid', id: expect.any(String), reason: 'malformed-replay' });
+    });
+
+    it('the unexpected-exception retry path logs the error CLASS only — never its message or stack', async () => {
+      await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([0, 1]), ip_hash: IP_HASH });
+      const verifyPendingEntryModule = await import('../../functions/_lib/ranking/verifyPendingEntry');
+      class D1ConnectionError extends Error {
+        constructor() {
+          super('connect ECONNREFUSED 10.1.2.3:5432 db=qixxx-scores token=abcdef0123456789abcdef0123456789\nsecond line of the message');
+          this.name = 'D1ConnectionError';
+        }
+      }
+      vi.spyOn(verifyPendingEntryModule, 'verifyPendingEntry').mockImplementation(() => {
+        throw new D1ConnectionError();
+      });
+
+      const events: AuditEvent[] = [];
+      await runAudit(baseOptions(testDb.db, { onEvent: (e) => events.push(e) }));
+
+      const retry = events.find((e) => e.type === 'entry-retry-scheduled');
+      expect(retry).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'D1ConnectionError' });
+      assertOnlyAllowedFields(events);
+
+      const printed = events.map((e) => JSON.stringify(e)).join('\n');
+      expect(printed).not.toContain('ECONNREFUSED');
+      expect(printed).not.toContain('10.1.2.3');
+      expect(printed).not.toContain('abcdef0123456789abcdef0123456789');
+      expect(printed).not.toContain('second line of the message');
+      expect(printed).not.toMatch(/\bat .*\.ts:\d+/);
+    });
+
+    it('opting into error detail (local debugging only) adds the first message line, still without the stack', async () => {
+      await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([0, 1]) });
+      const verifyPendingEntryModule = await import('../../functions/_lib/ranking/verifyPendingEntry');
+      vi.spyOn(verifyPendingEntryModule, 'verifyPendingEntry').mockImplementation(() => {
+        throw new Error('first line only\nsecond line, dropped');
+      });
+
+      const events: AuditEvent[] = [];
+      await runAudit(baseOptions(testDb.db, { includeErrorDetail: true, onEvent: (e) => events.push(e) }));
+
+      const retry = events.find((e) => e.type === 'entry-retry-scheduled');
+      expect(retry).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'Error', errorDetail: 'first line only' });
+      assertOnlyAllowedFields(events);
+      expect(JSON.stringify(events)).not.toContain('second line, dropped');
+    });
+  });
+
   it('two concurrent runAudit() calls against the same D1: exactly one acquires the lock', async () => {
     const [a, b] = await Promise.all([runAudit(baseOptions(testDb.db)), runAudit(baseOptions(testDb.db))]);
     const acquiredCount = [a, b].filter((r) => r.acquired).length;
