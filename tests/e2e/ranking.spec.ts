@@ -759,8 +759,11 @@ test.describe('replay viewing', () => {
     await expect(page.locator('#hud')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE}`, { timeout: 20_000 });
     // ...and once the skip lands on it, the marker appears.
     await expect(page.getByText(`REPLAY - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`)).toBeVisible({ timeout: 20_000 });
-    // The button returns to its idle label once the chunked skip finishes.
-    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled();
+    // ...and the skip control, having nowhere left to go, is gone (hidden,
+    // not disabled — user feedback, 2026-08-20). It is also proof the chunked
+    // skip actually finished: a still-running skip shows SKIPPING... instead.
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden();
 
     // Normal playback was suspended for the duration and restored afterwards.
     // Asserted on the transition log rather than by watching the board: the
@@ -820,7 +823,7 @@ test.describe('replay viewing', () => {
     // Skip to the final stage so the remaining ~100 ticks of playback reach
     // the end of the run within the test's patience.
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
-    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled({ timeout: 20_000 });
+    await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden({ timeout: 20_000 });
 
     // 1. Playback runs out on the stage the run died on, and the status line
     //    says exactly that rather than leaving it to be inferred.
@@ -837,6 +840,41 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'EXIT' }).click();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
     expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+  });
+
+  // User feedback (2026-08-20): on a run that ended on the stage being
+  // played, SKIP TO FINAL STAGE does nothing — so it is hidden rather than
+  // disabled, leaving no dead control to puzzle over. The predicate runs once
+  // per rendered frame (RankingUI.syncReplayStatus()), so it covers the
+  // single-stage case below, the post-skip case asserted in the tests above,
+  // and equally an ordinary playback crossing into the final stage (the same
+  // check, on the same frame cadence — not asserted separately here only
+  // because reaching stage 4 by watching would take ~36s of real playback).
+  test('a single-stage run never offers SKIP TO FINAL STAGE at all', async ({ page }) => {
+    const rleBase64 = recordShortReplay(2026, 4); // one stage, start to finish
+    await mockRanking(page, [
+      { id: 'onestage', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: 1, name: 'ONESTAGE', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: 2026, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+
+    // The bar is up (so this is not just "the replay never started")...
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
+    await expect(page.getByText('STAGE 1 / 1')).toBeVisible();
+    // ...and the skip control is absent from the first frame, never flashed.
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
+    await page.waitForTimeout(600);
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
   });
 
   test('a 410 from the replay endpoint shows a graceful message instead of a silent failure', async ({ page }) => {
@@ -965,10 +1003,12 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeVisible();
 
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
-    // The button returns to its idle label once the chunked skip completes —
-    // if the skip blocked the main thread, the intermediate state could never
-    // render at all.
-    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled({ timeout: 15_000 });
+    // The SKIPPING... state clears once the chunked skip completes — if the
+    // skip blocked the main thread, the intermediate state could never render
+    // at all. The idle button does not come back: the final stage is playing
+    // now, so there is nothing left to skip to.
+    await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
 
     // The page is still live and interactive afterwards.

@@ -978,6 +978,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   let activeReplayEngine: ReplayEngine | null = null;
   let lastReplayStageText: string | null = null;
+  let lastSkipVisible: boolean | null = null;
 
   /**
    * The status line's text for the replay currently on screen. `finalStage`
@@ -1000,24 +1001,48 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   }
 
   /**
-   * Refreshes the status line to match the frame currently being rendered.
-   * Called once per rendered frame from main.ts while in replay mode (the
-   * same arrangement syncAvailability() uses, and for the same reason: the
-   * label must track the frame on screen, not a timer of its own). Cheap —
-   * it early-returns unless the text actually changed.
+   * Whether SKIP TO FINAL STAGE still has anywhere to go. False once the
+   * final stage is the one playing (a single-stage run: from the very first
+   * frame) or playback has ended — the control is HIDDEN rather than disabled
+   * in that case, so nobody is left working out why it won't respond.
+   */
+  function canSkipToFinalStage(engine: ReplayEngine): boolean {
+    if (engine.isFinished()) return false;
+    return engine.getSession().getStage() < engine.getResult().stage;
+  }
+
+  /**
+   * Refreshes the status line, and the skip control's visibility, to match
+   * the frame currently being rendered. Called once per rendered frame from
+   * main.ts while in replay mode (the same arrangement syncAvailability()
+   * uses, and for the same reason: both must track the frame on screen, not a
+   * timer of their own) — so the skip button also disappears at the exact
+   * moment ordinary playback crosses into the final stage, not just after a
+   * skip. Cheap: each half early-returns unless its own value changed.
    */
   function syncReplayStatus(): void {
     const engine = activeReplayEngine;
     if (!engine) return;
     const text = replayStageText(engine);
-    if (text === lastReplayStageText) return;
-    lastReplayStageText = text;
-    replayStageLabel.textContent = text;
+    if (text !== lastReplayStageText) {
+      lastReplayStageText = text;
+      replayStageLabel.textContent = text;
+    }
+    const skippable = canSkipToFinalStage(engine);
+    if (skippable !== lastSkipVisible) {
+      lastSkipVisible = skippable;
+      skipToFinalButton.style.display = skippable ? 'inline-block' : 'none';
+    }
   }
 
   function mountReplayControls(): void {
     lastReplayStageText = null;
     replayStageLabel.textContent = 'REPLAY';
+    // Starts hidden and is revealed by the first frame's sync if this replay
+    // actually has a later stage to skip to — never flashed for a frame at a
+    // single-stage run.
+    lastSkipVisible = false;
+    skipToFinalButton.style.display = 'none';
     replayControls.style.display = 'flex';
   }
 
