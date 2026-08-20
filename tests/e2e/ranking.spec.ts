@@ -501,6 +501,56 @@ test.describe('name-input submission flow', () => {
     expect(lastPostedBody?.duration_ticks).toBeUndefined();
   });
 
+  // Reported from a real device (2026-08-20) as "checking USE X HANDLE
+  // INSTEAD erases the name I typed". The two inputs are separate elements
+  // and always did keep their own values — the toggle only swaps which one is
+  // visible — but a filled NAME box being replaced by an empty @handle box in
+  // the same spot is indistinguishable from the text being wiped, so the form
+  // now states the kept value outright. Pinned here so the retention itself
+  // can never regress into the thing it was mistaken for.
+  test('NAME and X HANDLE keep their own values across the toggle, and the form says so', async ({ page }) => {
+    await mockRanking(page, []);
+    await page.route('**/api/scores', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+
+    const nameInput = page.getByPlaceholder('NAME');
+    const handleInput = page.getByPlaceholder('@handle');
+    const handleCheckbox = page.getByRole('checkbox', { name: 'USE X HANDLE INSTEAD' });
+
+    await nameInput.fill('SHIMABU');
+
+    // ON: the handle field takes over, empty — and the name is stated as kept.
+    await handleCheckbox.check();
+    await expect(handleInput).toBeVisible();
+    await expect(handleInput).toHaveValue('');
+    await expect(page.getByText('NAME KEPT: SHIMABU')).toBeVisible();
+    await handleInput.fill('e2e_handle');
+
+    // OFF: the typed name is still there, untouched, and now the handle is
+    // the one being kept.
+    await handleCheckbox.uncheck();
+    await expect(nameInput).toBeVisible();
+    await expect(nameInput).toHaveValue('SHIMABU');
+    await expect(page.getByText('X HANDLE KEPT: e2e_handle')).toBeVisible();
+
+    // ON again: the handle typed earlier survived the round trip too.
+    await handleCheckbox.check();
+    await expect(handleInput).toHaveValue('e2e_handle');
+    await expect(page.getByText('NAME KEPT: SHIMABU')).toBeVisible();
+
+    // A name that is only whitespace-free ASCII here, but the hint echoes raw
+    // user input — assert it lands as inert text, never as markup.
+    await handleCheckbox.uncheck();
+    await nameInput.fill('<b>BOLD</b>');
+    await handleCheckbox.check();
+    await expect(page.getByText('NAME KEPT: <b>BOLD</b>')).toBeVisible();
+    expect(await page.locator('#ranking-submit-hint').innerHTML()).not.toContain('<b>');
+  });
+
   test('SKIP dismisses the submission overlay without ever POSTing', async ({ page }) => {
     let scoresPostCount = 0;
     await mockRanking(page, []);

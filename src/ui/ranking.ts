@@ -681,9 +681,38 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleInput.style.display = 'none';
   stopKeyPropagation(handleInput); // see nameInput's own comment above
   submitOverlay.appendChild(handleInput);
+
+  // The two fields hold their values independently, and always have — the
+  // checkbox only ever swapped which one is visible/submitted. But swapping a
+  // filled NAME box for an empty @handle box in the same spot LOOKS exactly
+  // like the typed name being wiped, and that is how it was reported from a
+  // real device (2026-08-20). So say what happened: while one side is hidden,
+  // its retained value is shown, verbatim, right under the active field.
+  const retainedValueHint = document.createElement('div');
+  retainedValueHint.id = 'ranking-submit-hint';
+  retainedValueHint.style.fontSize = '0.7em';
+  retainedValueHint.style.color = HUD_ACCENT_COLOR;
+  retainedValueHint.style.maxWidth = '220px';
+  retainedValueHint.style.overflowWrap = 'anywhere';
+  retainedValueHint.style.display = 'none';
+  submitOverlay.appendChild(retainedValueHint);
+
+  /** Shows the hidden side's kept value (if any). textContent, never innerHTML — this echoes raw user input back to the screen. */
+  function syncRetainedValueHint(): void {
+    const hidden = handleCheckbox.checked ? { label: 'NAME', value: nameInput.value } : { label: 'X HANDLE', value: handleInput.value };
+    if (hidden.value === '') {
+      retainedValueHint.style.display = 'none';
+      retainedValueHint.textContent = '';
+      return;
+    }
+    retainedValueHint.textContent = `${hidden.label} KEPT: ${hidden.value}`;
+    retainedValueHint.style.display = 'block';
+  }
+
   handleCheckbox.addEventListener('change', () => {
     handleInput.style.display = handleCheckbox.checked ? 'block' : 'none';
     nameInput.style.display = handleCheckbox.checked ? 'none' : 'block';
+    syncRetainedValueHint();
   });
 
   const submitStatus = document.createElement('div');
@@ -849,11 +878,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         return;
       }
 
+      // Per-run reset (unchanged): a fresh offer starts from an empty form,
+      // both values included.
       nameInput.value = '';
       handleInput.value = '';
       handleCheckbox.checked = false;
       handleInput.style.display = 'none';
       nameInput.style.display = 'block';
+      syncRetainedValueHint(); // both empty now -> hides itself
       submitStatus.textContent = '';
       postButton.style.display = 'inline-block';
       postButton.disabled = false;
