@@ -304,6 +304,47 @@ test.describe('ranking display', () => {
     await expect(replayButtons.nth(0)).toBeEnabled();
   });
 
+  // Reported from a real device (2026-08-20): a submission made with only an
+  // X handle showed up as "(no name)" beside the player's own handle. A
+  // handle-only row stores name='' (the form submits one or the other), and
+  // the handle IS the name in that case — "(no name)" must mean only that
+  // neither was given.
+  test('a handle-only row shows the handle as its name (and only "(no name)" when there is genuinely neither)', async ({ page }) => {
+    const entries: RankingEntry[] = [
+      { id: 'h', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: '', xHandle: 'handleonly', replayAvailable: true },
+      { id: 'n', createdAt: '2026-01-03T12:00:00Z', score: 800, stage: 2, name: '', xHandle: null, replayAvailable: true },
+      { id: 'b', createdAt: '2026-01-04T12:00:00Z', score: 700, stage: 1, name: 'BOTH', xHandle: 'both_handle', replayAvailable: true },
+    ];
+    const pendingEntries: PendingRankingEntry[] = [
+      { id: 'ph', createdAt: '2026-01-05T12:00:00Z', score: 950, stage: 5, name: '', xHandle: 'pendinghandle', unverified: true },
+      { id: 'pn', createdAt: '2026-01-06T12:00:00Z', score: 940, stage: 4, name: '', xHandle: null, unverified: true },
+    ];
+    await mockRanking(page, entries, pendingEntries);
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+
+    // Confirmed board: handle in the name slot, and as the row's ONE link
+    // (the meta line no longer repeats it) — so the profile stays reachable
+    // without printing the handle twice.
+    await expect(page.getByText('#1  900  STAGE 3  @handleonly')).toBeVisible();
+    const handleOnlyLinks = page.locator('a', { hasText: '@handleonly' });
+    await expect(handleOnlyLinks).toHaveCount(1);
+    await expect(handleOnlyLinks).toHaveAttribute('href', 'https://x.com/handleonly');
+
+    // Neither name nor handle: still "(no name)", which now means exactly that.
+    await expect(page.getByText('#2  800  STAGE 2  (no name)')).toBeVisible();
+
+    // A row with BOTH is unchanged: name in the slot, handle on the meta line.
+    await expect(page.getByText('#3  700  STAGE 1  BOTH')).toBeVisible();
+    await expect(page.locator('a', { hasText: '@both_handle' })).toHaveAttribute('href', 'https://x.com/both_handle');
+
+    // The pending section follows the same precedence — it showed neither
+    // before. Plain text there, not a link: the row is still provisional.
+    await expect(page.getByText('950  STAGE 5  @pendinghandle')).toBeVisible();
+    await expect(page.locator('a', { hasText: '@pendinghandle' })).toHaveCount(0);
+    await expect(page.getByText('940  STAGE 4  (no name)')).toBeVisible();
+  });
+
   // docs/plans/2026-08-19-ranking-free-async spec item 5: pendingEntries
   // renders as an unranked section ABOVE the confirmed board — never merged
   // into it, no rank number, no REPLAY button (the server itself refuses to

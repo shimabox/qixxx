@@ -277,6 +277,34 @@ function styledOverlay(): HTMLDivElement {
   return el;
 }
 
+/**
+ * What goes in a row's name slot, for both the confirmed board and the
+ * pending section.
+ *
+ * A handle-only submission stores name='' (the form submits one or the
+ * other), which used to render as "(no name)" next to the player's own
+ * handle — reported from a real device (2026-08-20) as exactly the confusion
+ * it looks like: "I did enter a name". The handle IS the name in that case.
+ * "(no name)" now means only what it says: neither was given (a SKIP-less
+ * anonymous submission).
+ */
+function resolveDisplayName(entry: { name: string; xHandle: string | null }): string {
+  if (entry.name !== '') return entry.name;
+  if (entry.xHandle) return `@${entry.xHandle}`;
+  return '(no name)';
+}
+
+/** The x.com profile link for a handle. Caller decides where it goes and at what size. */
+function createHandleLink(xHandle: string): HTMLAnchorElement {
+  const link = document.createElement('a');
+  link.href = `https://x.com/${encodeURIComponent(xHandle)}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.color = HUD_ACCENT_COLOR;
+  link.textContent = `@${xHandle}`;
+  return link;
+}
+
 function styledButton(label: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
@@ -456,7 +484,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // (never implies a confirmed position on the board).
       line.textContent = `${entry.score}  STAGE ${entry.stage}  `;
       const nameSpan = document.createElement('span');
-      nameSpan.textContent = entry.name || '(no name)';
+      // Same name/handle/"(no name)" precedence as the confirmed board — a
+      // handle-only pending row showed neither before, which read as an
+      // anonymous entry. Plain text, not a link: this row is provisional, and
+      // an unverified claim to a handle should not send anyone to that
+      // profile until the audit has confirmed the row.
+      nameSpan.textContent = resolveDisplayName(entry);
       line.appendChild(nameSpan);
       left.appendChild(line);
       row.appendChild(left);
@@ -533,9 +566,17 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // (entry.name) — never concatenated into one interpolated string that
       // could blur the line between "our text" and "their text".
       rankLine.textContent = `#${index + 1}  ${entry.score}  STAGE ${entry.stage}  `;
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = entry.name || '(no name)';
-      rankLine.appendChild(nameSpan);
+      // A handle-only row puts the handle in the name slot — as the link
+      // itself, so the profile stays one click away and the handle is not
+      // printed twice (the meta line below then carries only the date).
+      const nameIsHandle = entry.name === '' && entry.xHandle !== null;
+      if (nameIsHandle) {
+        rankLine.appendChild(createHandleLink(entry.xHandle!));
+      } else {
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = resolveDisplayName(entry);
+        rankLine.appendChild(nameSpan);
+      }
       left.appendChild(rankLine);
 
       // Secondary line: the entry's date (task 4's required 日付) and, when
@@ -551,14 +592,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       dateSpan.textContent = formatRankingDate(entry.createdAt);
       metaLine.appendChild(dateSpan);
 
-      if (entry.xHandle) {
-        const handleLink = document.createElement('a');
-        handleLink.href = `https://x.com/${encodeURIComponent(entry.xHandle)}`;
-        handleLink.target = '_blank';
-        handleLink.rel = 'noopener noreferrer';
-        handleLink.style.color = HUD_ACCENT_COLOR;
+      if (entry.xHandle && !nameIsHandle) {
+        const handleLink = createHandleLink(entry.xHandle);
         handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
-        handleLink.textContent = `@${entry.xHandle}`;
         metaLine.appendChild(handleLink);
       }
       left.appendChild(metaLine);
