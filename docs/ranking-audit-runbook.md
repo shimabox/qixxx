@@ -42,6 +42,37 @@ POST /api/scores ─→ 基本検査 + 圏内事前ゲート ─→ D1 に statu
         status='verified' に更新 → TOP10 整理(圏外 verified 行のみ削除)
 ```
 
+### 0.1 表示契約・24時間境界・リプレイ判定順(2026-08-20 改訂)
+
+**`GET /api/ranking` は2系統を返す**(用途が違うので混同しないこと)。
+
+| フィールド | 中身 | 用途 |
+| --- | --- | --- |
+| `entries` | verified のみの TOP10(`score DESC, rank_seq ASC`) | **投稿可否判定の唯一の基準**(入力フォームの暫定表示・POST の事前ゲート) |
+| `displayEntries` | verified + 新鮮な pending を同じ順位規則で統合した上位10件。各行に `status:"pending"｜"verified"` | **表示専用**。事前ゲートにも原子的 INSERT にも影響しない |
+
+表示 pending 候補は統合前に `score DESC, rank_seq ASC LIMIT 3` で絞る。
+このため `displayEntries` に載る pending は常に最大3件で、verified が7件以上ある
+状況では必ず7行以上が verified になる。**偽 pending が表示上位を占めても、
+verified 10位を上回る正当な投稿は事前ゲートを通過して受理される**
+(妨害防止。`functions/_lib/ranking/mergedBoardIntegration.test.ts` と
+`tests/e2e/ranking.spec.ts` の2本立てで担保)。
+
+**24時間境界の統一定義**: `cutoff = now − 24時間` を全処理で共通に使い、
+**新鮮 = `created_at > cutoff`**、**期限切れ = `created_at <= cutoff`** とする
+(実装は `functions/_lib/ranking/pendingGate.ts` の `pendingFreshnessCutoff()` に
+一本化。displayEntries 抽出・POST の上限 COUNT・リプレイ判定・監査の期限切れ削除の
+4箇所すべてがこれを参照する)。verified はこの判定の対象外。
+
+**`GET /api/ranking/:id/replay` の判定順**(この順で評価し、最初に該当したものを適用):
+
+1. 行が無い / 監査で削除済み → **404**
+2. pending かつ期限切れ → **404**
+3. season/ruleset/format が現行と不一致 → **410**(pending・verified を問わない)
+4. 上記以外(新鮮な pending、またはバージョン一致の verified) → **200**(`status` 付き)
+
+2 が 3 より先に評価されるため、「期限切れ404」と「バージョン不一致410」は重複しない。
+
 ## 1. ローカルでの手動実行手順(このラウンドで動作確認済み)
 
 ### 1.1 準備
@@ -73,8 +104,10 @@ curl -X POST http://localhost:8788/api/scores \
 応答: `{"accepted":true,"id":"...","status":"pending","message":"...", "score":1234,"stage":2,"durationTicks":<サーバー導出値>}`
 
 `rleBase64` は実際のゲームプレイでなくても(RLE として復号さえできれば)受理される
-— POST は `verifyReplay()` を一切呼ばないため。`GET /api/ranking` の `pendingEntries`
-に反映されることを確認する。
+— POST は `verifyReplay()` を一切呼ばないため。`GET /api/ranking` の `displayEntries`
+(verified と新鮮な pending を統合した表示用の順位表)に `status:"pending"` の行として
+反映されることを確認する。投稿可否判定に使う `entries`(verified の確定 TOP10)は
+このとき一切変化しない。
 
 ### 1.3 監査実行
 
@@ -106,14 +139,18 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 未処理分は次回実行が引き継ぐため、DB 自体は壊れていない
 (中断後の書き込みはフェンシングで一切適用されない)。
 
-`GET /api/ranking` の `entries`(確定 TOP10)に移り、`pendingEntries` から消える。
-`GET /api/ranking/:id/replay` が 200 で見られるようになる(pending の間は 404)。
+確定した行は `GET /api/ranking` の `entries`(確定 TOP10)に現れ、`displayEntries`
+では同じ順位のまま `status` が `"pending"` から `"verified"` に変わる(順位は動かず
+UI の VERIFYING バッジだけが消える)。`GET /api/ranking/:id/replay` は pending の
+間も 200 で見られる(応答に `status:"pending"` が含まれ、ビューアが VERIFYING を
+常時表示する)。404 になるのは「行が無い/監査で削除済み」か「pending かつ期限切れ
+(`created_at <= now-24h`)」の場合のみ。
 
 ### 1.4 偽スコアの削除を確認する
 
 `score` に実際のシミュレーション結果と異なる値を入れて POST すると、
-`accepted:true` で一旦 pending になり、`GET /api/ranking` の `pendingEntries` に
-表示される。監査を実行すると `verifyPendingEntry()` が `declared-score-mismatch`
+`accepted:true` で一旦 pending になり、`GET /api/ranking` の `displayEntries` に
+`status:"pending"` の行として(スコア順の本来の位置に)表示される。監査を実行すると `verifyPendingEntry()` が `declared-score-mismatch`
 と判定して即削除される(`entry-deleted-confirmed-invalid` イベント、
 `reason:"declared-score-mismatch"`)。
 
@@ -257,6 +294,10 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
 - Actions からの実 D1 接続方式(§3 の1)は未実装・未決定。
 - Free 10ms CPU 適合の最終確定(実測 `cpuTime`)は本ラウンドのスコープ外
   — デプロイ判断後の Cloudflare preview 環境での実測に委ねる。
-- 監査までの偽スコア表示窓(通常運用で cron 間隔+実行時間、リトライ対象は最大3周期まで)
+- 監査までの偽スコア表示窓(通常運用で cron 間隔+実行時間、リトライ対象は最大3周期まで。
+  GitHub Actions の `schedule` は遅延・スキップされ得るため、いずれも保証値ではなく目安)
   は非同期監査方式の本質的なトレードオフであり、実装で解消できるものではない
-  (Paid 版との比較観点として完了報告に記載)。
+  (Paid 版との比較観点として完了報告に記載)。2026-08-20 改訂により pending は
+  `displayEntries` に統合表示されるため、この窓の間、偽スコアは表示上の実際の順位を
+  一時的に占有し得る(占有は最大3行。投稿の受理可否は `entries` 基準の事前ゲートのみに
+  依存するため、正当な投稿が妨害されることはない)。
