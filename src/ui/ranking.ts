@@ -225,6 +225,28 @@ function stopKeyPropagation(el: HTMLElement): void {
   el.addEventListener('keyup', (e) => e.stopPropagation());
 }
 
+/**
+ * Panel sizing shared by the ranking list, the submission form and the
+ * transient message.
+ *
+ * Both numbers are viewport-responsive (user feedback on a desktop window,
+ * 2026-08-20: the panel floated small in the middle of a wide screen and the
+ * rows were hard to read). Before, the whole panel was `0.8em` of an
+ * inherited font size that never grew past the HUD's own 16px cap, and its
+ * width was whatever the content happened to need.
+ *
+ *  - WIDTH is a PERCENTAGE of canvas-wrap, not `vw`: the panel is absolutely
+ *    positioned inside the canvas box, which on a desktop is a good deal
+ *    narrower than the viewport (~915px of 1280px), so `90vw` would have
+ *    overhung the field it sits on.
+ *  - FONT SIZE uses `vw` deliberately, in the same idiom the HUD already uses
+ *    (`clamp(10px, 3.2vw, 16px)` in main.ts): it answers "how big is this
+ *    screen", which is the question being asked, and it is a font size — it
+ *    cannot overflow the panel the way a width could.
+ */
+const OVERLAY_WIDTH = 'min(560px, 92%)';
+const OVERLAY_FONT_SIZE = 'clamp(12px, 2.2vw, 18px)';
+
 function styledOverlay(): HTMLDivElement {
   const el = document.createElement('div');
   el.style.position = 'absolute';
@@ -236,6 +258,8 @@ function styledOverlay(): HTMLDivElement {
   el.style.alignItems = 'center';
   el.style.gap = '8px';
   el.style.padding = '16px 20px';
+  el.style.boxSizing = 'border-box';
+  el.style.width = OVERLAY_WIDTH;
   el.style.maxHeight = '90%';
   el.style.overflowY = 'auto';
   el.style.background = 'rgba(10, 14, 39, 0.95)';
@@ -244,7 +268,7 @@ function styledOverlay(): HTMLDivElement {
   el.style.boxShadow = `0 0 16px ${HUD_ACCENT_COLOR}`;
   el.style.color = HUD_TEXT_COLOR;
   el.style.font = HUD_FONT;
-  el.style.fontSize = '0.8em';
+  el.style.fontSize = OVERLAY_FONT_SIZE;
   el.style.textAlign = 'center';
   el.style.pointerEvents = 'auto';
   el.style.userSelect = 'none';
@@ -423,6 +447,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
       const left = document.createElement('div');
       left.style.textAlign = 'left';
+      // A long name must wrap inside its own column rather than pushing the
+      // REPLAY button off the (now fixed-width) panel.
+      left.style.minWidth = '0';
+      left.style.overflowWrap = 'anywhere';
       const line = document.createElement('div');
       // No rank number here — deliberately, per this section's own contract
       // (never implies a confirmed position on the board).
@@ -495,6 +523,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
       const left = document.createElement('div');
       left.style.textAlign = 'left';
+      // A long name must wrap inside its own column rather than pushing the
+      // REPLAY button off the (now fixed-width) panel.
+      left.style.minWidth = '0';
+      left.style.overflowWrap = 'anywhere';
       const rankLine = document.createElement('div');
       // textContent-only composition (XSS safety): each piece is either a
       // trusted literal/number, or appended as its own text node below
@@ -648,7 +680,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   nameInput.style.font = HUD_FONT;
   nameInput.style.fontSize = '0.8em';
   nameInput.style.padding = '4px 8px';
-  nameInput.style.width = '180px';
+  // Scales with the panel now that the panel itself scales (see
+  // OVERLAY_WIDTH/OVERLAY_FONT_SIZE) — a 180px box under 18px text looked
+  // like an afterthought on a desktop window.
+  nameInput.style.width = 'min(280px, 80%)';
   // Without this, every keystroke bubbles up to KeyboardInput's
   // window-level listener (src/input/keyboard.ts), whose edge-triggered
   // "any key" pulse is exactly what dismisses the GAME OVER screen back to
@@ -677,7 +712,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleInput.style.font = HUD_FONT;
   handleInput.style.fontSize = '0.8em';
   handleInput.style.padding = '4px 8px';
-  handleInput.style.width = '180px';
+  handleInput.style.width = 'min(280px, 80%)'; // see nameInput's own comment
   handleInput.style.display = 'none';
   stopKeyPropagation(handleInput); // see nameInput's own comment above
   submitOverlay.appendChild(handleInput);
@@ -692,7 +727,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   retainedValueHint.id = 'ranking-submit-hint';
   retainedValueHint.style.fontSize = '0.7em';
   retainedValueHint.style.color = HUD_ACCENT_COLOR;
-  retainedValueHint.style.maxWidth = '220px';
+  retainedValueHint.style.maxWidth = '100%';
   retainedValueHint.style.overflowWrap = 'anywhere';
   retainedValueHint.style.display = 'none';
   submitOverlay.appendChild(retainedValueHint);
