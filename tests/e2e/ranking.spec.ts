@@ -701,8 +701,14 @@ test.describe('replay viewing', () => {
     // because this fixture spans several stages. The HUD reflects whichever
     // session is being rendered, so during replay it shows the replay's.
     await expect(page.locator('#hud')).toContainText('STAGE 1');
+    // The control bar says which stage of how many is on screen, and marks
+    // the run's LAST stage as such (user feedback, 2026-08-20) — on stage 1
+    // of 4 there is no FINAL STAGE marker yet.
+    await expect(page.getByText(`REPLAY - STAGE 1 / ${MULTI_STAGE_FINAL_STAGE}`)).toBeVisible();
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
     await expect(page.locator('#hud')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE}`, { timeout: 20_000 });
+    // ...and once the skip lands on it, the marker appears.
+    await expect(page.getByText(`REPLAY - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`)).toBeVisible({ timeout: 20_000 });
     // The button returns to its idle label once the chunked skip finishes.
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled();
 
@@ -729,6 +735,58 @@ test.describe('replay viewing', () => {
     expect(scoresPostCount).toBe(0); // no persistence/POST side effects during replay viewing
     const highScoreAfter = await page.evaluate(() => localStorage.getItem('qixxx.highScore'));
     expect(highScoreAfter).toBe(highScoreBefore);
+  });
+
+  // User feedback (2026-08-20): while watching a replay there was no way to
+  // tell "more stages are coming" from "this is the stage they died on", and
+  // the end-of-playback line ("REPLAY FINISHED") read as "the video stopped"
+  // rather than "the run ended here". A replay is a whole recorded run, so
+  // reaching gameover IS that run's death — both places now say so.
+  test('a replay marks its final stage and, at the end, says the run game-overed there', async ({ page }) => {
+    // The multi-stage fixture, specifically: it is recorded with the real
+    // game settings and so genuinely reaches gameover on playback. (The short
+    // fixture above is recorded with a 4-tick time limit and replays under
+    // the real one, so its input merely runs out mid-play — a legitimate case
+    // that must NOT claim a gameover, which is why the status line only says
+    // "GAME OVER HERE" for an actual one.)
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
+    await mockRanking(page, [
+      { id: 'ender', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: MULTI_STAGE_FINAL_STAGE, name: 'ENDER', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
+
+    // Skip to the final stage so the remaining ~100 ticks of playback reach
+    // the end of the run within the test's patience.
+    await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+    await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeEnabled({ timeout: 20_000 });
+
+    // 1. Playback runs out on the stage the run died on, and the status line
+    //    says exactly that rather than leaving it to be inferred.
+    await expect(page.getByText(`REPLAY END - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (GAME OVER HERE)`)).toBeVisible({ timeout: 20_000 });
+
+    // 2. The board's own end-of-replay overlay says the same thing, with the
+    //    run's score and its stage as "n / N".
+    await expect(page.locator('#screen')).toContainText('GAME OVER - REPLAY END');
+    await expect(page.locator('#screen')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`);
+
+    // Replay isolation is unchanged by the new wording: still no POST, and
+    // the live session was never touched (it is still sitting on the Title it
+    // was on when the replay started).
+    await page.getByRole('button', { name: 'EXIT' }).click();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+    expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
   });
 
   test('a 410 from the replay endpoint shows a graceful message instead of a silent failure', async ({ page }) => {

@@ -279,6 +279,13 @@ export interface RankingUI {
    * allowed/not-allowed state actually flipped).
    */
   syncAvailability(): void;
+  /**
+   * Refreshes the replay control bar's "STAGE n / N" status line (including
+   * its FINAL STAGE / GAME OVER HERE markers) for the frame currently on
+   * screen. Call once per rendered frame from main.ts while viewing a replay;
+   * a no-op otherwise, and cheap when nothing changed.
+   */
+  syncReplayStatus(): void;
   /** Offers ranking submission for the just-finished run, if eligible and provisionally in range. No-op (shows nothing) otherwise. */
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
@@ -862,25 +869,88 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   replayControls.style.left = '50%';
   replayControls.style.transform = 'translateX(-50%)';
   replayControls.style.display = 'none';
-  replayControls.style.gap = '8px';
+  // Column, not a single row: the status line below grew from a bare
+  // "REPLAY" to a stage counter, and stacking it above the buttons keeps the
+  // bar no wider than the button row itself — which is what a 390px-wide
+  // phone canvas can actually hold.
+  replayControls.style.flexDirection = 'column';
+  replayControls.style.alignItems = 'center';
+  replayControls.style.gap = '6px';
   replayControls.style.zIndex = '20';
   replayControls.style.pointerEvents = 'auto';
-  const replayLabel = document.createElement('div');
-  replayLabel.textContent = 'REPLAY';
-  replayLabel.style.font = HUD_FONT;
-  replayLabel.style.fontSize = '0.75em';
-  replayLabel.style.color = HUD_ACCENT_COLOR;
-  replayLabel.style.alignSelf = 'center';
+
+  // Which stage of how many is on screen right now, and (user feedback,
+  // 2026-08-20) whether that stage is the one the run ENDED on — a viewer
+  // otherwise has no way to tell "there is more to come" from "this is where
+  // they died", which is the single most interesting thing about a replay.
+  const replayStageLabel = document.createElement('div');
+  replayStageLabel.style.font = HUD_FONT;
+  // A touch larger than the buttons beneath it: this line is the new
+  // information on the bar, not a caption for them.
+  replayStageLabel.style.fontSize = '0.95em';
+  replayStageLabel.style.fontWeight = 'bold';
+  replayStageLabel.style.color = HUD_ACCENT_COLOR;
+  replayStageLabel.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
+  // Wraps rather than overflowing: the longest wording ("REPLAY END - STAGE
+  // 4 / 4 (GAME OVER HERE)") already reaches ~305px of a 390px phone canvas,
+  // and a narrower device (or a longer stage count) would otherwise push it
+  // out past the field's edge.
+  replayStageLabel.style.maxWidth = '100%';
+  replayStageLabel.style.textAlign = 'center';
+
+  const replayButtonRow = document.createElement('div');
+  replayButtonRow.style.display = 'flex';
+  replayButtonRow.style.gap = '8px';
   const skipToFinalButton = styledButton('SKIP TO FINAL STAGE');
   const exitReplayButton = styledButton('EXIT');
-  replayControls.appendChild(replayLabel);
-  replayControls.appendChild(skipToFinalButton);
-  replayControls.appendChild(exitReplayButton);
+  replayButtonRow.appendChild(skipToFinalButton);
+  replayButtonRow.appendChild(exitReplayButton);
+  replayControls.appendChild(replayStageLabel);
+  replayControls.appendChild(replayButtonRow);
   anchor.appendChild(replayControls);
 
   let activeReplayEngine: ReplayEngine | null = null;
+  let lastReplayStageText: string | null = null;
+
+  /**
+   * The status line's text for the replay currently on screen. `finalStage`
+   * comes from the engine's own pre-pass (ReplayResult.stage — the stage the
+   * recorded run ended on), so "3 / 3" is a fact about the RUN, not about how
+   * far playback happens to have got.
+   */
+  function replayStageText(engine: ReplayEngine): string {
+    const finalStage = engine.getResult().stage;
+    const currentStage = Math.min(engine.getSession().getStage(), finalStage);
+    const counter = `STAGE ${currentStage} / ${finalStage}`;
+    // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
+    // recorded input simply runs out mid-play (a truncated or
+    // differently-configured recording — main.ts's own end-of-replay overlay
+    // has always had to allow for it) also stops here, but nobody died: it
+    // gets the neutral end wording instead.
+    if (engine.getSession().getStatus() === 'gameover') return `REPLAY END - ${counter} (GAME OVER HERE)`;
+    if (engine.isFinished()) return `REPLAY END - ${counter}`;
+    return currentStage >= finalStage ? `REPLAY - ${counter} (FINAL STAGE)` : `REPLAY - ${counter}`;
+  }
+
+  /**
+   * Refreshes the status line to match the frame currently being rendered.
+   * Called once per rendered frame from main.ts while in replay mode (the
+   * same arrangement syncAvailability() uses, and for the same reason: the
+   * label must track the frame on screen, not a timer of its own). Cheap —
+   * it early-returns unless the text actually changed.
+   */
+  function syncReplayStatus(): void {
+    const engine = activeReplayEngine;
+    if (!engine) return;
+    const text = replayStageText(engine);
+    if (text === lastReplayStageText) return;
+    lastReplayStageText = text;
+    replayStageLabel.textContent = text;
+  }
 
   function mountReplayControls(): void {
+    lastReplayStageText = null;
+    replayStageLabel.textContent = 'REPLAY';
     replayControls.style.display = 'flex';
   }
 
@@ -986,15 +1056,34 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // tests pin down exactly. Sitting in the canvas's own top-right corner
     // instead never touches that layout at all.
     button.style.position = 'absolute';
-    button.style.top = '6px';
-    button.style.right = '6px';
+    button.style.top = '8px';
+    button.style.right = '8px';
     button.style.font = HUD_FONT;
-    button.style.fontSize = '0.75em';
+    // Deliberately larger/louder than the other overlay buttons (user
+    // feedback on the real device, 2026-08-20: the original 0.75em outline
+    // read as a disabled caption and went unnoticed on the Title screen).
+    // It stays within the neon vocabulary — same accent green, same rounded
+    // outline — just at full HUD size, bold, with the accent glow the screen
+    // overlay already uses (`#screen`'s textShadow in main.ts) and a tinted
+    // fill instead of a near-transparent one. `em`-relative sizing keeps it
+    // scaling with the canvas-wrap font size exactly as before, so nothing
+    // here is pinned to a pixel viewport.
+    button.style.fontSize = '1em';
+    button.style.fontWeight = 'bold';
+    button.style.letterSpacing = '0.08em';
     button.style.color = HUD_ACCENT_COLOR;
-    button.style.background = 'rgba(10, 14, 39, 0.7)';
-    button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-    button.style.borderRadius = '4px';
-    button.style.padding = '4px 10px';
+    button.style.background = 'rgba(0, 255, 65, 0.14)';
+    button.style.border = `2px solid ${HUD_ACCENT_COLOR}`;
+    button.style.borderRadius = '6px';
+    button.style.boxShadow = `0 0 12px ${HUD_ACCENT_COLOR}`;
+    button.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
+    button.style.padding = '8px 16px';
+    // Never let the button spill out of the canvas box on a narrow phone —
+    // it is absolutely positioned inside canvas-wrap, so without this a wide
+    // enough label could overhang the field. (At 390px the label measures
+    // ~135px against a ~390px-wide canvas, so this is a guard, not a
+    // constraint that currently binds.)
+    button.style.maxWidth = 'calc(100% - 16px)';
     button.style.cursor = 'pointer';
     button.style.pointerEvents = 'auto';
     button.style.userSelect = 'none';
@@ -1021,5 +1110,5 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     activeSubmission = null;
   }
 
-  return { mountTitleButton, syncAvailability, offerSubmission, hideAll };
+  return { mountTitleButton, syncAvailability, syncReplayStatus, offerSubmission, hideAll };
 }

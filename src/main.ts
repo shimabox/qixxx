@@ -973,11 +973,21 @@ function renderFrame(): void {
     // see src/ui/gameOverModal.ts). A replay's own session can only ever be
     // 'playing' or 'gameover' from the outside (ReplayEngine.stepTick()
     // always auto-confirms all the way through Title/StageClear before
-    // returning) — a plain "REPLAY FINISHED" line covers the other case.
+    // returning) — the end-of-run line below covers the other case.
     updateHud();
+    // Keeps the control bar's "STAGE n / N" line in step with the frame being
+    // drawn (see RankingUI.syncReplayStatus()).
+    rankingUI.syncReplayStatus();
+    // End-of-replay wording (user feedback, 2026-08-20): "REPLAY FINISHED"
+    // read as "the video ended", leaving it ambiguous whether the run itself
+    // ended here or the playback merely stopped. It always means the former —
+    // a replay is a whole recorded run, so reaching 'gameover' IS the moment
+    // that run died — so say so, and show the stage as "n / N" to match the
+    // control bar.
+    const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
     const text =
       status === 'gameover'
-        ? `REPLAY FINISHED\n\nSCORE ${activeSession.getScore()}  STAGE ${activeSession.getStage()}`
+        ? `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}  STAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`
         : '';
     if (text !== lastScreenText) {
       lastScreenText = text;
