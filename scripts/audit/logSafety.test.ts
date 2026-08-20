@@ -81,6 +81,42 @@ describe('safeErrorName', () => {
     for (const name of ALLOWED_ERROR_NAMES) expect(name).toMatch(/^[A-Za-z][A-Za-z0-9]{0,39}$/);
   });
 
+  // User review (2026-08-20): a sanitizer whose only callers are catch
+  // handlers must not itself throw — an exception raised while READING
+  // `err.name` escapes the very handler meant to redact the failure, and the
+  // runtime then prints the raw stack.
+  it('survives a throwing `name` getter (returns UnknownError instead of throwing)', () => {
+    const hostile = {
+      get name(): string {
+        throw new Error('boom from the getter: /Users/someone/secret');
+      },
+    };
+    expect(() => safeErrorName(hostile)).not.toThrow();
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
+  it('survives a Proxy whose get trap throws', () => {
+    const hostile = new Proxy(new Error('boom'), {
+      get() {
+        throw new Error('boom from the trap');
+      },
+    });
+    expect(() => safeErrorName(hostile)).not.toThrow();
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
+  it('survives a throwing getter even when the name it would have returned is allowlisted', () => {
+    let reads = 0;
+    const hostile = {
+      get name(): string {
+        reads++;
+        if (reads === 1) throw new Error('boom');
+        return 'TypeError';
+      },
+    };
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
   it('handles non-Error throws without echoing them', () => {
     expect(safeErrorName('a thrown string with a secret')).toBe('UnknownError');
     expect(safeErrorName(null)).toBe('UnknownError');
@@ -116,6 +152,24 @@ describe('safeErrorDetail', () => {
     expect(safeErrorDetail('a thrown string')).toBe('');
     expect(safeErrorDetail(null)).toBe('');
     expect(safeErrorDetail({ message: 42 })).toBe('');
+  });
+
+  it('survives a throwing `message` getter and a throwing Proxy trap', () => {
+    const hostileGetter = {
+      get message(): string {
+        throw new Error('boom from the getter');
+      },
+    };
+    expect(() => safeErrorDetail(hostileGetter)).not.toThrow();
+    expect(safeErrorDetail(hostileGetter)).toBe('');
+
+    const hostileProxy = new Proxy(new Error('boom'), {
+      get() {
+        throw new Error('boom from the trap');
+      },
+    });
+    expect(() => safeErrorDetail(hostileProxy)).not.toThrow();
+    expect(safeErrorDetail(hostileProxy)).toBe('');
   });
 });
 

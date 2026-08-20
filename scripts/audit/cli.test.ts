@@ -123,6 +123,40 @@ describe('scripts/audit/cli.ts (the entrypoint as a process)', () => {
       expect(status).toBe(1);
     });
 
+    // The sanitizer runs INSIDE the bootstrap's catch handler, so if reading
+    // the thrown value's own `name` throws (a getter or Proxy trap), the
+    // handler itself blows up, the rejection goes unhandled and the runtime
+    // prints the raw stack — the exact failure mode the catch exists to
+    // prevent. Checked here at the process boundary, not just as a unit.
+    it('a thrown value whose `name` getter itself throws is still sanitized', () => {
+      const throwingModule = writeTempModule(
+        'initThrowHostile',
+        [
+          'export const unused = 1;',
+          'const hostile = {',
+          '  get name(): string {',
+          "    throw new Error('getter blew up: /Users/someone/qixxx/secret.sqlite');",
+          '  },',
+          '  get message(): string {',
+          "    throw new Error('message getter blew up too');",
+          '  },',
+          '};',
+          'throw hostile;',
+          '',
+        ].join('\n')
+      );
+      const bootstrap = writeTempModule('bootstrap', CLI_SOURCE.replace("'./auditCommand'", `'./${path.basename(throwingModule, '.ts')}'`));
+
+      const { status, output } = runEntrypoint(bootstrap, { ...process.env, AUDIT_LOG_ERROR_DETAIL: '1' });
+
+      expect(output).toContain('[audit] fatal error: UnknownError');
+      expect(output).not.toContain('getter blew up');
+      expect(output).not.toContain('secret.sqlite');
+      expect(output).not.toContain('message getter blew up');
+      assertPublishableOutput(output);
+      expect(status).toBe(1);
+    });
+
     it('the REAL entrypoint, refusing to start without RANKING_IP_HASH_KEY, prints only the variable name', () => {
       const { status, output } = runEntrypoint(CLI_PATH, envWithout('RANKING_IP_HASH_KEY', 'AUDIT_LOG_ERROR_DETAIL'));
 

@@ -641,13 +641,19 @@ describe('runAudit (real local D1)', () => {
 
     /**
      * One fully-populated instance of EVERY event kind, again mapped over the
-     * union so a new kind fails to compile until it has a fixture here. Each
-     * fixture carries every OPTIONAL field too (errorDetail), so the checks
-     * below see the widest shape a kind can take — a real run only ever emits
-     * a subset, and several kinds (lease-lost-*, time-limit-reached,
-     * attempts-exhausted) need contrived conditions to reach at all.
+     * union so a new kind fails to compile until it has a fixture here.
+     *
+     * `Required<...>` is the second half of that guarantee (a user review
+     * caught its absence, 2026-08-20): a plain `Extract<...>` keeps optional
+     * fields optional, so an event could gain an `owner_token?: string`,
+     * actually emit it at runtime, and still typecheck against a fixture that
+     * omits it — the field would reach the public log completely unexamined.
+     * With Required, every field a kind CAN carry (`errorDetail` included) has
+     * to be present in its fixture, so the checks below always see the widest
+     * shape — which matters most for the kinds a real run can't easily reach
+     * (lease-lost-*, time-limit-reached, attempts-exhausted).
      */
-    const EVENT_FIXTURES: { [K in AuditEvent['type']]: Extract<AuditEvent, { type: K }> } = {
+    const EVENT_FIXTURES: { [K in AuditEvent['type']]: Required<Extract<AuditEvent, { type: K }>> } = {
       'lock-not-acquired': { type: 'lock-not-acquired' },
       'lock-acquired': { type: 'lock-acquired', runStartedAt: 1787187884 },
       'expired-pending-deleted': { type: 'expired-pending-deleted', count: 3 },

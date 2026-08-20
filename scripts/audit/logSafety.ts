@@ -75,13 +75,37 @@ export const ALLOWED_ERROR_NAMES: readonly string[] = [
 const ALLOWED_ERROR_NAME_SET = new Set(ALLOWED_ERROR_NAMES);
 
 /**
+ * Reads one property off an arbitrary thrown value, returning null unless it
+ * yields a plain string.
+ *
+ * The try/catch is load-bearing, not defensive noise (a user review caught
+ * its absence, 2026-08-20): the argument is `unknown` — a value some other
+ * code chose to throw — so the PROPERTY ACCESS ITSELF can throw. A getter
+ * that throws, or a Proxy with a throwing `get` trap, turns `err.name` into
+ * an exception raised INSIDE the sanitizer. That would be the worst possible
+ * place for one: the sanitizer's only callers are catch handlers (the CLI
+ * bootstrap's among them), so throwing here escapes the very handler meant to
+ * redact the failure, and the runtime prints the raw stack instead. These
+ * functions must therefore be structurally incapable of throwing.
+ */
+function readStringProperty(source: unknown, key: 'name' | 'message'): string | null {
+  try {
+    const value = (source as Record<string, unknown> | null | undefined)?.[key];
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The publishable summary of a thrown value: its error class name when that
  * name is on ALLOWED_ERROR_NAMES, otherwise 'UnknownError'. Never includes the
- * message or the stack — see this module's doc comment.
+ * message or the stack, and never throws — see this module's doc comment and
+ * readStringProperty()'s.
  */
 export function safeErrorName(err: unknown): string {
-  const name = (err as { name?: unknown } | null | undefined)?.name;
-  if (typeof name === 'string' && ALLOWED_ERROR_NAME_SET.has(name)) return name;
+  const name = readStringProperty(err, 'name');
+  if (name !== null && ALLOWED_ERROR_NAME_SET.has(name)) return name;
   return 'UnknownError';
 }
 
@@ -90,11 +114,11 @@ export function safeErrorName(err: unknown): string {
  * truncated to MAX_ERROR_DETAIL_CHARS. Only for logs the operator has
  * explicitly opted into (see ERROR_DETAIL_ENV_VAR): the first line alone
  * still can't be assumed safe for a public log, it is merely bounded and
- * stack-free.
+ * stack-free. Never throws (see readStringProperty()); an unreadable message
+ * yields an empty string.
  */
 export function safeErrorDetail(err: unknown): string {
-  const message = (err as { message?: unknown } | null | undefined)?.message;
-  const raw = typeof message === 'string' ? message : '';
+  const raw = readStringProperty(err, 'message') ?? '';
   // eslint-disable-next-line no-control-regex
   const firstLine = raw.split(/[\r\n]/, 1)[0].replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
   if (firstLine.length <= MAX_ERROR_DETAIL_CHARS) return firstLine;

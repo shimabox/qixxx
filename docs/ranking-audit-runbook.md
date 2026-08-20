@@ -216,7 +216,16 @@ vite-node が生スタック(絶対パス込み)を公開ログに出してし�
 - `cli.ts` の静的 import は **`./logSafety` の1つだけ**に保つこと。
   logSafety.ts は依存ゼロ・副作用なし(定数と正規表現と Set のみ)で、
   それ自身が初期化時に throw しないことが構造的に保証されている。
-- この2点は `scripts/audit/cli.test.ts` が静的検査 + 実サブプロセス起動で担保する。
+- **サニタイズ関数自身が throw してはならない。** `safeErrorName()` /
+  `safeErrorDetail()` の引数は「誰かが throw した `unknown`」であり、
+  `err.name` の**プロパティ参照そのもの**が例外になり得る
+  (throwing getter、`get` トラップが throw する Proxy)。
+  これらの関数の呼び出し元は catch ハンドラだけなので、ここで throw すると
+  **サニタイズしようとしていた catch を突き抜けて**生スタックが出る。
+  プロパティ取得はすべて try/catch で包み、失敗時は `UnknownError` /
+  詳細なしにフォールバックすること。
+- この3点は `scripts/audit/cli.test.ts` が静的検査 + 実サブプロセス起動で担保する
+  (throwing getter を持つ値を初期化時に throw するケースを含む)。
 
 ```sh
 # ローカルで詳細を見たいときだけ
@@ -237,8 +246,10 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
       種別を足すと **`npm run typecheck` がコンパイルエラーで落ちる**
       (意図的なゲート。上のチェックを通してから追加する)。
 - [ ] fixture は**その種別が持ちうる全フィールド**(任意フィールド含む)を
-      埋めたか。テストが「fixture の鍵集合 == 許可フィールド集合」を検査するため、
-      埋め忘れると落ちる。実際に発生させるのが難しい種別(`lease-lost-*` 等)も
+      埋めたか。fixture の型は `Required<Extract<AuditEvent, {type:K}>>` なので、
+      `foo?: string` のような**任意フィールドを追加しただけでもコンパイルが落ちる**
+      (任意のままだと「実際には出力されるのに fixture も許可表も未更新で型検査を
+      通る」抜け道になるため)。実際に発生させるのが難しい種別(`lease-lost-*` 等)も
       fixture 経由で必ず衛生チェックを通る。
 
 ## 6. 既知の残余リスク・未決事項
