@@ -87,6 +87,7 @@ export default [
         // already validates their usage via tsconfig.functions.json.
         KVNamespace: 'readonly',
         D1Database: 'readonly',
+        D1PreparedStatement: 'readonly',
         PagesFunction: 'readonly',
       },
     },

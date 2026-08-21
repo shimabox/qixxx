@@ -1,0 +1,39 @@
+-- pending self-replacement / browser ownership (docs/plans/2026-08-22-
+-- pending-self-replace). Applied the same way as the earlier migrations: via
+-- `wrangler d1 migrations apply qixxx-scores` — locally against wrangler's
+-- local D1 emulation during development, against the real D1 database only
+-- once the runbook's stop point is cleared (docs/ranking-audit-runbook.md).
+-- Additive-only: no existing column is dropped or renamed, so it is safe on
+-- top of a `scores` table that already has data.
+--
+-- Column notes:
+--   - submitter_hash: SHA-256 (UNKEYED) of the 16 RAW BYTES the client's
+--     submitter token decodes to — never the token itself, never its hex
+--     text. Unkeyed is deliberate and is NOT an inconsistency with ip_hash's
+--     HMAC: an IP address is low-entropy enough to brute-force against a
+--     public hash, whereas this token is 128 bits of crypto.getRandomValues()
+--     output, so there is no candidate space to enumerate and therefore no
+--     key to protect. See functions/_lib/ranking/submitterToken.ts.
+--
+--     Nullable, and legitimately NULL in three separate situations, all of
+--     which mean the same thing to the replacement path — "this row has no
+--     owner, so nobody may replace it":
+--       1. rows written before this migration existed;
+--       2. rows written by a client that sent no token (an old cached
+--          bundle, or a browser where localStorage is unavailable — private
+--          browsing — in which case src/ui/submitterToken.ts deliberately
+--          falls back to sending nothing);
+--       3. rows the audit has since confirmed: scripts/audit/runAudit.ts's
+--          verified-flip UPDATE sets submitter_hash back to NULL, so the
+--          ownership token's lifetime is bounded by the pending window and
+--          never becomes a durable cross-session browser identifier.
+ALTER TABLE scores ADD COLUMN submitter_hash TEXT;
+
+-- The replacement batch's delete-candidate subquery (functions/api/scores.ts):
+--   WHERE status = 'pending' AND submitter_hash = ? AND created_at > ?
+--     AND score < ?  ORDER BY score ASC, rank_seq DESC LIMIT 1
+-- `status` and `submitter_hash` are the equality columns, `score` is both the
+-- range filter and the leading ORDER BY term, so this ordering lets SQLite
+-- satisfy the whole candidate lookup from one seek. created_at is filtered on
+-- top of that (a second inequality can't narrow the same B-tree seek anyway).
+CREATE INDEX idx_scores_pending_submitter ON scores(status, submitter_hash, score);

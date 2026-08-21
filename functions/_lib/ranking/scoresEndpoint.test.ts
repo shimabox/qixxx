@@ -12,6 +12,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { onRequestPost, readBodyWithLimit, isUniqueConstraintViolation } from '../../api/scores';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
+import { computeSubmitterHash } from './submitterToken';
+import { PENDING_EXPIRY_MS } from './pendingGate';
 import { encodeRle, type InputSample } from '../../../src/core/rle';
 
 const SELF_ORIGIN = 'https://qixxx.example';
@@ -416,6 +418,222 @@ describe('POST /api/scores success response', () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ accepted: true, status: 'pending', score: 250, stage: 3 });
     expect(typeof body.id).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pending self-replacement (docs/plans/2026-08-22-pending-self-replace).
+//
+// The MECHANICS of the replacement — which row is chosen, and above all the
+// structural guarantee that a DELETE can never match unless the INSERT in the
+// same transaction is bound to succeed — are exercised against a real D1 in
+// functions/_lib/ranking/pendingSelfReplace.test.ts. What can only be checked
+// HERE, with a recording stub, is what the handler actually SENDS: the
+// absent/invalid/valid three-way split, and the exact bind values the two
+// statements of the batch carry.
+// ---------------------------------------------------------------------------
+
+const VALID_TOKEN = '0123456789abcdef0123456789abcdef';
+
+interface RecordedStatement {
+  sql: string;
+  args: unknown[];
+}
+
+/**
+ * D1 stub that records every prepared statement and every batch, and lets a
+ * test drive the first INSERT's `changes` and the batch's outcome.
+ *
+ * `advanceClockOnFirstInsert` moves a Date.now() spy forward the moment the
+ * first (non-batch) INSERT runs — reproducing the real gap between the first
+ * attempt and the retry batch, which is exactly the window in which the 24h
+ * cutoff can shift.
+ */
+function makeRecordingEnv(opts: {
+  firstInsertChanges: number;
+  batchChanges?: [number, number];
+  batchThrows?: unknown;
+  advanceClockOnFirstInsert?: number;
+  clockStart?: number;
+}) {
+  const prepared: RecordedStatement[] = [];
+  const batches: RecordedStatement[][] = [];
+  let now = opts.clockStart ?? 1_800_000_000_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+
+  const env = {
+    SHARES: { get: async () => null, put: async () => undefined },
+    DB: {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          sql,
+          args,
+          first: async () => ({ threshold: -1 }),
+          run: async () => {
+            prepared.push({ sql, args });
+            if (opts.advanceClockOnFirstInsert) now += opts.advanceClockOnFirstInsert;
+            return { meta: { changes: opts.firstInsertChanges } };
+          },
+        }),
+      }),
+      batch: async (statements: { sql: string; args: unknown[] }[]) => {
+        batches.push(statements.map((s) => ({ sql: s.sql, args: s.args })));
+        if (opts.batchThrows !== undefined) throw opts.batchThrows;
+        const [deleteChanges, insertChanges] = opts.batchChanges ?? [1, 1];
+        return [{ meta: { changes: deleteChanges } }, { meta: { changes: insertChanges } }];
+      },
+    },
+    RANKING_IP_HASH_KEY: IP_HASH_KEY,
+  };
+  return { env, prepared, batches, clock: () => now };
+}
+
+/** The delete/insert halves of a recorded replacement batch, by SQL shape rather than by index, so a reordering would fail loudly instead of silently asserting on the wrong statement. */
+function splitBatch(batch: RecordedStatement[]) {
+  const del = batch.find((s) => /^\s*DELETE FROM scores/.test(s.sql));
+  const ins = batch.find((s) => /^\s*INSERT INTO scores/.test(s.sql));
+  expect(del).toBeDefined();
+  expect(ins).toBeDefined();
+  return { del: del!, ins: ins! };
+}
+
+describe('POST /api/scores submitterToken validation', () => {
+  it('rejects a malformed token with 400 and never touches D1', async () => {
+    for (const bad of ['nope', '0123456789ABCDEF0123456789ABCDEF', '0'.repeat(31), '0'.repeat(33), 42, {}]) {
+      const { env, prepared, batches } = makeRecordingEnv({ firstInsertChanges: 1 });
+      const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: bad })), env as never);
+      expect(response.status).toBe(400);
+      expect(String(body.error)).toContain('submitterToken');
+      // Not one statement ran — not even the pre-gate's threshold SELECT is
+      // reached, since the token check sits with the other body validations.
+      expect(prepared).toHaveLength(0);
+      expect(batches).toHaveLength(0);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('treats an ABSENT token as an old client: normal accept, and no self-replace batch on a 429', async () => {
+    const { env, batches } = makeRecordingEnv({ firstInsertChanges: 0 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env as never);
+    expect(response.status).toBe(429);
+    expect(body.accepted).toBe(false);
+    expect(batches).toHaveLength(0); // the pre-replacement behavior, exactly
+  });
+
+  it('stores SHA-256 of the token bytes, and never the raw token, in any bound value', async () => {
+    const { env, prepared } = makeRecordingEnv({ firstInsertChanges: 1 });
+    const { response } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(200);
+
+    const expectedHash = await computeSubmitterHash(VALID_TOKEN);
+    const allArgs = prepared.flatMap((s) => s.args);
+    expect(allArgs).toContain(expectedHash);
+    // The raw token reaches no column, in no form.
+    expect(allArgs).not.toContain(VALID_TOKEN);
+    expect(allArgs.some((a) => typeof a === 'string' && a.includes(VALID_TOKEN))).toBe(false);
+    expect(expectedHash).not.toBe(VALID_TOKEN);
+  });
+});
+
+describe('POST /api/scores self-replacement batch', () => {
+  it('runs ONE batch of a DELETE followed by the capped INSERT when the cap is hit with a token attached', async () => {
+    const { env, batches } = makeRecordingEnv({ firstInsertChanges: 0, batchChanges: [1, 1] });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(2);
+    expect(batches[0][0].sql).toMatch(/^\s*DELETE FROM scores/);
+    expect(batches[0][1].sql).toMatch(/^\s*INSERT INTO scores/);
+  });
+
+  // THE completion criterion for P1's "cutoff の単一評価". The clock moves
+  // between the first INSERT attempt and the batch (as it always does in
+  // reality), and the two statements of the batch must still be bound to ONE
+  // cutoff — the batch's own, not the stale first-attempt one, and not two
+  // separately-computed values.
+  it('binds the SAME, freshly-evaluated cutoff into both statements of the batch', async () => {
+    const clockStart = 1_800_000_000_000;
+    const advance = 5 * 60 * 1000;
+    const { env, prepared, batches } = makeRecordingEnv({
+      firstInsertChanges: 0,
+      batchChanges: [1, 1],
+      clockStart,
+      advanceClockOnFirstInsert: advance,
+    });
+    await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+
+    const { del, ins } = splitBatch(batches[0]);
+    // Positional: the DELETE binds cutoff as ?1, the INSERT as ?15.
+    const deleteCutoff = del.args[0];
+    const insertCutoff = ins.args[14];
+    expect(deleteCutoff).toBe(insertCutoff);
+
+    // ...and it really is the batch's own evaluation, not the first
+    // attempt's — otherwise this assertion would pass vacuously on a build
+    // that simply reused one stale value everywhere.
+    const firstAttemptCutoff = prepared[0].args[14];
+    expect(firstAttemptCutoff).toBe(clockStart - PENDING_EXPIRY_MS);
+    expect(deleteCutoff).toBe(clockStart + advance - PENDING_EXPIRY_MS);
+    expect(deleteCutoff).not.toBe(firstAttemptCutoff);
+  });
+
+  it('binds the new claim\'s score, this request\'s ip_hash and submitter_hash, and both caps into the DELETE', async () => {
+    const { env, prepared, batches } = makeRecordingEnv({ firstInsertChanges: 0, batchChanges: [1, 1] });
+    await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN, score: 4321 })), env as never);
+
+    const { del, ins } = splitBatch(batches[0]);
+    const expectedHash = await computeSubmitterHash(VALID_TOKEN);
+    // ?2 submitter_hash, ?3 score, ?4 ip_hash, ?5 per-IP cap, ?6 global cap.
+    expect(del.args[1]).toBe(expectedHash);
+    expect(del.args[2]).toBe(4321);
+    expect(del.args[3]).toBe(ins.args[13]); // the same ip_hash the INSERT counts against
+    expect(del.args[4]).toBe(3);
+    expect(del.args[5]).toBe(200);
+    // The batch's INSERT is byte-identical in shape to the first attempt's —
+    // same caps, same row — so a cap can never be quietly relaxed on the
+    // retry path.
+    expect(ins.sql).toBe(prepared[0].sql);
+    expect(ins.args[15]).toBe(200);
+    expect(ins.args[16]).toBe(3);
+    expect(del.args).not.toContain(VALID_TOKEN);
+  });
+
+  it('answers 429 when the batch\'s INSERT reports no change (no candidate was replaceable)', async () => {
+    const { env } = makeRecordingEnv({ firstInsertChanges: 0, batchChanges: [0, 0] });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(429);
+    expect(body.accepted).toBe(false);
+  });
+
+  it('reports a UNIQUE violation inside the batch as 409 (D1 rolls the whole batch back, so the old row survives)', async () => {
+    const { env } = makeRecordingEnv({
+      firstInsertChanges: 0,
+      batchThrows: new Error('D1_ERROR: UNIQUE constraint failed: scores.replay_hash'),
+    });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(409);
+    expect(body.error).toBe('duplicate replay');
+    expect(body.detail).toBeUndefined();
+  });
+
+  it('reports any other batch failure as a leak-free 500, logged server-side', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const batchError = new Error('D1_ERROR: no such column: submitter_hash');
+    const { env } = makeRecordingEnv({ firstInsertChanges: 0, batchThrows: batchError });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(500);
+    expect(body.error).toBe('internal error');
+    expect(JSON.stringify(body)).not.toMatch(/submitter_hash|no such column/i);
+    expect(consoleError).toHaveBeenCalledWith('POST /api/scores: D1 self-replace batch failed', batchError);
+  });
+
+  it('never reaches the batch at all when the first INSERT succeeded', async () => {
+    const { env, batches } = makeRecordingEnv({ firstInsertChanges: 1 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), env as never);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    expect(batches).toHaveLength(0);
   });
 });
 

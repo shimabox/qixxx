@@ -26,6 +26,15 @@ export interface ScoreRow {
   audit_attempts: number;
   /** unixepoch()-scale seconds, or null — spec item 7's D1-time-based retry gate. */
   next_attempt_at: number | null;
+  /**
+   * SHA-256 of the submitting browser's ownership token bytes
+   * (functions/_lib/ranking/submitterToken.ts) — the ONLY thing that lets a
+   * POST replace a pending row, and only ever one of its own. Null means "no
+   * owner": a legacy row, a token-less client's row, or a row the audit has
+   * already confirmed (the verified-flip clears it, so this never becomes a
+   * durable browser identifier).
+   */
+  submitter_hash: string | null;
 }
 
 /**
@@ -47,6 +56,17 @@ export interface ScoreSubmission {
   xHandle?: string;
   rulesetVersion: number;
   replayFormatVersion: number;
+  /**
+   * The submitting browser's ownership token (docs/plans/2026-08-22-pending-
+   * self-replace spec item 1): 32 lowercase hex characters = 16 random bytes,
+   * persisted in localStorage by src/ui/submitterToken.ts.
+   *
+   * Optional on purpose, with THREE distinct meanings the server keeps apart:
+   * present-and-well-formed enables self-replacement, ABSENT is an ordinary
+   * old/private-browsing client that simply can't self-replace (never an
+   * error), and present-but-malformed is a 400.
+   */
+  submitterToken?: string;
 }
 
 /** One row of GET /api/ranking's confirmed top-10 response — verified only, rank implied by array position. */

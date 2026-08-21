@@ -96,6 +96,7 @@ export async function seedScoreRow(
     ip_hash: string | null;
     audit_attempts: number;
     next_attempt_at: number | null;
+    submitter_hash: string | null;
   }> = {}
 ): Promise<string> {
   const id = overrides.id ?? `test-id-${++idCounter}`;
@@ -117,13 +118,14 @@ export async function seedScoreRow(
     ip_hash: 'test-ip-hash',
     audit_attempts: 0,
     next_attempt_at: null as number | null,
+    submitter_hash: null as string | null,
     ...overrides,
   };
   await db
     .prepare(
       `INSERT INTO scores
-         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`
     )
     .bind(
       row.id,
@@ -142,7 +144,8 @@ export async function seedScoreRow(
       row.status,
       row.ip_hash,
       row.audit_attempts,
-      row.next_attempt_at
+      row.next_attempt_at,
+      row.submitter_hash
     )
     .run();
   return id;
