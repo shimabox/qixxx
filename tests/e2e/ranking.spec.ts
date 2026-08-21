@@ -887,6 +887,172 @@ test.describe('name-input submission flow', () => {
     expect(posts).toBe(2);
   });
 
+  // docs/plans/2026-08-22-pending-self-replace spec item 3, and the whole
+  // reason the feature exists. Before this round, a 429 HID the SUBMIT
+  // button: the player's best run of the session was destroyed by a queue
+  // that drains in minutes. Now the button stays, and a retry can do better
+  // than merely wait — the browser-ownership token in the body lets the
+  // server swap this same browser's weakest pending row for the better score.
+  //
+  // Both halves of the token's persistence are covered here in one run
+  // because each gameover costs ~22s of real gameplay: the token survives a
+  // full page reload (same value in the second run's POST), and the
+  // replacement it enables works across that reload.
+  test('a 429 leaves SUBMIT retryable, and the retry replaces this browser\'s own weaker pending row using a token that survived a reload', async ({ page }) => {
+    test.setTimeout(180_000);
+
+    interface FakePendingRow {
+      token: string | undefined;
+      score: number;
+      id: string;
+    }
+    // A deliberately small stand-in for the server's pending queue and its
+    // replacement rule (functions/api/scores.ts) — enough to drive the UI
+    // through 429 -> retry -> replaced. The rule's real, atomic
+    // implementation is verified against a live D1 in
+    // functions/_lib/ranking/pendingSelfReplace.test.ts; what is under test
+    // HERE is purely what the browser sends and how it reacts.
+    const CAP = 3;
+    const pending: FakePendingRow[] = [
+      { token: 'someone-else-a', score: 5_000, id: 'other-a' },
+      { token: 'someone-else-b', score: 5_000, id: 'other-b' },
+    ];
+    const tokensSeen: (string | undefined)[] = [];
+    const scoresSeen: number[] = [];
+    let nextId = 0;
+    const replacedIds: string[] = [];
+
+    await mockRanking(page, []); // empty verified board: every run is in range
+    await page.route('**/api/scores', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      const body = route.request().postDataJSON() as { submitterToken?: string; score: number };
+      const token = body.submitterToken;
+      tokensSeen.push(token);
+      scoresSeen.push(body.score);
+
+      const accept = (): Promise<void> => {
+        const id = `mine-${++nextId}`;
+        pending.push({ token, score: body.score, id });
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ accepted: true, id, status: 'pending' }),
+        });
+      };
+
+      if (pending.length < CAP) return accept();
+
+      // Self-replacement: strictly-weaker rows owned by THIS token only.
+      const mine = token === undefined ? [] : pending.filter((row) => row.token === token && row.score < body.score);
+      if (mine.length === 0) {
+        return route.fulfill({
+          status: 429,
+          contentType: 'application/json',
+          body: JSON.stringify({ accepted: false, error: 'pending submission limit reached, try again later' }),
+        });
+      }
+      const victim = mine.sort((a, b) => a.score - b.score)[0];
+      pending.splice(pending.indexOf(victim), 1);
+      replacedIds.push(victim.id);
+      return accept();
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+
+    // --- Run 1: an ordinary accepted submission, which mints the token ---
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await page.getByPlaceholder('NAME').fill('RUN-ONE');
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
+
+    const firstToken = tokensSeen[0];
+    expect(firstToken).toMatch(/^[0-9a-f]{32}$/); // 16 crypto-random bytes, lowercase hex
+    const storedToken = await page.evaluate(() => localStorage.getItem('qixxx:ranking:submitterToken'));
+    expect(storedToken).toBe(firstToken);
+    expect(pending).toHaveLength(CAP); // the queue is now full
+
+    // --- Reload: a brand-new page, and the token must come back with it ---
+    await page.reload();
+    expect(await page.evaluate(() => localStorage.getItem('qixxx:ranking:submitterToken'))).toBe(firstToken);
+
+    // --- Run 2, attempt 1: my pending row outscores this run, so nothing is
+    // replaceable and the server says 429. The old build hid SUBMIT here. ---
+    const myRow = pending.find((row) => row.token === firstToken)!;
+    myRow.score = 10_000_000;
+
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    const submitButton = page.getByRole('button', { name: 'SUBMIT' });
+    await page.getByPlaceholder('NAME').fill('RUN-TWO');
+    await submitButton.click();
+
+    await expect(page.getByText('VERIFICATION QUEUE IS FULL RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.')).toBeVisible();
+    await expect(submitButton).toBeVisible(); // NOT hidden — this is the whole point
+    await expect(submitButton).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'SKIP' })).toBeVisible(); // still "SKIP", not the terminal "OK"
+    expect(tokensSeen).toHaveLength(2);
+    expect(tokensSeen[1]).toBe(firstToken); // the same browser, across the reload
+
+    // --- Run 2, attempt 2: once my own pending row is the weaker one, the
+    // very same SUBMIT button replaces it. ---
+    //
+    // Pinned RELATIVE to what this run actually scored rather than to a
+    // literal: reachGameoverDeterministically() dies to the Igniter while
+    // standing still on a line, which claims nothing, so the run's score is
+    // routinely 0 and any hard-coded "weaker" value would be a coin flip.
+    myRow.score = scoresSeen[1] - 1;
+    await submitButton.click();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
+
+    expect(tokensSeen).toEqual([firstToken, firstToken, firstToken]);
+    expect(replacedIds).toEqual([myRow.id]); // MY row, and only mine
+    expect(pending).toHaveLength(CAP); // a replacement, never an extra slot
+    expect(pending.map((row) => row.id)).toEqual(expect.arrayContaining(['other-a', 'other-b'])); // the other browsers' rows untouched
+  });
+
+  // The private-browsing / storage-blocked path (spec item 1's fallback):
+  // submitting must keep working exactly as it always did, just without the
+  // self-replacement upgrade. A build that threw — or that sent a
+  // placeholder the server would 400 — would lock these players out of the
+  // ranking entirely.
+  test('a browser with no usable localStorage submits with no token at all, and the submission still works', async ({ page }) => {
+    let postedBody: Record<string, unknown> | undefined;
+    await mockRanking(page, []);
+    await page.route('**/api/scores', (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      postedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, status: 'pending' }) });
+    });
+
+    // Throwing on the PROPERTY ACCESS itself, which is what a
+    // storage-blocked embedding actually does — a mere `delete
+    // window.localStorage` would not exercise the try/catch that matters.
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new Error('SecurityError: storage is disabled');
+        },
+      });
+    });
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await page.getByPlaceholder('NAME').fill('NO-STORAGE');
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
+
+    // The key is ABSENT, not null/empty — the server distinguishes "no token"
+    // (fine, old client) from "a malformed token" (400).
+    expect(postedBody).toBeDefined();
+    expect('submitterToken' in postedBody!).toBe(false);
+    expect(postedBody!.score).toEqual(expect.any(Number));
+  });
+
   test('a provisional-rank response that lands after the player has left GAME OVER never reopens the form', async ({ page }) => {
     // The race: offerSubmission() must ask the server for the current top 10
     // before it can decide whether to show the name field, and the player can

@@ -12,6 +12,7 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
+import { getOrCreateSubmitterToken } from './submitterToken';
 
 export interface RankingEntry {
   id: string;
@@ -899,6 +900,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
           xHandle: usingHandle ? xHandle : undefined,
           rulesetVersion: options.getRulesetVersion(),
           replayFormatVersion: options.getReplayFormatVersion(),
+          // Browser-ownership token (docs/plans/2026-08-22-pending-self-
+          // replace spec item 1) — what lets the server recognize that the
+          // pending rows blocking this submission are this same player's, and
+          // swap the weakest of them for a better score instead of answering
+          // 429. `undefined` (no usable localStorage) drops the key from the
+          // JSON entirely, which the server reads as "old/private-browsing
+          // client" and handles exactly as it always did.
+          submitterToken: getOrCreateSubmitterToken() ?? undefined,
         }),
       });
       const data = (await res.json()) as { accepted: boolean; status?: string; reason?: string; error?: string };
@@ -912,6 +921,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // away. It is now reported with the server's own reason, and the form
       // stays open and submittable so the value can actually be fixed.
       const inputRejected = res.status === 400;
+      // A 429 is "not now", never "not ever" — see the retry branch below.
+      const retryLater = res.status === 429;
       if (!res.ok && res.status !== 429 && res.status !== 409 && !inputRejected) {
         throw new Error(data.error ?? `unexpected status ${res.status}`);
       }
@@ -928,11 +939,31 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         submitStatus.textContent = 'SUBMITTED — PENDING VERIFICATION.';
       } else if (data.reason === 'out-of-range') {
         submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
+      } else if (retryLater) {
+        // A 429 means one of two temporary queues is full: the verification
+        // backlog (the server answers `accepted:false` for that one) or the
+        // per-IP submission rate limit (which answers with an error and no
+        // `accepted` field at all). Both clear on their own within minutes,
+        // and the wording says so rather than implying the run is gone.
+        submitStatus.textContent =
+          data.accepted === false
+            ? 'VERIFICATION QUEUE IS FULL RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.'
+            : 'TOO MANY SUBMISSIONS RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.';
       } else {
         submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
       }
-      if (inputRejected) {
-        // Fixable: leave SUBMIT where it is, ready for the corrected value.
+      // Retryable outcomes leave SUBMIT exactly where it is.
+      //
+      // 400: fixable input — the corrected value needs a button to go out on.
+      //
+      // 429: the run was NOT judged, only deferred. Hiding SUBMIT here (which
+      // this form used to do) threw the score away for good over a queue that
+      // empties in minutes — and, now that a submission carries a browser
+      // ownership token, a retry can do better than wait: if the pending rows
+      // in the way are this same browser's own and weaker, the next SUBMIT
+      // replaces the weakest of them instead of being refused
+      // (docs/plans/2026-08-22-pending-self-replace spec item 3).
+      if (inputRejected || retryLater) {
         postButton.disabled = false;
         return;
       }
