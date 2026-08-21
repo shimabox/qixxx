@@ -16,13 +16,30 @@ describe('parseSubmitterToken', () => {
   // client (or private browsing), which must keep working; an invalid one is
   // a malformed request, which is a 400. Collapsing them either 400s every
   // old client or silently swallows a real client bug.
-  it('treats a missing/null token as ABSENT, not invalid', () => {
+  //
+  // The boundary is the FIELD, not the value, and `undefined` is the only
+  // thing on the absent side: JSON carries no `undefined`, so a value of
+  // `undefined` here can only have come from a key that was never sent.
+  it('treats ONLY a missing key as ABSENT', () => {
     expect(parseSubmitterToken(undefined)).toEqual({ kind: 'absent' });
-    expect(parseSubmitterToken(null)).toEqual({ kind: 'absent' });
+    expect(parseSubmitterToken(JSON.parse('{}').submitterToken)).toEqual({ kind: 'absent' });
+  });
+
+  // `{"submitterToken": null}` attaches the field, so it is judged on its
+  // format like any other attached value — it is not the "old client" case.
+  // The real client omits the key entirely (src/ui/ranking.ts passes
+  // `?? undefined`, which JSON.stringify drops), so an explicit null is a
+  // client bug or a hand-written request, and letting it through under the
+  // absent allowance would silently swallow exactly the class of mistake
+  // this three-way split exists to catch.
+  it('treats an explicit null as INVALID, not absent — the field WAS attached', () => {
+    expect(parseSubmitterToken(null)).toEqual({ kind: 'invalid' });
+    expect(parseSubmitterToken(JSON.parse('{"submitterToken":null}').submitterToken)).toEqual({ kind: 'invalid' });
   });
 
   it('rejects everything that is not the exact wire format', () => {
     for (const bad of [
+      null, // attached, but not a token
       '', // empty string is a value that was sent, not an omission
       '0123456789ABCDEF0123456789ABCDEF', // uppercase: the client only ever emits lowercase
       '0123456789abcdef0123456789abcde', // 31 chars

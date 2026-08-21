@@ -499,7 +499,7 @@ function splitBatch(batch: RecordedStatement[]) {
 
 describe('POST /api/scores submitterToken validation', () => {
   it('rejects a malformed token with 400 and never touches D1', async () => {
-    for (const bad of ['nope', '0123456789ABCDEF0123456789ABCDEF', '0'.repeat(31), '0'.repeat(33), 42, {}]) {
+    for (const bad of [null, 'nope', '0123456789ABCDEF0123456789ABCDEF', '0'.repeat(31), '0'.repeat(33), 42, {}]) {
       const { env, prepared, batches } = makeRecordingEnv({ firstInsertChanges: 1 });
       const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: bad })), env as never);
       expect(response.status).toBe(400);
@@ -510,6 +510,37 @@ describe('POST /api/scores submitterToken validation', () => {
       expect(batches).toHaveLength(0);
       vi.restoreAllMocks();
     }
+  });
+
+  // Called out in review: an explicit null ATTACHES the field, so it is a
+  // malformed token (400), not the "old client sent nothing" case (which
+  // must keep working). Given its own test rather than only a row in the
+  // loop above because the thing that makes it a 400 — the key being
+  // physically present in the JSON — is invisible at the parse boundary and
+  // has to be asserted on the wire itself.
+  it('rejects an explicitly-null token with 400: the key IS on the wire, so it was attached', async () => {
+    const rawBody = validShapedBody({ submitterToken: null });
+    expect(rawBody).toContain('"submitterToken":null'); // not silently dropped by JSON.stringify
+
+    const { env, prepared, batches } = makeRecordingEnv({ firstInsertChanges: 1 });
+    const { response, body } = await callHandler(makeRequest(rawBody), env as never);
+    expect(response.status).toBe(400);
+    expect(String(body.error)).toContain('submitterToken');
+    expect(prepared).toHaveLength(0);
+    expect(batches).toHaveLength(0);
+  });
+
+  // The counterpart that must NOT move: omitting the key entirely is still
+  // an ordinary accepted submission with submitter_hash left NULL.
+  it('still accepts a body with no submitterToken key at all, storing a NULL submitter_hash', async () => {
+    const rawBody = validShapedBody();
+    expect(rawBody).not.toContain('submitterToken');
+
+    const { env, prepared } = makeRecordingEnv({ firstInsertChanges: 1 });
+    const { response, body } = await callHandler(makeRequest(rawBody), env as never);
+    expect(response.status).toBe(200);
+    expect(body.accepted).toBe(true);
+    expect(prepared[0].args[17]).toBeNull(); // ?18 = submitter_hash
   });
 
   it('treats an ABSENT token as an old client: normal accept, and no self-replace batch on a 429', async () => {

@@ -45,12 +45,26 @@ export const SUBMITTER_TOKEN_BYTES = 16;
  * working exactly as before, while invalid means a malformed request, which
  * is a 400 like any other bad field. Collapsing them would either 400 every
  * old client or silently swallow a genuine client bug.
+ *
+ * The line between the two is drawn at the FIELD, not at its value: absent
+ * means the key is not in the submitted JSON object at all. Anything present
+ * — `null` included — is an ATTACHED token and is judged on its format.
+ *
+ * That reading is exact rather than merely conservative, because JSON has no
+ * `undefined`: a missing key is the only way this function can ever see
+ * `undefined`, so "the value is undefined" and "the key was never sent" are
+ * the same statement with nothing left to disambiguate. A client that
+ * genuinely has no token omits the key (src/ui/ranking.ts passes
+ * `?? undefined`, which JSON.stringify drops), so `{"submitterToken": null}`
+ * is a client bug or a hand-written request — precisely the thing keeping
+ * these two cases apart is meant to surface, rather than wave through under
+ * the "old client" allowance.
  */
 export type SubmitterTokenParse = { kind: 'absent' } | { kind: 'invalid' } | { kind: 'valid'; token: string };
 
-/** Classifies the raw `submitterToken` value off the request body. `null` counts as absent (a client that explicitly sends "I have none"); any non-string, or a string that isn't 32 lowercase hex characters, is invalid. */
+/** Classifies the raw `submitterToken` value off the request body. Absent means the key was not sent at all (`undefined`); EVERY other value — `null`, a non-string, or a string that isn't 32 lowercase hex characters — is invalid. */
 export function parseSubmitterToken(raw: unknown): SubmitterTokenParse {
-  if (raw === undefined || raw === null) return { kind: 'absent' };
+  if (raw === undefined) return { kind: 'absent' };
   if (typeof raw !== 'string') return { kind: 'invalid' };
   if (!SUBMITTER_TOKEN_PATTERN.test(raw)) return { kind: 'invalid' };
   return { kind: 'valid', token: raw };

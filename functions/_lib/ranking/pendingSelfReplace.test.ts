@@ -66,7 +66,8 @@ interface PostOptions {
   seed: number;
   score: number;
   ip: string;
-  token?: string;
+  /** Omit for a token-less (old / private-browsing) client. `null` is sent as a literal JSON null — an ATTACHED but malformed token, which is a different case entirely. */
+  token?: string | null;
   stage?: number;
 }
 
@@ -322,12 +323,19 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
     expect(await pendingCount(testDb.db)).toBe(3);
   });
 
-  it('a malformed token is a 400 that writes nothing at all', async () => {
+  // `null` sits alongside the garbage string on purpose: it ATTACHES the
+  // field, so it is a malformed token rather than the token-less-client case
+  // above. Both are held to the same standard here — the table comes out
+  // byte-identical, not merely "no new pending row".
+  it.each([
+    ['a garbage string', 'NOT-A-TOKEN' as string | null],
+    ['an explicit null', null as string | null],
+  ])('a malformed token (%s) is a 400 that writes nothing at all', async (_label, token) => {
     const mineIp = await ipHashFor(IP_MINE);
     await seedPending({ score: 100, ip_hash: mineIp, submitter_hash: myHash });
     const before = await allRows(testDb.db);
 
-    const { status, body } = await post(testDb.db, { seed: 9009, score: 900, ip: IP_MINE, token: 'NOT-A-TOKEN' });
+    const { status, body } = await post(testDb.db, { seed: 9009, score: 900, ip: IP_MINE, token });
 
     expect(status).toBe(400);
     expect(String(body.error)).toContain('submitterToken');
