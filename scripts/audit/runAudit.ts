@@ -346,12 +346,20 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
           // is exactly what verdict.ok===true means — this write is
           // defensive/explicit per spec's own "確定値で上書き" wording, not
           // a correction) and flip to verified.
+          //
+          // `submitter_hash = NULL` in the same UPDATE (docs/plans/2026-08-
+          // 22-pending-self-replace spec item 4): the browser-ownership token
+          // exists solely so a POST can replace its OWN pending row, and a
+          // verified row is never replaceable. Clearing it here — rather than
+          // leaving it to rot on the row — is what keeps the token from
+          // quietly becoming a durable, cross-session browser identifier
+          // sitting in a table whose contents are partly public.
           const { outcome } = await runFencedWrite(
             db,
             ownerToken,
             db
               .prepare(
-                `UPDATE scores SET status = 'verified', score = ?1, stage = ?2, duration_ticks = ?3
+                `UPDATE scores SET status = 'verified', score = ?1, stage = ?2, duration_ticks = ?3, submitter_hash = NULL
                  WHERE rank_seq = ?4 AND status = 'pending' AND ${LOCK_FENCE_SQL_FRAGMENT}`
               )
               .bind(verdict!.score, verdict!.stage, verdict!.durationTicks, row.rank_seq, ownerToken)

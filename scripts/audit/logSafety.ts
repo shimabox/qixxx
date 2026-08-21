@@ -12,8 +12,11 @@
 //             score), and a rejection REASON KIND ('declared-score-
 //             mismatch'), never the compared values themselves.
 //   NEVER   — ip_hash (a hash still correlates submissions to one person
-//             across rows and against a rainbow/known-IP table), the audit
-//             lock's owner_token, anything key-shaped (RANKING_IP_HASH_KEY),
+//             across rows and against a rainbow/known-IP table),
+//             submitter_hash and the raw submitter token behind it (same
+//             correlation argument, plus the raw token IS the ownership
+//             proof that lets a pending row be replaced), the audit lock's
+//             owner_token, anything key-shaped (RANKING_IP_HASH_KEY),
 //             and raw error objects: a thrown Error's `message`/`stack` can
 //             carry file paths, connection strings, SQL fragments and
 //             account identifiers that nothing in this codebase controls.

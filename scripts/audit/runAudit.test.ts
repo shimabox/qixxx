@@ -141,6 +141,37 @@ describe('runAudit (real local D1)', () => {
       expect(row).toEqual({ status: 'verified', score: fixture.score, stage: fixture.stage, duration_ticks: fixture.durationTicks });
     });
 
+    // docs/plans/2026-08-22-pending-self-replace spec item 4: the browser
+    // ownership token exists ONLY to let a POST replace its own not-yet-
+    // audited row. A verified row is never replaceable, so keeping the hash
+    // on it would leave a durable, cross-session browser identifier sitting
+    // in a table whose contents are partly public — for no functional gain.
+    // The verified-flip therefore clears it in the same UPDATE.
+    it('clears submitter_hash when it confirms a row, so the ownership token never outlives the pending window', async () => {
+      const seed = 9002;
+      const fixture = recordRealReplay(seed);
+      const id = await seedScoreRow(testDb.db, {
+        status: 'pending',
+        seed,
+        inputs: fixture.rle,
+        score: fixture.score,
+        stage: fixture.stage,
+        duration_ticks: fixture.durationTicks,
+        ruleset_version: RULESET_VERSION,
+        replay_format_version: REPLAY_FORMAT_VERSION,
+        submitter_hash: 'a'.repeat(64),
+      });
+      // Present before the run, so the assertion below can't pass merely
+      // because the column was never written in the first place.
+      const before = await testDb.db.prepare(`SELECT submitter_hash FROM scores WHERE id = ?`).bind(id).first<{ submitter_hash: string | null }>();
+      expect(before!.submitter_hash).toBe('a'.repeat(64));
+
+      await runAudit(baseOptions(testDb.db));
+
+      const row = await testDb.db.prepare(`SELECT status, submitter_hash FROM scores WHERE id = ?`).bind(id).first<{ status: string; submitter_hash: string | null }>();
+      expect(row).toEqual({ status: 'verified', submitter_hash: null });
+    });
+
     // User review, 2026-08-20: the pending fetch is season-agnostic on
     // purpose (an old season's leftovers have no other sweeper), but the
     // verdict layer used to compare only the ruleset/replay-format versions.
