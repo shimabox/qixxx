@@ -73,6 +73,54 @@ verified 10位を上回る正当な投稿は事前ゲートを通過して受理
 
 2 が 3 より先に評価されるため、「期限切れ404」と「バージョン不一致410」は重複しない。
 
+### 0.2 pending 自己置換(ブラウザ所有権)(2026-08-22 追加)
+
+**解決した問題**: IP あたり同時 pending 3件の上限により、自分の投稿3件が未監査の間は
+4件目の自己ベストが 429 で失われていた(当時の UI は 429 後に SUBMIT を隠していた)。
+
+**仕組み**: クライアントは初回投稿時に `crypto.getRandomValues()` で 16 バイトを生成し、
+32文字小文字 hex(`[0-9a-f]{32}`)として localStorage に保持して POST body の
+`submitterToken` で送る(`src/ui/submitterToken.ts`)。サーバーはその **16 バイトに対する
+鍵なし SHA-256** を `scores.submitter_hash` に保存する(`functions/_lib/ranking/submitterToken.ts`)。
+
+- **鍵なしで足りる根拠**: トークンは 128bit の暗号学的乱数で候補空間が枚挙不能。
+  低エントロピー入力である ip_hash が HMAC 鍵を要するのとは前提が違う。
+- **未添付と不正形式は別扱い**: 未添付=旧クライアント/プライベートブラウズとして
+  従来動作(置換なし・上限時 429)、添付だが形式不一致=**400**。
+- **所有権の寿命は pending 期間だけ**: 監査の verified 化 UPDATE が
+  `submitter_hash = NULL` に消す(永続的なブラウザ追跡 ID にしない)。
+
+**置換規則**: 通常の条件付き INSERT が `meta.changes=0`(上限到達)を返し、かつ
+トークン添付がある場合のみ、**単一 `batch`(=単一トランザクション)** で
+「自己 pending 1件の DELETE → 新規 INSERT」を再試行する。削除候補は
+`status='pending'` かつ新鮮かつ `submitter_hash` 一致かつ **スコアが新申告を厳密に下回る**
+行に限られ(同点は置換しない=先着優先)、`score ASC, rank_seq DESC LIMIT 1` で1件選ぶ。
+新行は新規 `rank_seq` を得る(AUTOINCREMENT 不変規則は維持)。
+
+**触ってはいけない設計上の核(変更時は必ず読むこと)**:
+
+1. **DELETE の WHERE 句に上限の場合分けを埋め込む**。D1 の batch がロールバックするのは
+   後続文が**エラー**のときだけで、`INSERT ... WHERE` が条件不成立で `changes=0` になるのは
+   **成功扱い**。よって「DELETE 成功 → INSERT 0件 → 旧行だけ消える」は事後の `meta` 検査では
+   防げない。場合分けは次の2つだけで、いずれも「DELETE がマッチした時点で同一トランザクション内の
+   後続 INSERT の全上限条件の成立が保証される」形になっている:
+   - 現 IP が上限ちょうど → **現 IP に属する**自己 pending のみ候補(別 IP の自己行を消しても
+     現 IP 枠は空かない)
+   - 現 IP に空きがあり全体が上限ちょうど → **任意の IP** の自己 pending が候補
+   - どちらにも空きがある → 候補なし(batch 内の INSERT が普通に成立する)
+2. **cutoff は batch 構築時に一度だけ評価し、batch 内の全文に同じ値をバインドする**。
+   最初の INSERT 試行の値を使い回すことも、文ごとに再計算することも禁止。DELETE と INSERT が
+   異なる 24時間境界で件数を数えると「DELETE=1 / INSERT=0」が復活する。SQLite の単一ライター性が
+   保証するのは batch 内の非交錯だけで、最初の試行と batch の間の状態変化は防がない。
+
+`replay_hash` UNIQUE 違反等の**エラー**時は batch 全体がロールバックされ旧行は失われない。
+置換候補が無ければ従来どおり 429(UI は SUBMIT を残しリトライ可能にする)。
+3層分離(事前ゲート・`displayEntries`・監査)には一切影響しない。
+
+検証は `functions/_lib/ranking/pendingSelfReplace.test.ts`(実 D1。全ケースで
+「消えた行があるなら必ず1行増えている」不変条件を機械的に検査)と
+`functions/_lib/ranking/scoresEndpoint.test.ts`(bind 値のアサート)。
+
 ## 1. ローカルでの手動実行手順(このラウンドで動作確認済み)
 
 ### 1.1 準備
@@ -170,6 +218,15 @@ UI の VERIFYING バッジだけが消える)。`GET /api/ranking/:id/replay` �
 | `audit_attempts` | `INTEGER NOT NULL DEFAULT 0` | 予期しない例外によるリトライ回数 |
 | `next_attempt_at` | `INTEGER`(nullable) | unixepoch() 秒。リトライ対象行の次回取得可能時刻 |
 
+`migrations/0003_submitter_hash.sql` が追加する列(§0.2):
+
+| 列 | 型 | 意味 |
+| --- | --- | --- |
+| `submitter_hash` | `TEXT`(nullable) | 投稿者トークン16バイトの**鍵なし SHA-256**。`NULL` は「所有者なし=誰にも置換されない」で、(1) この列より前の行、(2) トークン未添付の投稿、(3) 監査が verified 化した行(UPDATE で NULL に戻す)の3通り |
+
+インデックス `idx_scores_pending_submitter(status, submitter_hash, score)` が
+置換候補の探索(`status='pending' AND submitter_hash=? AND score<? ORDER BY score ASC`)を支える。
+
 新設テーブル `audit_lock(id, owner_token, locked_until)`: 監査ジョブの多重起動防止用ロック。
 `id=1` の1行のみ、初期行はマイグレーション自体が投入する(`owner_token=''`, `locked_until=0`)。
 
@@ -223,6 +280,8 @@ UI の VERIFYING バッジだけが消える)。`GET /api/ranking/:id/replay` �
 | 公開 API で既に見える値 | 行の `id`(共有 ID)、確定スコア、`runStartedAt` | **可** | `GET /api/ranking` で誰でも取得できる |
 | 却下理由の**種別** | `reason:"declared-score-mismatch"` / `"season-mismatch"` | **可** | 種別止まり。**申告値と実測値の対比は出さない**(entry id まで) |
 | `ip_hash` | `ip_hash` 列の値、その一部 | **不可** | ハッシュでも同一人物の投稿を横断突合でき、既知 IP との照合も可能 |
+| `submitter_hash` | `submitter_hash` 列の値、その一部 | **不可** | `ip_hash` と同格。ハッシュでも同一ブラウザの投稿を横断突合できる |
+| 投稿者トークン | クライアントが送る**生の** `submitterToken` | **不可** | 生値を知られると、その pending 行を他人が置換できる(所有権そのもの)。サーバーは保存もログもしない |
 | `owner_token` | `audit_lock.owner_token` | **不可** | 他プロセスがフェンスを詐称できる |
 | 鍵に類する値 | `RANKING_IP_HASH_KEY`、接続文字列、認証情報 | **不可** | 言うまでもなく |
 | 生のエラーオブジェクト | `console.error('...', err)`、`String(err)`、スタック | **不可** | メッセージ/スタックに絶対パス・接続先・SQL 断片が混ざり得る |
@@ -274,8 +333,8 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
 `AuditEvent` に種別やフィールドを足すときは、以下を**すべて**確認する。
 
 - [ ] 追加フィールドは 5.1 の「可」に該当するか(集計値・種別・公開済みの値のいずれか)。
-- [ ] 行の内容をそのまま載せていないか(`ip_hash` はもちろん、`name` / `x_handle` /
-      `seed` / `inputs` も監査ログには不要 — 必要なのは `id` だけ)。
+- [ ] 行の内容をそのまま載せていないか(`ip_hash` / `submitter_hash` はもちろん、
+      `name` / `x_handle` / `seed` / `inputs` も監査ログには不要 — 必要なのは `id` だけ)。
 - [ ] 例外を扱うイベントなら、`safeErrorName()` / `safeErrorDetail()` を通しているか
       (`err` をそのまま埋め込んでいないか)。
 - [ ] `scripts/audit/runAudit.test.ts` の `ALLOWED_EVENT_FIELDS` と `EVENT_FIXTURES`
