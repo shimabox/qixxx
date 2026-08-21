@@ -735,7 +735,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleInput.style.width = 'min(280px, 80%)'; // see nameInput's own comment
   handleInput.style.display = 'none';
   stopKeyPropagation(handleInput); // see nameInput's own comment above
-  submitOverlay.appendChild(handleInput);
+  // Both text fields sit ABOVE the checkbox row: they occupy the same visual
+  // slot (only one is ever visible), so the toggle must not flip which side
+  // of the checkbox the active field appears on — appending after handleRow
+  // made ticking the box seem to move the checkbox above the field
+  // (reported 2026-08-22).
+  submitOverlay.insertBefore(handleInput, handleRow);
 
   // The two fields hold their values independently. Ticking the checkbox used
   // to swap a filled NAME box for an empty @handle box in the same spot, which
