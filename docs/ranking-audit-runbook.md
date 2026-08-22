@@ -160,6 +160,17 @@ npx wrangler pages dev dist --port 8788 &
 `wrangler pages dev` は `.dev.vars` を自動で読み込む(`RANKING_IP_HASH_KEY` が
 `Using vars defined in .dev.vars` のログとともに Worker に渡る)。
 
+### 1.1.1 ローカル D1 を扱う npm スクリプト(2026-08-22 追加)
+
+| コマンド | 内容 |
+| --- | --- |
+| `npm run ranking:local:show` | `scores` の全行をスコア順に表示 |
+| `npm run ranking:local:clear-pending` | pending 行だけ削除(IP 別・全体の pending 上限を空ける) |
+| `npm run ranking:local:reset` | 全行削除(verified 含む。ランキングをまっさらに) |
+| `npm run ranking:local:audit` | 監査を1回実行(`.dev.vars` の鍵を読んで §1.3 と同じことをする。正当な pending は verified 化、偽スコアは削除) |
+
+いずれも `wrangler pages dev` を起動したまま実行してよい(同じローカル D1 を参照する)。
+
 ### 1.2 投稿(pending 保存)
 
 ```sh
