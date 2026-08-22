@@ -1061,6 +1061,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // otherwise has no way to tell "there is more to come" from "this is where
   // they died", which is the single most interesting thing about a replay.
   const replayStageLabel = document.createElement('div');
+  replayStageLabel.id = 'replay-stage-label';
   replayStageLabel.style.font = HUD_FONT;
   // A touch larger than the buttons beneath it: this line is the new
   // information on the bar, not a caption for them.
@@ -1072,12 +1073,45 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // the slightly larger size carry the emphasis instead.
   replayStageLabel.style.color = HUD_ACCENT_COLOR;
   replayStageLabel.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
-  // Single line on every supported width now that the bar spans the field:
-  // the longest wording ("REPLAY END - VERIFYING - STAGE 4 / 4 (GAME OVER
-  // HERE)") measures ~330px, inside a 390px phone canvas. Wrapping is kept
-  // as the overflow fallback for anything narrower, never the normal case.
-  replayStageLabel.style.maxWidth = '100%';
+  // Never broken mid-sentence (user feedback, 2026-08-22: the line wrapped
+  // into a ragged 2-3 lines once VERIFYING was spliced into it). The
+  // VERIFYING notice now lives in a badge BESIDE this text — see
+  // replayStatusRow below — so the text itself is back to its shortest
+  // wording, and what little overflow can still happen on a very narrow
+  // canvas is absorbed by the row wrapping the badge onto its own line.
+  replayStageLabel.style.whiteSpace = 'nowrap';
   replayStageLabel.style.textAlign = 'center';
+
+  // The status line: [VERIFYING badge, pending replays only] [stage text].
+  // The badge is created on demand and removed again on exit (never a
+  // permanently mounted, merely hidden element): the ranking list's own
+  // tests count VERIFYING badges on the page, and a hidden stowaway would be
+  // counted too.
+  const replayStatusRow = document.createElement('div');
+  replayStatusRow.id = 'replay-status-row';
+  replayStatusRow.style.display = 'flex';
+  replayStatusRow.style.flexWrap = 'wrap';
+  replayStatusRow.style.justifyContent = 'center';
+  replayStatusRow.style.alignItems = 'center';
+  replayStatusRow.style.gap = '8px';
+  replayStatusRow.style.maxWidth = '100%';
+  replayStatusRow.appendChild(replayStageLabel);
+  let replayStatusBadge: HTMLSpanElement | null = null;
+  function setReplayStatusBadge(visible: boolean): void {
+    if (visible && !replayStatusBadge) {
+      replayStatusBadge = createVerifyingBadge();
+      replayStatusBadge.id = 'replay-status-verifying';
+      // The list badge inherits the ranking panel's HUD font; out here on the
+      // control bar nothing sets one, so pin it — same face and size as the
+      // board label at the top of the field, so the two notices match.
+      replayStatusBadge.style.font = HUD_FONT;
+      replayStatusBadge.style.fontSize = '0.7em';
+      replayStatusRow.insertBefore(replayStatusBadge, replayStageLabel);
+    } else if (!visible && replayStatusBadge) {
+      replayStatusBadge.remove();
+      replayStatusBadge = null;
+    }
+  }
 
   // The board-level half of the VERIFYING notice (spec item 7 asks for both
   // "ステータス行と盤面上のラベル"): a standalone label pinned to the top of
@@ -1115,15 +1149,13 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const exitReplayButton = styledButton('EXIT');
   replayButtonRow.appendChild(skipToFinalButton);
   replayButtonRow.appendChild(exitReplayButton);
-  replayControls.appendChild(replayStageLabel);
+  replayControls.appendChild(replayStatusRow);
   replayControls.appendChild(replayButtonRow);
   anchor.appendChild(replayControls);
 
   let activeReplayEngine: ReplayEngine | null = null;
   let lastReplayStageText: string | null = null;
   let lastSkipVisible: boolean | null = null;
-  /** The audit status of the replay on screen — drives the two VERIFYING notices below. */
-  let activeReplayStatus: 'pending' | 'verified' = 'verified';
 
   /**
    * The status line's text for the replay currently on screen. `finalStage`
@@ -1134,11 +1166,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function replayStageText(engine: ReplayEngine): string {
     const finalStage = engine.getResult().stage;
     const currentStage = Math.min(engine.getSession().getStage(), finalStage);
-    const counter =
-      // The status-line half of the VERIFYING notice: carried on EVERY line
-      // this function can produce (playing, final stage, ended, gameover), so
-      // it cannot disappear at some point during playback.
-      activeReplayStatus === 'pending' ? `VERIFYING - STAGE ${currentStage} / ${finalStage}` : `STAGE ${currentStage} / ${finalStage}`;
+    // The status line's VERIFYING half is the badge beside this text (see
+    // setReplayStatusBadge()), not part of the wording — so every line this
+    // function produces stays short enough for one row.
+    const counter = `STAGE ${currentStage} / ${finalStage}`;
     // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
     // recorded input simply runs out mid-play (a truncated or
     // differently-configured recording — main.ts's own end-of-replay overlay
@@ -1185,10 +1216,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   }
 
   function mountReplayControls(status: 'pending' | 'verified'): void {
-    activeReplayStatus = status;
     replayVerifyingLabel.style.display = status === 'pending' ? 'block' : 'none';
+    setReplayStatusBadge(status === 'pending');
     lastReplayStageText = null;
-    replayStageLabel.textContent = status === 'pending' ? 'VERIFYING - REPLAY' : 'REPLAY';
+    replayStageLabel.textContent = 'REPLAY';
     // Starts hidden and is revealed by the first frame's sync if this replay
     // actually has a later stage to skip to — never flashed for a frame at a
     // single-stage run.
@@ -1200,7 +1231,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   exitReplayButton.addEventListener('click', () => {
     replayControls.style.display = 'none';
     replayVerifyingLabel.style.display = 'none';
-    activeReplayStatus = 'verified';
+    setReplayStatusBadge(false);
     // Cleared BEFORE aborting, so the skip's own .finally() sees that its
     // engine is no longer current and doesn't resume playback on a discarded
     // one — and so a leftover SKIPPING... label can't survive into the next

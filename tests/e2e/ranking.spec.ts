@@ -1285,17 +1285,68 @@ test.describe('replay viewing', () => {
     const boardLabel = page.locator('#replay-verifying-label');
     await expect(boardLabel).toBeVisible();
     await expect(boardLabel).toHaveText('VERIFYING — NOT YET AUDITED');
-    await expect(page.getByText('VERIFYING - STAGE 1 / 1')).toBeVisible();
+    // The status line's half of the notice is a badge BESIDE the stage text
+    // (user feedback, 2026-08-22: splicing the word into the sentence made
+    // the line wrap), so the text itself reads exactly as a verified replay's.
+    const statusBadge = page.locator('#replay-status-verifying');
+    await expect(statusBadge).toBeVisible();
+    await expect(statusBadge).toHaveText('VERIFYING');
+    await expect(page.locator('#replay-stage-label')).toContainText('STAGE 1 / 1');
+    await expect(page.locator('#replay-stage-label')).not.toContainText('VERIFYING');
 
     // Still there several frames later, including once playback has ended —
     // the notice is a property of the row, not an opening announcement.
     await page.waitForTimeout(800);
     await expect(boardLabel).toBeVisible();
-    await expect(page.getByText(/VERIFYING - /)).toBeVisible();
+    await expect(statusBadge).toBeVisible();
 
     // ...and it leaves with the replay.
     await page.getByRole('button', { name: 'EXIT' }).click();
     await expect(boardLabel).toBeHidden();
+  });
+
+  test('the longest status wording stays on ONE line even with the VERIFYING badge beside it, and the end overlay puts SCORE and STAGE on their own lines', async ({ page }) => {
+    // The exact regression reported on 2026-08-22: "REPLAY END - VERIFYING -
+    // STAGE 4 / 4 (GAME OVER HERE)" wrapped into a ragged 2-3 lines, and the
+    // overlay's "SCORE n  STAGE 4 / 4 (FINAL STAGE)" broke at an arbitrary
+    // word. Longest wording = multi-stage fixture, played to its gameover,
+    // as a PENDING row so the badge is present too.
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
+    await mockRanking(page, [], [
+      { id: 'ender', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: MULTI_STAGE_FINAL_STAGE, name: 'ENDER', xHandle: null, replayAvailable: true, status: 'pending' },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION, status: 'pending' }),
+      });
+    });
+
+    await page.goto(APP_URL);
+    await page.locator('#ranking-button').click();
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
+    await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden({ timeout: 20_000 });
+
+    const label = page.locator('#replay-stage-label');
+    await expect(label).toHaveText(`REPLAY END - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (GAME OVER HERE)`, { timeout: 20_000 });
+    await expect(page.locator('#replay-status-verifying')).toBeVisible();
+
+    // One line: the rendered height is a single line-height, never two.
+    const { height, lineHeight } = await label.evaluate((el) => {
+      const style = getComputedStyle(el);
+      const lh = style.lineHeight === 'normal' ? parseFloat(style.fontSize) * 1.3 : parseFloat(style.lineHeight);
+      return { height: el.getBoundingClientRect().height, lineHeight: lh };
+    });
+    expect(height).toBeLessThan(lineHeight * 1.6);
+
+    // The overlay's SCORE and STAGE are separate lines by construction.
+    const screenText = await page.locator('#screen').innerText();
+    const lines = screenText.split('\n').map((l) => l.trim()).filter(Boolean);
+    expect(lines.some((l) => /^SCORE \d+$/.test(l))).toBe(true);
+    expect(lines.some((l) => l === `STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`)).toBe(true);
   });
 
   test('replaying a verified row shows no VERIFYING notice anywhere', async ({ page }) => {

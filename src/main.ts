@@ -192,6 +192,14 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     screen.style.top = '50%';
     screen.style.left = '50%';
     screen.style.transform = 'translate(-50%, -50%)';
+    // Sized to its own longest line (user feedback, 2026-08-22): with only
+    // `left: 50%`, an absolutely positioned box shrink-wraps to the space
+    // LEFT OF the right edge — i.e. half the field — and a line longer than
+    // that wrapped at an arbitrary word. max-content sizes it to the text;
+    // max-width keeps wrapping as the last-resort fallback for a line wider
+    // than the whole field.
+    screen.style.width = 'max-content';
+    screen.style.maxWidth = '100%';
     screen.style.color = HUD_TEXT_COLOR;
     screen.style.font = HUD_FONT;
     screen.style.textAlign = 'center';
@@ -983,11 +991,14 @@ function renderFrame(): void {
     // ended here or the playback merely stopped. It always means the former —
     // a replay is a whole recorded run, so reaching 'gameover' IS the moment
     // that run died — so say so, and show the stage as "n / N" to match the
-    // control bar.
+    // control bar. SCORE and STAGE sit on their OWN lines (user feedback,
+    // 2026-08-22): side by side they overran the overlay's width and wrapped
+    // at an arbitrary word, so the layout is fixed here instead of left to
+    // the browser.
     const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
     const text =
       status === 'gameover'
-        ? `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}  STAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`
+        ? `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`
         : '';
     if (text !== lastScreenText) {
       lastScreenText = text;
