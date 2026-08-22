@@ -1,8 +1,10 @@
 // GET /api/ranking/:id/replay (docs/plans/2026-08-16-score-ranking task 3,
 // revised by docs/plans/2026-08-19-ranking-free-async spec item 7 on
 // 2026-08-20): returns the (seed, RLE input list, version info) needed to
-// replay a ranked run, plus the row's `status` so the viewer can keep a
-// VERIFYING notice up for an as-yet-unaudited run.
+// replay a ranked run, plus the row's `status`. Since 2026-08-22 the viewer
+// does NOT render that field (a pending replay plays exactly like a verified
+// one); it is served for operations and debugging — telling, from a curl,
+// whether a row has been audited yet.
 //
 // The judgement order below is FIXED, and the first matching rule wins:
 //

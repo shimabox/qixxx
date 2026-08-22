@@ -91,7 +91,9 @@ export interface RankingEntry {
  * every field the UI already relies on (`replayAvailable` above all) is
  * present on a pending row too, so one rendering path — and one
  * `replayAvailable` check — covers both. `status` is the only addition, and
- * is limited to these two values.
+ * is limited to these two values — and, since 2026-08-22, it is NOT rendered:
+ * the UI draws pending and verified rows identically, and the field stays for
+ * operations/debugging (e.g. reading a board state from curl).
  *
  * The array's own order IS the displayed ranking; there is no rank-number
  * field (and `rank_seq` itself never leaves the server — it is an internal
@@ -103,8 +105,9 @@ export type DisplayRankingEntry = RankingEntry & { status: 'pending' | 'verified
  * GET /api/ranking/:id/replay's success response.
  *
  * `status` (spec item 7's 2026-08-20 revision): a fresh pending row IS
- * replayable now, so the viewer has to be told which kind of row it is
- * watching in order to keep the VERIFYING notice up for the whole playback.
+ * replayable now. The field reports which kind of row this is, for
+ * operations and debugging — the viewer itself does not render it (decision
+ * of 2026-08-22: pending and verified replays look the same).
  */
 export interface ReplayPayload {
   seed: number;
