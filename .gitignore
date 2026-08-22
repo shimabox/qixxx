@@ -6,3 +6,14 @@ test-results/
 .wrangler/
 .DS_Store
 *.local
+
+# Local-dev secret values for wrangler pages dev / scripts/audit's cli.ts
+# Required key: RANKING_IP_HASH_KEY.
+# See .dev.vars.example for the variable this file should define.
+.dev.vars
+
+# Throwaway modules scripts/audit/cli.test.ts generates next to the real
+# entrypoint (they must sit inside scripts/audit/ so the bootstrap's own
+# relative imports resolve). Always deleted by the test itself — ignored only
+# so a crashed run can never leave one behind to be committed.
+scripts/audit/__tmp_*.ts

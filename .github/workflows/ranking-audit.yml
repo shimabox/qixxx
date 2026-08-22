@@ -1,0 +1,80 @@
+# Async audit job for pending score submissions. Runs scripts/audit/cli.ts, which
+# verifies pending score submissions and confirms/deletes them.
+#
+# SAFETY: no real D1 connection is wired yet.
+# The `schedule` trigger below is commented out for exactly that reason: if
+# this workflow file were merged to the default branch as-is with `schedule`
+# active, it would fire every ${{ env.CRON_INTERVAL_MINUTES }} minutes with
+# no real DB to talk to and fail forever. `workflow_dispatch` (manual-only)
+# is the sole enabled trigger until real D1 access is configured
+# AND explicitly re-enables the schedule below.
+#
+# To enable the cron once real D1 access is wired up (see
+# docs/ranking-audit-runbook.md's "本番接続" section for the connection
+# design/decision this still needs):
+#   1. Implement the real D1 connection this job's `run` step below assumes
+#      (RemoteD1Adapter in scripts/audit/d1Adapter.ts is currently an
+#      unimplemented stub — see its doc comment for the two candidate
+#      approaches).
+#   2. Set repository variable AUDIT_CRON_ENABLED=true (Settings ->
+#      Secrets and variables -> Actions -> Variables) AND uncomment the
+#      `schedule:` block below (the `if:` guard alone is not enough while
+#      the trigger itself stays commented out — GitHub only evaluates
+#      `schedule` cron syntax for triggers that are actually present).
+#   3. Set the RANKING_IP_HASH_KEY secret (Settings -> Secrets and
+#      variables -> Actions -> Secrets) to the SAME value configured as the
+#      Cloudflare Pages secret for the ranking API — see
+#      docs/ranking-audit-runbook.md.
+name: Ranking async audit
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   # Approximate five-minute interval.
+  #   # — a GUIDELINE, not a guarantee: GitHub Actions' `schedule` trigger can
+  #   # delay or altogether skip a scheduled run under load, so nothing in
+  #   # this job's own design (scripts/audit/constants.ts's
+  #   # AUDIT_CRON_INTERVAL_MINUTES, the lock lease, next_attempt_at) may
+  #   # assume this interval is exact.
+  #   - cron: '*/5 * * * *'
+
+concurrency:
+  # Belt-and-braces alongside the D1-side audit_lock table (scripts/audit/
+  # lock.ts) itself, which is the mechanism that actually matters. Even if
+  # two runs overlap despite the Actions concurrency group, the D1 lock would
+  # still make the second one a no-op.
+  group: ranking-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    # Guards against an accidental `schedule` re-enable running before real
+    # D1 access exists — see this file's own top-of-file comment. Manual
+    # (`workflow_dispatch`) runs always proceed regardless of this variable,
+    # since a human deliberately clicking "Run workflow" already knows what
+    # they're doing.
+    if: github.event_name == 'workflow_dispatch' || vars.AUDIT_CRON_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # PUBLIC LOG. This repository is public, so this step's output is
+      # readable by anyone — see docs/ranking-audit-runbook.md §5 "ログ方針"
+      # for what the audit job may and may not print. In particular: do NOT
+      # add AUDIT_LOG_ERROR_DETAIL here (it opts the job into printing
+      # exception message text, which is a local-debugging-only affordance),
+      # and do not add any echo/debug step that dumps a row, an env var or a
+      # raw error object.
+      - name: Run async audit
+        env:
+          RANKING_IP_HASH_KEY: ${{ secrets.RANKING_IP_HASH_KEY }}
+        run: npx vite-node scripts/audit/cli.ts
