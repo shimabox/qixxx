@@ -63,6 +63,12 @@ describe('migrations/0004_ranking_rate_limits.sql (real local D1)', () => {
       expect(index?.name).toBe('idx_ranking_rate_limits_window');
       const indexedColumns = await proxy.env.DB.prepare("PRAGMA index_info('idx_ranking_rate_limits_window')").all<{ name: string }>();
       expect(indexedColumns.results.map((column) => column.name)).toEqual(['window_index']);
+      const updatedAtIndex = await proxy.env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ranking_rate_limits_updated_at'").first<{
+        name: string;
+      }>();
+      expect(updatedAtIndex?.name).toBe('idx_ranking_rate_limits_updated_at');
+      const updatedAtIndexedColumns = await proxy.env.DB.prepare("PRAGMA index_info('idx_ranking_rate_limits_updated_at')").all<{ name: string }>();
+      expect(updatedAtIndexedColumns.results.map((column) => column.name)).toEqual(['updated_at']);
 
       await proxy.env.DB.prepare('INSERT INTO ranking_rate_limits VALUES (?1, ?2, ?3, ?4)').bind('valid-hash', 1, 1, 3600).run();
       await expect(proxy.env.DB.prepare('INSERT INTO ranking_rate_limits VALUES (?1, ?2, ?3, ?4)').bind('zero-hash', 1, 0, 3600).run()).rejects.toThrow(/CHECK constraint failed/i);

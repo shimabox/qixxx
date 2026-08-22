@@ -7,3 +7,6 @@ CREATE TABLE ranking_rate_limits (
 
 CREATE INDEX idx_ranking_rate_limits_window
   ON ranking_rate_limits(window_index);
+
+CREATE INDEX idx_ranking_rate_limits_updated_at
+  ON ranking_rate_limits(updated_at);

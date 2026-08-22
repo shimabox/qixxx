@@ -303,7 +303,7 @@ npx wrangler d1 execute qixxx-scores --remote --command \
 デプロイ順は固定する。
 
 1. 対象 D1 に migration 0004 を適用する。
-2. `ranking_rate_limits` と `idx_ranking_rate_limits_window` の存在を確認する。
+2. `ranking_rate_limits`、`idx_ranking_rate_limits_window`、`idx_ranking_rate_limits_updated_at` の存在を確認する。
 3. 新しい Pages Functions をデプロイする。
 4. 正常投稿、同一 IP ハッシュの30/31回境界、`Retry-After`、ランキング投稿由来の KV write が増えないことを確認する。
 
