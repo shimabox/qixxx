@@ -1036,18 +1036,25 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const replayControls = document.createElement('div');
   replayControls.style.position = 'absolute';
   replayControls.style.bottom = '8px';
-  replayControls.style.left = '50%';
-  replayControls.style.transform = 'translateX(-50%)';
+  // Spans the field and centers its children, rather than `left: 50%` +
+  // `translateX(-50%)`: an absolutely positioned box is shrink-wrapped
+  // against the space from its `left` edge to the container's right edge,
+  // so with `left: 50%` the bar could never be wider than HALF the field and
+  // the status line below wrapped at that half-width on every screen size
+  // (user feedback, 2026-08-22). The strip itself stays click-transparent so
+  // that, at full width, it doesn't swallow taps meant for the field; only
+  // the button row is interactive.
+  replayControls.style.left = '0';
+  replayControls.style.right = '0';
   replayControls.style.display = 'none';
   // Column, not a single row: the status line below grew from a bare
   // "REPLAY" to a stage counter, and stacking it above the buttons keeps the
-  // bar no wider than the button row itself — which is what a 390px-wide
-  // phone canvas can actually hold.
+  // bar readable on a 390px-wide phone canvas.
   replayControls.style.flexDirection = 'column';
   replayControls.style.alignItems = 'center';
   replayControls.style.gap = '6px';
   replayControls.style.zIndex = '20';
-  replayControls.style.pointerEvents = 'auto';
+  replayControls.style.pointerEvents = 'none';
 
   // Which stage of how many is on screen right now, and (user feedback,
   // 2026-08-20) whether that stage is the one the run ENDED on — a viewer
@@ -1058,13 +1065,17 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // A touch larger than the buttons beneath it: this line is the new
   // information on the bar, not a caption for them.
   replayStageLabel.style.fontSize = '0.95em';
-  replayStageLabel.style.fontWeight = 'bold';
+  // Deliberately NOT bold: with the generic `monospace` family, a bold
+  // weight made macOS Chrome substitute a proportional face for this one
+  // line (the buttons beside it, at normal weight, kept the monospace face),
+  // which both broke the bar's typography and widened the text. The glow and
+  // the slightly larger size carry the emphasis instead.
   replayStageLabel.style.color = HUD_ACCENT_COLOR;
   replayStageLabel.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
-  // Wraps rather than overflowing: the longest wording ("REPLAY END - STAGE
-  // 4 / 4 (GAME OVER HERE)") already reaches ~305px of a 390px phone canvas,
-  // and a narrower device (or a longer stage count) would otherwise push it
-  // out past the field's edge.
+  // Single line on every supported width now that the bar spans the field:
+  // the longest wording ("REPLAY END - VERIFYING - STAGE 4 / 4 (GAME OVER
+  // HERE)") measures ~330px, inside a 390px phone canvas. Wrapping is kept
+  // as the overflow fallback for anything narrower, never the normal case.
   replayStageLabel.style.maxWidth = '100%';
   replayStageLabel.style.textAlign = 'center';
 
@@ -1099,6 +1110,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const replayButtonRow = document.createElement('div');
   replayButtonRow.style.display = 'flex';
   replayButtonRow.style.gap = '8px';
+  replayButtonRow.style.pointerEvents = 'auto'; // the bar itself is click-transparent (see replayControls)
   const skipToFinalButton = styledButton('SKIP TO FINAL STAGE');
   const exitReplayButton = styledButton('EXIT');
   replayButtonRow.appendChild(skipToFinalButton);
