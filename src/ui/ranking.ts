@@ -384,11 +384,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // 2026-08-22): handles are self-reported, and scores are audited AFTER they
   // appear — a row can vanish later. The second sentence is what replaced the
   // per-row VERIFYING badge, so it must stay visible whenever the list is.
+  // Appended BELOW the list (see the end of this block), as a footnote: up
+  // between the heading and the rows it read as the panel's headline.
   disclaimer.textContent = 'X handles are self-reported — ownership is not verified. Scores are verified after posting; entries that fail verification are removed.';
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
-  listOverlay.appendChild(disclaimer);
   // ONE board (docs/plans/2026-08-19-ranking-free-async spec item 5, as
   // revised 2026-08-20): verified and pending rows share this container and
   // this ranking. There is deliberately no separate "pending" section, and
@@ -402,6 +403,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listBody.style.gap = '4px';
   listBody.style.width = '100%';
   listOverlay.appendChild(listBody);
+  listOverlay.appendChild(disclaimer);
   const listCloseButton = styledButton('CLOSE');
   listCloseButton.addEventListener('click', () => hideList());
   listOverlay.appendChild(listCloseButton);
