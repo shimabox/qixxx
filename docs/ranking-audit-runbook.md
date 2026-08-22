@@ -73,6 +73,26 @@ verified 10位を上回る正当な投稿は事前ゲートを通過して受理
 
 2 が 3 より先に評価されるため、「期限切れ404」と「バージョン不一致410」は重複しない。
 
+#### 0.1.1 UI は pending と verified を区別しない(2026-08-22 改訂)
+
+公開ランキングは **リアルタイムの順位表**として扱い、pending 行に VERIFYING バッジ
+などの印は付けない(X への即時共有とリアルタイム性を優先する判断)。リプレイ
+ビューアの VERIFYING 表示も同様に廃止し、X ハンドルは pending/verified とも
+リンクにする(監査が検証するのはスコアであってハンドルの所有権ではないため、
+監査状態をリンク可否に流用しない。既存の「ハンドルは自己申告」注意書きが責任境界)。
+
+役割分担は次のとおり:
+
+| 相手 | 伝え方 |
+| --- | --- |
+| 公開ランキングの閲覧者 | 順位表の静的注意書き「Scores are verified after posting; entries that fail verification are removed.」で、後から削除され得る運用を常時開示 |
+| 投稿者本人 | 投稿完了時の「SUBMITTED — PENDING VERIFICATION」で監査待ちを伝える |
+| サーバー・運用 | `displayEntries` / リプレイ応答の `status` は**維持**(監査・削除・デバッグ用。UI は描画に使わない) |
+
+「検証を隠す」のではなく、「各行を疑わしそうに見せず、ランキング全体の運用ルール
+として開示する」設計である。偽スコア対策そのもの(表示 pending 上限3件・投稿資格は
+verified 基準・監査による削除)はこの改訂で一切変わらない。
+
 ### 0.2 pending 自己置換(ブラウザ所有権)(2026-08-22 追加)
 
 **解決した問題**: IP あたり同時 pending 3件の上限により、自分の投稿3件が未監査の間は
@@ -188,10 +208,9 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 (中断後の書き込みはフェンシングで一切適用されない)。
 
 確定した行は `GET /api/ranking` の `entries`(確定 TOP10)に現れ、`displayEntries`
-では同じ順位のまま `status` が `"pending"` から `"verified"` に変わる(順位は動かず
-UI の VERIFYING バッジだけが消える)。`GET /api/ranking/:id/replay` は pending の
-間も 200 で見られる(応答に `status:"pending"` が含まれ、ビューアが VERIFYING を
-常時表示する)。404 になるのは「行が無い/監査で削除済み」か「pending かつ期限切れ
+では同じ順位のまま `status` が `"pending"` から `"verified"` に変わる(順位は動かず、
+UI 上の見た目も変わらない — §0.1.1)。`GET /api/ranking/:id/replay` は pending の
+間も 200 で見られる(応答に `status:"pending"` が含まれるが、ビューアは描画に使わない)。404 になるのは「行が無い/監査で削除済み」か「pending かつ期限切れ
 (`created_at <= now-24h`)」の場合のみ。
 
 ### 1.4 偽スコアの削除を確認する

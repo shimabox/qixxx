@@ -335,7 +335,7 @@ test.describe('ranking display', () => {
       { id: 'b', createdAt: '2026-01-04T12:00:00Z', score: 700, stage: 1, name: 'BOTH', xHandle: 'both_handle', replayAvailable: true },
     ];
     // Two pending rows on the merged board, one handle-only and one with
-    // neither name nor handle — same precedence rules, minus the link.
+    // neither name nor handle — same precedence rules, same link.
     const displayEntries: DisplayRankingEntry[] = [
       { id: 'ph', createdAt: '2026-01-05T12:00:00Z', score: 950, stage: 5, name: '', xHandle: 'pendinghandle', replayAvailable: true, status: 'pending' },
       { id: 'pn', createdAt: '2026-01-06T12:00:00Z', score: 940, stage: 4, name: '', xHandle: null, replayAvailable: true, status: 'pending' },
@@ -361,20 +361,21 @@ test.describe('ranking display', () => {
     await expect(page.getByText('#5  700  STAGE 1  BOTH')).toBeVisible();
     await expect(page.locator('a', { hasText: '@both_handle' })).toHaveAttribute('href', 'https://x.com/both_handle');
 
-    // Pending rows follow the same name/handle precedence, but the handle is
-    // PLAIN TEXT (spec item 5): an unaudited row's claim to a handle must not
-    // send anyone to that profile.
+    // Pending rows follow the same name/handle precedence AND get the same
+    // link (decision of 2026-08-22): the audit verifies the score, never
+    // handle ownership, so a row's audit state is no reason to withhold it.
     await expect(page.getByText('#1  950  STAGE 5  @pendinghandle')).toBeVisible();
-    await expect(page.locator('a', { hasText: '@pendinghandle' })).toHaveCount(0);
+    await expect(page.locator('a', { hasText: '@pendinghandle' })).toHaveAttribute('href', 'https://x.com/pendinghandle');
     await expect(page.getByText('#2  940  STAGE 4  (no name)')).toBeVisible();
   });
 
   // docs/plans/2026-08-19-ranking-free-async spec item 5 (2026-08-20
-  // revision): ONE board. A pending row is drawn at the rank it actually
-  // holds, carrying a quiet VERIFYING badge and a REPLAY button gated on the
-  // same `replayAvailable` field every other row uses. There is no separate
-  // "pending" section anywhere on the panel.
-  test('renders pending rows inline in the single ranked board, badged VERIFYING, with no separate pending section', async ({ page }) => {
+  // revision) as amended 2026-08-22: ONE board, and one kind of row. A
+  // pending row is drawn at the rank it actually holds with nothing marking
+  // it out — no badge, no separate section — and a REPLAY button gated on
+  // the same `replayAvailable` field every other row uses. Verification is
+  // disclosed once, by the static notice under the heading.
+  test('renders pending rows inline in the single ranked board, unmarked, with no separate pending section and the verification notice shown', async ({ page }) => {
     const entries: RankingEntry[] = [
       { id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'CONFIRMED1', xHandle: null, replayAvailable: true },
       { id: 'v2', createdAt: '2026-01-03T12:00:00Z', score: 800, stage: 2, name: 'CONFIRMED2', xHandle: null, replayAvailable: true },
@@ -392,10 +393,11 @@ test.describe('ranking display', () => {
     await expect(page.getByText('#2  900  STAGE 3')).toBeVisible();
     await expect(page.getByText('#3  800  STAGE 2')).toBeVisible();
 
-    // Exactly one VERIFYING badge (the pending row's), and no trace of the
-    // old separate section.
-    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(1);
+    // No per-row marker of any kind, and no trace of the old separate section.
+    await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
     await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
+    // The one place verification IS mentioned: the board-wide notice.
+    await expect(page.getByText('Scores are verified after posting; entries that fail verification are removed.')).toBeVisible();
 
     // Every row — pending included — gets a REPLAY button, because a fresh
     // pending row's replay is servable now (spec item 7).
@@ -404,12 +406,13 @@ test.describe('ranking display', () => {
     await expect(replayButtons.nth(0)).toBeEnabled();
   });
 
-  test('shows no VERIFYING badge at all when every displayed row is verified', async ({ page }) => {
+  test('shows the verification notice even when every displayed row is verified (it is a rule of the board, not a row state)', async ({ page }) => {
     await mockRanking(page, [{ id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'SOLO', xHandle: null, replayAvailable: true }]);
     await page.goto(APP_URL);
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
-    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Scores are verified after posting; entries that fail verification are removed.')).toBeVisible();
+    await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
   });
 
   test('a pending row whose replay format has moved on gets the same disabled REPLAY button a verified one would', async ({ page }) => {
@@ -423,8 +426,10 @@ test.describe('ranking display', () => {
     await expect(page.getByRole('button', { name: 'REPLAY' })).toBeDisabled();
   });
 
-  // Spec item 5's promised experience: "順位を維持したままバッジだけが消える".
-  test('when a pending row is verified, its rank is unchanged and only the badge goes away', async ({ page }) => {
+  // The 2026-08-22 promise: a pending row and its verified self are the SAME
+  // row to the viewer — same rank, same markup, nothing to notice when the
+  // audit confirms it.
+  test('a pending row and the same row once verified render identical DOM (rank and markup unchanged)', async ({ page }) => {
     const verified: RankingEntry[] = [
       { id: 'v1', createdAt: '2026-01-02T12:00:00Z', score: 900, stage: 3, name: 'RIVAL', xHandle: null, replayAvailable: true },
     ];
@@ -434,7 +439,8 @@ test.describe('ranking display', () => {
 
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  950  STAGE 5  CLIMBER')).toBeVisible();
-    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(1);
+    const whilePending = await page.locator('#ranking-list-body').innerHTML();
+    expect(whilePending).not.toContain('VERIFYING');
 
     // The audit confirms it: same row, same score, now verified.
     await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -443,7 +449,8 @@ test.describe('ranking display', () => {
     await page.locator('#ranking-button').click();
 
     await expect(page.getByText('#1  950  STAGE 5  CLIMBER')).toBeVisible(); // same rank
-    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(0); // badge gone
+    const onceVerified = await page.locator('#ranking-list-body').innerHTML();
+    expect(onceVerified).toBe(whilePending); // byte-for-byte the same board
   });
 });
 
@@ -629,7 +636,7 @@ test.describe('name-input submission flow', () => {
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  999000  STAGE 9  FAKE0')).toBeVisible();
-    await expect(page.getByText('VERIFYING', { exact: true })).toHaveCount(3);
+    await expect(page.getByText('#3  998998  STAGE 9  FAKE2')).toBeVisible();
   });
 
   // Reported from a real device (2026-08-20) as "checking USE X HANDLE
@@ -1261,10 +1268,10 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'SKIP TO FINAL STAGE' })).toBeHidden();
   });
 
-  // docs/plans/2026-08-19-ranking-free-async spec item 7: a fresh pending
-  // row IS replayable now, so the viewer must say so for the WHOLE playback —
-  // in the status line and on the board — rather than announcing it once.
-  test('replaying a pending row shows the VERIFYING notice on the board and in the status line, for the whole playback', async ({ page }) => {
+  // docs/plans/2026-08-19-ranking-free-async spec item 7 (a fresh pending
+  // row IS replayable) as amended 2026-08-22: it plays exactly like a
+  // verified row's replay — no notice on the board, none in the status line.
+  test('replaying a pending row plays exactly like a verified one, with no VERIFYING notice anywhere', async ({ page }) => {
     const rleBase64 = recordShortReplay(2026, 4);
     await mockRanking(page, [], [
       { id: 'pend', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: 1, name: 'UNAUDITED', xHandle: null, replayAvailable: true, status: 'pending' },
@@ -1282,35 +1289,20 @@ test.describe('replay viewing', () => {
     await page.locator('#ranking-button').click();
     await page.getByRole('button', { name: 'REPLAY' }).click();
 
-    const boardLabel = page.locator('#replay-verifying-label');
-    await expect(boardLabel).toBeVisible();
-    await expect(boardLabel).toHaveText('VERIFYING — NOT YET AUDITED');
-    // The status line's half of the notice is a badge BESIDE the stage text
-    // (user feedback, 2026-08-22: splicing the word into the sentence made
-    // the line wrap), so the text itself reads exactly as a verified replay's.
-    const statusBadge = page.locator('#replay-status-verifying');
-    await expect(statusBadge).toBeVisible();
-    await expect(statusBadge).toHaveText('VERIFYING');
     await expect(page.locator('#replay-stage-label')).toContainText('STAGE 1 / 1');
-    await expect(page.locator('#replay-stage-label')).not.toContainText('VERIFYING');
-
-    // Still there several frames later, including once playback has ended —
-    // the notice is a property of the row, not an opening announcement.
-    await page.waitForTimeout(800);
-    await expect(boardLabel).toBeVisible();
-    await expect(statusBadge).toBeVisible();
-
-    // ...and it leaves with the replay.
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
+    await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
+    await page.waitForTimeout(800); // ...and still none once playback has ended
+    await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
     await page.getByRole('button', { name: 'EXIT' }).click();
-    await expect(boardLabel).toBeHidden();
   });
 
-  test('the longest status wording stays on ONE line even with the VERIFYING badge beside it, and the end overlay puts SCORE and STAGE on their own lines', async ({ page }) => {
-    // The exact regression reported on 2026-08-22: "REPLAY END - VERIFYING -
-    // STAGE 4 / 4 (GAME OVER HERE)" wrapped into a ragged 2-3 lines, and the
-    // overlay's "SCORE n  STAGE 4 / 4 (FINAL STAGE)" broke at an arbitrary
-    // word. Longest wording = multi-stage fixture, played to its gameover,
-    // as a PENDING row so the badge is present too.
+  test('the longest status wording stays on ONE line, and the end overlay puts SCORE and STAGE on their own lines', async ({ page }) => {
+    // The regression reported on 2026-08-22: the status line wrapped into a
+    // ragged 2-3 lines, and the overlay's "SCORE n  STAGE 4 / 4 (FINAL
+    // STAGE)" broke at an arbitrary word. Longest wording = multi-stage
+    // fixture, played to its gameover (as a pending row, which must make no
+    // difference to what is drawn).
     const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
     await mockRanking(page, [], [
       { id: 'ender', createdAt: '2026-01-01T00:00:00Z', score: 7, stage: MULTI_STAGE_FINAL_STAGE, name: 'ENDER', xHandle: null, replayAvailable: true, status: 'pending' },
@@ -1332,7 +1324,6 @@ test.describe('replay viewing', () => {
 
     const label = page.locator('#replay-stage-label');
     await expect(label).toHaveText(`REPLAY END - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (GAME OVER HERE)`, { timeout: 20_000 });
-    await expect(page.locator('#replay-status-verifying')).toBeVisible();
 
     // One line: the rendered height is a single line-height, never two.
     const { height, lineHeight } = await label.evaluate((el) => {
@@ -1366,12 +1357,7 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'REPLAY' }).click();
 
     await expect(page.getByText('STAGE 1 / 1')).toBeVisible();
-    // The board label exists in the DOM either way (it is mounted once at
-    // init); what matters is that it stays hidden, and that it is the ONLY
-    // place the word appears — the status line above says plain "STAGE 1 / 1".
-    const verifyingText = page.getByText(/VERIFYING/);
-    await expect(verifyingText).toHaveCount(1);
-    await expect(verifyingText).toBeHidden();
+    await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
   });
 
   test('a 410 from the replay endpoint shows a graceful message instead of a silent failure', async ({ page }) => {

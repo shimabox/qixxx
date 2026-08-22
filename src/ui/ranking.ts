@@ -35,9 +35,15 @@ export interface RankingEntry {
  * server serves a fresh pending row's replay now — spec item 7), so the
  * REPLAY button is gated on exactly the same field regardless of `status`.
  *
- * `status` drives presentation only: a VERIFYING badge, and a plain-text
- * (never linked) handle while the row is unaudited — an unverified claim to
- * someone's handle should not send anyone to that profile.
+ * `status` is carried for the server's benefit (audit, deletion, debugging)
+ * and deliberately NOT rendered (decision of 2026-08-22): the public board
+ * treats pending and verified rows as one real-time ranking. Verification
+ * is disclosed once, as a rule of the board, by the static notice under the
+ * heading ("entries that fail verification are removed") rather than by
+ * marking individual rows as suspect. The X handle is linked either way —
+ * the audit verifies the SCORE, never handle ownership, so a row's audit
+ * state was never a reason to withhold the link (the self-reported-handles
+ * notice is the responsibility boundary there).
  *
  * NOTE the deliberate asymmetry with the SUBMISSION side: whether the name
  * form opens is decided from `entries` (verified only) and never from this
@@ -161,7 +167,7 @@ export interface ReplayPayload {
   rleBase64: string;
   rulesetVersion: number;
   replayFormatVersion: number;
-  /** Absent from an older server's response — treated as 'verified' (i.e. no VERIFYING notice) rather than guessed at. */
+  /** The row's audit state. Served for the operator's benefit; the viewer does not render it (decision of 2026-08-22 — see DisplayRankingEntry). */
   status?: 'pending' | 'verified';
 }
 
@@ -374,17 +380,23 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listHeading.style.fontWeight = 'bold';
   listOverlay.appendChild(listHeading);
   const disclaimer = document.createElement('div');
-  disclaimer.textContent = 'X handles are self-reported — ownership is not verified.';
+  // Two rules of the board, stated once for everyone (decision of
+  // 2026-08-22): handles are self-reported, and scores are audited AFTER they
+  // appear — a row can vanish later. The second sentence is what replaced the
+  // per-row VERIFYING badge, so it must stay visible whenever the list is.
+  disclaimer.textContent = 'X handles are self-reported — ownership is not verified. Scores are verified after posting; entries that fail verification are removed.';
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
   listOverlay.appendChild(disclaimer);
   // ONE board (docs/plans/2026-08-19-ranking-free-async spec item 5, as
   // revised 2026-08-20): verified and pending rows share this container and
-  // this ranking. There is deliberately no separate "pending" section —
-  // a pending row is shown at the position it actually holds, wearing a
-  // VERIFYING badge until the audit confirms (or removes) it.
+  // this ranking. There is deliberately no separate "pending" section, and
+  // (since 2026-08-22) no per-row marker either — a pending row is shown at
+  // the position it actually holds, looking exactly like its neighbours,
+  // until the audit confirms it in place or removes it.
   const listBody = document.createElement('div');
+  listBody.id = 'ranking-list-body';
   listBody.style.display = 'flex';
   listBody.style.flexDirection = 'column';
   listBody.style.gap = '4px';
@@ -444,23 +456,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     listBody.textContent = '';
   }
 
-  /**
-   * The small, deliberately quiet marker a not-yet-audited row wears (spec
-   * item 5's "控えめな VERIFYING バッジ"). Same wording as the replay
-   * viewer's own notice, so the two read as one state rather than two.
-   */
-  function createVerifyingBadge(): HTMLSpanElement {
-    const badge = document.createElement('span');
-    badge.textContent = 'VERIFYING';
-    badge.style.fontSize = '0.6em';
-    badge.style.opacity = '0.75';
-    badge.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-    badge.style.borderRadius = '4px';
-    badge.style.padding = '2px 5px';
-    badge.style.whiteSpace = 'nowrap';
-    return badge;
-  }
-
   async function showList(): Promise<void> {
     if (!browsingAllowed()) return;
     browsingGeneration++;
@@ -502,7 +497,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
 
     entries.forEach((entry, index) => {
-      const isPending = entry.status === 'pending';
       const row = document.createElement('div');
       row.style.display = 'flex';
       row.style.alignItems = 'center';
@@ -525,11 +519,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // A handle-only row puts the handle in the name slot — as the link
       // itself, so the profile stays one click away and the handle is not
       // printed twice (the meta line below then carries only the date).
-      // EXCEPT while the row is pending: an unaudited row's handle is shown
-      // as plain text (spec item 5), because the claim to that handle is
-      // exactly as unverified as the score is.
+      // Linked for pending and verified rows alike — see DisplayRankingEntry.
       const nameIsHandle = entry.name === '' && entry.xHandle !== null;
-      if (nameIsHandle && !isPending) {
+      if (nameIsHandle) {
         rankLine.appendChild(createHandleLink(entry.xHandle!));
       } else {
         const nameSpan = document.createElement('span');
@@ -552,32 +544,21 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       metaLine.appendChild(dateSpan);
 
       if (entry.xHandle && !nameIsHandle) {
-        if (isPending) {
-          // Plain text, same reason as the name slot above — no link out of
-          // an unaudited row.
-          const handleText = document.createElement('span');
-          handleText.style.fontSize = '1.15em';
-          handleText.textContent = `@${entry.xHandle}`;
-          metaLine.appendChild(handleText);
-        } else {
-          const handleLink = createHandleLink(entry.xHandle);
-          handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
-          metaLine.appendChild(handleLink);
-        }
+        const handleLink = createHandleLink(entry.xHandle);
+        handleLink.style.fontSize = '1.15em'; // back up to the rank line's size, against metaLine's 0.7em
+        metaLine.appendChild(handleLink);
       }
       left.appendChild(metaLine);
       row.appendChild(left);
 
-      // Right-hand side: the VERIFYING badge (pending rows only) sits beside
-      // the REPLAY button rather than replacing it — a fresh pending row IS
-      // replayable now (spec item 7), so `replayAvailable` alone decides the
-      // button, exactly as it does for a verified row.
+      // Right-hand side: the REPLAY button. A fresh pending row IS replayable
+      // (spec item 7), so `replayAvailable` alone decides the button, exactly
+      // as it does for a verified row.
       const right = document.createElement('div');
       right.style.display = 'flex';
       right.style.alignItems = 'center';
       right.style.gap = '6px';
       right.style.flex = '0 0 auto';
-      if (isPending) right.appendChild(createVerifyingBadge());
 
       const replayButton = styledButton('REPLAY');
       replayButton.disabled = !entry.replayAvailable;
@@ -659,12 +640,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     hideList();
-    // An unaudited replay is labelled for its ENTIRE playback (spec item 7),
-    // not just announced once: a viewer who joins mid-replay (or looks away
-    // and back) must still be able to tell that what they are watching has
-    // not been verified yet. An older server that omits `status` is treated
-    // as 'verified' — no notice — rather than guessed at.
-    mountReplayControls(payload.status === 'pending' ? 'pending' : 'verified');
+    // A pending row's replay plays exactly like a verified one's — the
+    // payload's `status` is not rendered (decision of 2026-08-22).
+    mountReplayControls();
     options.onReplayStart(engine);
   }
 
@@ -1074,72 +1052,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   replayStageLabel.style.color = HUD_ACCENT_COLOR;
   replayStageLabel.style.textShadow = `0 0 8px ${HUD_ACCENT_COLOR}`;
   // Never broken mid-sentence (user feedback, 2026-08-22: the line wrapped
-  // into a ragged 2-3 lines once VERIFYING was spliced into it). The
-  // VERIFYING notice now lives in a badge BESIDE this text — see
-  // replayStatusRow below — so the text itself is back to its shortest
-  // wording, and what little overflow can still happen on a very narrow
-  // canvas is absorbed by the row wrapping the badge onto its own line.
+  // into a ragged 2-3 lines at phone widths). The longest wording is short
+  // enough for every supported width; wrapping is not a normal case.
   replayStageLabel.style.whiteSpace = 'nowrap';
   replayStageLabel.style.textAlign = 'center';
 
-  // The status line: [VERIFYING badge, pending replays only] [stage text].
-  // The badge is created on demand and removed again on exit (never a
-  // permanently mounted, merely hidden element): the ranking list's own
-  // tests count VERIFYING badges on the page, and a hidden stowaway would be
-  // counted too.
-  const replayStatusRow = document.createElement('div');
-  replayStatusRow.id = 'replay-status-row';
-  replayStatusRow.style.display = 'flex';
-  replayStatusRow.style.flexWrap = 'wrap';
-  replayStatusRow.style.justifyContent = 'center';
-  replayStatusRow.style.alignItems = 'center';
-  replayStatusRow.style.gap = '8px';
-  replayStatusRow.style.maxWidth = '100%';
-  replayStatusRow.appendChild(replayStageLabel);
-  let replayStatusBadge: HTMLSpanElement | null = null;
-  function setReplayStatusBadge(visible: boolean): void {
-    if (visible && !replayStatusBadge) {
-      replayStatusBadge = createVerifyingBadge();
-      replayStatusBadge.id = 'replay-status-verifying';
-      // The list badge inherits the ranking panel's HUD font; out here on the
-      // control bar nothing sets one, so pin it — same face and size as the
-      // board label at the top of the field, so the two notices match.
-      replayStatusBadge.style.font = HUD_FONT;
-      replayStatusBadge.style.fontSize = '0.7em';
-      replayStatusRow.insertBefore(replayStatusBadge, replayStageLabel);
-    } else if (!visible && replayStatusBadge) {
-      replayStatusBadge.remove();
-      replayStatusBadge = null;
-    }
-  }
-
-  // The board-level half of the VERIFYING notice (spec item 7 asks for both
-  // "ステータス行と盤面上のラベル"): a standalone label pinned to the top of
-  // the field, visible for the whole playback of a pending row's replay and
-  // absent entirely for a verified one. Mounted on `anchor` (canvas-wrap)
-  // rather than inside the control bar at the bottom, so it sits where the
-  // eye already is — on the field.
-  const replayVerifyingLabel = document.createElement('div');
-  replayVerifyingLabel.id = 'replay-verifying-label';
-  replayVerifyingLabel.textContent = 'VERIFYING — NOT YET AUDITED';
-  replayVerifyingLabel.style.position = 'absolute';
-  replayVerifyingLabel.style.top = '8px';
-  replayVerifyingLabel.style.left = '50%';
-  replayVerifyingLabel.style.transform = 'translateX(-50%)';
-  replayVerifyingLabel.style.font = HUD_FONT;
-  replayVerifyingLabel.style.fontSize = '0.7em';
-  replayVerifyingLabel.style.color = HUD_ACCENT_COLOR;
-  replayVerifyingLabel.style.background = 'rgba(10, 14, 39, 0.7)';
-  replayVerifyingLabel.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-  replayVerifyingLabel.style.borderRadius = '4px';
-  replayVerifyingLabel.style.padding = '4px 8px';
-  replayVerifyingLabel.style.maxWidth = 'calc(100% - 16px)';
-  replayVerifyingLabel.style.textAlign = 'center';
-  replayVerifyingLabel.style.pointerEvents = 'none';
-  replayVerifyingLabel.style.userSelect = 'none';
-  replayVerifyingLabel.style.zIndex = '20';
-  replayVerifyingLabel.style.display = 'none';
-  anchor.appendChild(replayVerifyingLabel);
 
   const replayButtonRow = document.createElement('div');
   replayButtonRow.style.display = 'flex';
@@ -1149,7 +1066,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const exitReplayButton = styledButton('EXIT');
   replayButtonRow.appendChild(skipToFinalButton);
   replayButtonRow.appendChild(exitReplayButton);
-  replayControls.appendChild(replayStatusRow);
+  replayControls.appendChild(replayStageLabel);
   replayControls.appendChild(replayButtonRow);
   anchor.appendChild(replayControls);
 
@@ -1166,9 +1083,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function replayStageText(engine: ReplayEngine): string {
     const finalStage = engine.getResult().stage;
     const currentStage = Math.min(engine.getSession().getStage(), finalStage);
-    // The status line's VERIFYING half is the badge beside this text (see
-    // setReplayStatusBadge()), not part of the wording — so every line this
-    // function produces stays short enough for one row.
     const counter = `STAGE ${currentStage} / ${finalStage}`;
     // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
     // recorded input simply runs out mid-play (a truncated or
@@ -1215,9 +1129,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
-  function mountReplayControls(status: 'pending' | 'verified'): void {
-    replayVerifyingLabel.style.display = status === 'pending' ? 'block' : 'none';
-    setReplayStatusBadge(status === 'pending');
+  function mountReplayControls(): void {
     lastReplayStageText = null;
     replayStageLabel.textContent = 'REPLAY';
     // Starts hidden and is revealed by the first frame's sync if this replay
@@ -1230,8 +1142,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   exitReplayButton.addEventListener('click', () => {
     replayControls.style.display = 'none';
-    replayVerifyingLabel.style.display = 'none';
-    setReplayStatusBadge(false);
     // Cleared BEFORE aborting, so the skip's own .finally() sees that its
     // engine is no longer current and doesn't resume playback on a discarded
     // one — and so a leftover SKIPPING... label can't survive into the next
