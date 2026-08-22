@@ -83,8 +83,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     return jsonResponse({ error: 'replay not available for this season/ruleset/format', replayAvailable: false }, 410);
   }
 
-  // Judgement 4: servable. `status` travels with the payload so the viewer
-  // can label an unaudited run for its whole playback (spec item 7).
+  // Judgement 4: servable. `status` travels with the payload for operations
+  // and debugging (spec item 7 as amended 2026-08-22 — the viewer plays a
+  // pending run exactly like a verified one and does not render it).
   const payload: ReplayPayload = {
     seed: row.seed,
     rleBase64: bytesToBase64(new Uint8Array(row.inputs)),

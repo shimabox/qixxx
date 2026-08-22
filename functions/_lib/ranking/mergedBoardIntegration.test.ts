@@ -190,7 +190,7 @@ describe('merged display board + submission independence (real local D1)', () =>
     expect(entries.map((e) => e.id)).not.toContain(id);
   });
 
-  it('verified-ing a pending row keeps its position and only drops the badge (nothing else changed)', async () => {
+  it('verified-ing a pending row keeps its position and flips only its status (nothing else changed)', async () => {
     await seedVerifiedTen(testDb.db);
     const { body } = await post(testDb.db, { seed: 94_001, score: 995, ip: '198.51.100.11' });
     const id = body.id as string;

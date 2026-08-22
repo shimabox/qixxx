@@ -202,7 +202,7 @@ describe('GET /api/ranking/:id/replay', () => {
         expect([...base64ToBytes(body.rleBase64 as string)]).toEqual([...INPUT_BYTES]);
       });
 
-      it('reports status:"verified" for a verified row, so the viewer shows no VERIFYING notice', async () => {
+      it('reports status:"verified" for a verified row (served for operations; the viewer does not render it)', async () => {
         const { body } = await callHandler(currentRow({ status: 'verified' }));
         expect(body.status).toBe('verified');
       });
