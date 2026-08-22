@@ -8,10 +8,14 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.functions.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.functions.json && tsc --noEmit -p tsconfig.scripts.json",
     "test": "vitest run",
     "e2e": "playwright test",
-    "pages:dev": "wrangler pages dev dist"
+    "pages:dev": "wrangler pages dev dist",
+    "ranking:local:show": "wrangler d1 execute qixxx-scores --local --command \"SELECT rank_seq, score, stage, name, status, datetime(created_at/1000,'unixepoch') AS created FROM scores ORDER BY score DESC\"",
+    "ranking:local:clear-pending": "wrangler d1 execute qixxx-scores --local --command \"DELETE FROM scores WHERE status='pending'\"",
+    "ranking:local:reset": "wrangler d1 execute qixxx-scores --local --command \"DELETE FROM scores\"",
+    "ranking:local:audit": "RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) npx vite-node scripts/audit/cli.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
