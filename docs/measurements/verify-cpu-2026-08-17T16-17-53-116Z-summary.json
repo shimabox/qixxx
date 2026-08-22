@@ -1,0 +1,17 @@
+{
+  "generatedAt": "2026-08-17T16:23:32.580Z",
+  "node": "v20.19.5",
+  "measures": "verifyReplay-equivalent resimulation, in-process, single-threaded, serial",
+  "warmupCount": 10,
+  "measuredCount": 100,
+  "p99Ms": {
+    "A": 41.51,
+    "Bsuccess": 1563.73,
+    "Brejected": 2311.17,
+    "Realistic": 96.41
+  },
+  "combinedP99Ms": 2352.68,
+  "thresholdMs": 1000,
+  "verdict": "FAIL",
+  "suggestedCpuMsLimit": 5000
+}
