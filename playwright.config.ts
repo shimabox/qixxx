@@ -12,6 +12,16 @@ export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   fullyParallel: true,
+  // Serialized (not left at the CPU-count-based default, which measured 4 on
+  // an 8-core dev machine) because several specs drive real, wall-clock-timed
+  // gameplay against budgets that CPU contention can blow:
+  // tests/e2e/gameover-share.spec.ts polls an 8s post-miss window,
+  // tests/e2e/smoke.spec.ts a 10s claim window. Parallel workers can consume
+  // those budgets through CPU contention even when assertions remain correct.
+  // A single worker removes that contention, which
+  // is worth roughly a minute of extra wall-clock on a suite this small:
+  // an E2E gate is only useful if green means green.
+  workers: 1,
   retries: 0,
   reporter: [['list']],
   // No `use.baseURL`: tests/e2e/smoke.spec.ts navigates with the full
