@@ -13,6 +13,6 @@
     "rootDir": ".",
     "allowJs": false
   },
-  "include": ["functions/**/*.ts", "src/config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["functions/**/*.ts", "src/config.ts", "src/core/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/core/**/*.test.ts"]
 }
