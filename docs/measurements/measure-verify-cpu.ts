@@ -23,8 +23,8 @@
 //      overhead, local SQLite access and GC. That noise is exactly what made
 //      the earlier local numbers unreliable, and none of it is the CPU time
 //      Cloudflare meters.
-// A real POST cannot stand in either: the rate limiter allows 10 requests per
-// IP per hour, and the max-enemy-load fixtures can only be built through the
+// A real POST cannot stand in either: the D1 rate limiter allows 30 requests
+// per IP per hour, and the max-enemy-load fixtures can only be built through the
 // bench gameFactory, which production intentionally cannot reach.
 //
 // So: this is a clean, reproducible measurement of the dominant cost, not an

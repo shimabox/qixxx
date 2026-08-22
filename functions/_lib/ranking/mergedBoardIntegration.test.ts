@@ -41,9 +41,6 @@ function rleBase64For(seed: number): string {
 
 function makeEnv(db: D1Database) {
   return {
-    // Always-allowing KV stub: the non-atomic KV rate limiter is a separate
-    // layer with its own tests, and it must not decide the outcome here.
-    SHARES: { get: async () => null, put: async () => undefined },
     DB: db,
     RANKING_IP_HASH_KEY: IP_HASH_KEY,
   };
@@ -124,6 +121,7 @@ describe('merged display board + submission independence (real local D1)', () =>
 
   beforeEach(async () => {
     await testDb.db.prepare(`DELETE FROM scores`).run();
+    await testDb.db.prepare(`DELETE FROM ranking_rate_limits`).run();
   });
 
   it('anti-griefing: a score above the verified 10th place is ACCEPTED even though 3 fake pending rows own the top display slots', async () => {

@@ -32,9 +32,9 @@
 //     not CPU time Cloudflare meters and which wrecked an earlier attempt;
 //   - it is reproducible with no server, no ports and no account.
 //
-// D1 and KV are in-memory mocks. Their real cost is I/O, not CPU, and mocking
-// them keeps the run deterministic; the SQL is still prepared and bound
-// exactly as in production. So the number excludes database/KV I/O entirely —
+// D1 is mocked in memory. Its real cost is I/O, not CPU, and mocking it keeps
+// the run deterministic; SQL is still prepared and bound exactly as in
+// production. So the number excludes database I/O entirely —
 // good for a stable local baseline, but another reason it is not the real
 // per-request cost and must not be used to fix `cpu_ms`.
 //
@@ -303,25 +303,24 @@ function bytesToBase64(bytes: Uint8Array): string {
   return Buffer.from(binary, 'binary').toString('base64');
 }
 
-/** In-memory D1/KV stubs: the handler's SQL is still prepared and bound, only the I/O is elided. */
+/** In-memory D1 stub: the handler's SQL is still prepared and bound, only the I/O is elided. */
 function makeEnv(gameFactory?: NonNullable<SessionOptions['gameFactory']>) {
-  const kv = new Map<string, string>();
   return {
-    SHARES: {
-      get: async (k: string) => kv.get(k) ?? null,
-      // Rate limiting is bypassed by simply never recording a hit: the
-      // harness is a single client issuing hundreds of requests, which the
-      // production limiter (10/IP/hour) would otherwise reject.
-      put: async () => undefined,
-    },
     DB: {
-      prepare: (_sql: string) => ({ bind: (...args: unknown[]) => ({ args }) }),
+      prepare: (_sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          args,
+          first: async () => ({ threshold: -1 }),
+          run: async () => ({ meta: { changes: 1 } }),
+        }),
+      }),
       batch: async (statements: { args: unknown[] }[]) => [
         {},
         {},
         { results: [{ id: statements[0].args[0] }] },
       ],
     },
+    RANKING_IP_HASH_KEY: 'legacy-paid-cpu-harness-hmac-key',
     ...(gameFactory ? { BENCH_HOOKS: 'enabled', BENCH_GAME_FACTORY: gameFactory } : {}),
   };
 }
@@ -503,7 +502,7 @@ async function main(): Promise<void> {
     const summary = {
       generatedAt: new Date().toISOString(),
       node: process.version,
-      measures: 'POST /api/scores onRequestPost() end to end, in-process, single-threaded, serial (D1/KV stubbed)',
+      measures: 'POST /api/scores onRequestPost() end to end, in-process, single-threaded, serial (D1 stubbed, including the 30/IP/hour rate-limit SQL)',
       warmupCount: WARMUP,
       measuredCount: MEASURED,
       fixtureAcceptance: {

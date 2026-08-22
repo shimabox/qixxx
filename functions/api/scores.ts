@@ -283,8 +283,7 @@ export function isUniqueConstraintViolation(err: unknown): boolean {
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
 
-  // 1. Pre-storage checks (cheapest-first, so an abusive/malformed request
-  // never reaches D1 at all).
+  // 1. Cheap request checks run before rate-limit storage is consumed.
   const origin = request.headers.get('Origin');
   const selfOrigin = new URL(request.url).origin;
   if (origin === null || origin !== selfOrigin) {
@@ -302,7 +301,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   // ip_hash key check (docs/plans/2026-08-19-ranking-free-async spec item 7):
-  // fail closed at the entrypoint, before any D1/KV operation — Pages
+  // fail closed at the entrypoint, before any D1 operation — Pages
   // Functions has no build-time-guaranteed "secret is bound" phase to hook
   // this into instead. No raw-IP fallback exists; a missing key is always a
   // hard failure, never a degraded-but-working path.
@@ -318,13 +317,16 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-  // Non-atomic KV read-then-write (functions/_lib/ranking/rateLimit.ts's own
-  // module comment documents this — an abuse deterrent, not the integrity
-  // boundary; the pending-cap INSERT below is what actually holds the line
-  // atomically).
-  const allowed = await consumeRankingRateLimit(env.SHARES, ip);
-  if (!allowed) {
-    return jsonResponse({ error: 'rate limit exceeded' }, 429);
+  const ipHash = await computeIpHash(ip, ipHashKey);
+  let rateLimit;
+  try {
+    rateLimit = await consumeRankingRateLimit(env.DB, ipHash);
+  } catch {
+    console.error('POST /api/scores: D1 rate limit failed');
+    return jsonResponse({ error: 'internal error', accepted: false }, 500);
+  }
+  if (!rateLimit.allowed) {
+    return jsonResponse({ error: 'rate limit exceeded' }, 429, { 'Retry-After': String(rateLimit.retryAfterSeconds) });
   }
 
   // Streaming, byte-counted read — see readBodyWithLimit()'s doc comment for
@@ -461,7 +463,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
   const id = generateShareId();
   const createdAt = Date.now();
-  const ipHash = await computeIpHash(ip, ipHashKey);
   const submitterHash = tokenParse.kind === 'valid' ? await computeSubmitterHash(tokenParse.token) : null;
   // The shared 24h boundary (the spec's 24時間境界の統一定義): rows with
   // `created_at > cutoff` are fresh and therefore counted; `<= cutoff` are

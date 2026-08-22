@@ -21,6 +21,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const AUDIT_DIR = path.join(REPO_ROOT, 'scripts/audit');
 const CLI_PATH = path.join(AUDIT_DIR, 'cli.ts');
 const CLI_SOURCE = fs.readFileSync(CLI_PATH, 'utf8');
+const AUDIT_COMMAND_SOURCE = fs.readFileSync(path.join(AUDIT_DIR, 'auditCommand.ts'), 'utf8');
 
 /** Static import specifiers (both `import x from '...'` and bare `import '...'`) of a module's source. */
 function staticImportSpecifiers(source: string): string[] {
@@ -80,6 +81,18 @@ describe('scripts/audit/cli.ts (the entrypoint as a process)', () => {
     it('the one statically-imported module is itself dependency-free (nothing of ITS import graph can throw first)', () => {
       const logSafetySource = fs.readFileSync(path.join(AUDIT_DIR, 'logSafety.ts'), 'utf8');
       expect(staticImportSpecifiers(logSafetySource)).toEqual([]);
+    });
+
+    it('runs housekeeping before score audit and exposes only aggregate success or a fixed failure message', () => {
+      const housekeepingCall = AUDIT_COMMAND_SOURCE.indexOf('await deleteExpiredRankingRateLimits(db)');
+      const auditCall = AUDIT_COMMAND_SOURCE.indexOf('await runAudit({');
+      expect(housekeepingCall).toBeGreaterThan(-1);
+      expect(auditCall).toBeGreaterThan(housekeepingCall);
+      const housekeepingBlock = AUDIT_COMMAND_SOURCE.slice(housekeepingCall, auditCall);
+      expect(housekeepingBlock).toContain('rate-limit housekeeping deleted=${deletedCount}');
+      expect(housekeepingBlock).toContain("console.error('[audit] rate-limit housekeeping failed')");
+      expect(housekeepingBlock).toContain('} catch {');
+      expect(housekeepingBlock).not.toMatch(/catch\s*\(/);
     });
   });
 

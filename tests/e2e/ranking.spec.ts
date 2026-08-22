@@ -1019,6 +1019,35 @@ test.describe('name-input submission flow', () => {
     expect(pending.map((row) => row.id)).toEqual(expect.arrayContaining(['other-a', 'other-b'])); // the other browsers' rows untouched
   });
 
+  test('a rate-limit 429 without accepted uses distinct copy and leaves SUBMIT retryable', async ({ page }) => {
+    test.setTimeout(120_000);
+    let posted = false;
+    await mockRanking(page, []);
+    await page.route('**/api/scores', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      posted = true;
+      await route.fulfill({
+        status: 429,
+        contentType: 'application/json',
+        headers: { 'Retry-After': '1800' },
+        body: JSON.stringify({ error: 'rate limit exceeded' }),
+      });
+    });
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+    await page.getByPlaceholder('NAME').fill('RATE-LIMITED');
+    const submitButton = page.getByRole('button', { name: 'SUBMIT' });
+    await submitButton.click();
+
+    expect(posted).toBe(true);
+    await expect(page.getByText('TOO MANY SUBMISSIONS THIS HOUR — WAIT FOR THE RATE LIMIT TO RESET, THEN SUBMIT AGAIN.')).toBeVisible();
+    await expect(submitButton).toBeVisible();
+    await expect(submitButton).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'SKIP' })).toBeVisible();
+  });
+
   // The private-browsing / storage-blocked path (spec item 1's fallback):
   // submitting must keep working exactly as it always did, just without the
   // self-replacement upgrade. A build that threw — or that sent a

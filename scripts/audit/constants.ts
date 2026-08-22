@@ -29,6 +29,9 @@ export const AUDIT_MAX_ATTEMPTS = 3;
 export const AUDIT_CRON_INTERVAL_MINUTES = 5;
 export const AUDIT_RETRY_DELAY_SECONDS = AUDIT_CRON_INTERVAL_MINUTES * 60;
 
+/** Rate-limit rows untouched for longer than this are eligible for cleanup. */
+export const RANKING_RATE_LIMIT_RETENTION_SECONDS = 24 * 60 * 60;
+
 // Sanity self-check (spec item 8's "リース10分 > 最大実行時間5分" design
 // invariant): the lock lease must outlast the longest a single run is
 // expected to take, or a still-running job could lose its own lease

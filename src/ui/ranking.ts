@@ -923,12 +923,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         // A 429 means one of two temporary queues is full: the verification
         // backlog (the server answers `accepted:false` for that one) or the
         // per-IP submission rate limit (which answers with an error and no
-        // `accepted` field at all). Both clear on their own within minutes,
-        // and the wording says so rather than implying the run is gone.
+        // `accepted` field at all). The backlog may clear quickly, while the
+        // fixed rate-limit window can take up to an hour to reset.
         submitStatus.textContent =
           data.accepted === false
             ? 'VERIFICATION QUEUE IS FULL RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.'
-            : 'TOO MANY SUBMISSIONS RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.';
+            : 'TOO MANY SUBMISSIONS THIS HOUR — WAIT FOR THE RATE LIMIT TO RESET, THEN SUBMIT AGAIN.';
       } else {
         submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
       }

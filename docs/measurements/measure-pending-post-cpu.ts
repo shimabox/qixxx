@@ -11,8 +11,8 @@
 // is: JSON parsing, score/stage/seed validation, an RLE DECODE-ONLY pass
 // (functions/_lib/ranking/rleDuration.ts) for duration_ticks, and the
 // existing replay_hash computation (functions/_lib/ranking/hash.ts — decode
-// + canonical re-encode + SHA-256, unchanged from the Paid version). D1/KV
-// are in-memory mocks, exactly like measure-post-cpu.ts's own — this is a
+// + canonical re-encode + SHA-256, unchanged from the Paid version). D1 is
+// an in-memory mock — this is a
 // LOCAL reference figure, not a Cloudflare CPU-time measurement (see this
 // feature's request.md/plan.md for why the two are deliberately kept
 // separate; Free 10ms viability was already settled by task 1's real
@@ -86,15 +86,10 @@ function bytesToBase64(bytes: Uint8Array): string {
   return Buffer.from(binary, 'binary').toString('base64');
 }
 
-/** In-memory D1/KV stubs (mirrors measure-post-cpu.ts's own): the handler's SQL is still prepared and bound, only the I/O is elided. Threshold is fixed at -1 (COALESCE default) so every measured request takes the accept path (never the pre-gate's early-return, whose cost this harness is not trying to isolate). */
+/** In-memory D1 stub: rate-limit UPSERT and score SQL are still prepared and bound, while their I/O is elided. Threshold is fixed at -1 (COALESCE default) so every measured request takes the accept path. */
 function makeEnv() {
-  const kv = new Map<string, string>();
   let idSeq = 0;
   return {
-    SHARES: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async () => undefined, // rate limiting bypassed, same rationale as measure-post-cpu.ts
-    },
     DB: {
       prepare: (sql: string) => ({
         bind: (..._args: unknown[]) => ({
@@ -213,7 +208,7 @@ async function main(): Promise<void> {
       generatedAt: new Date().toISOString(),
       node: process.version,
       measures:
-        'POST /api/scores onRequestPost() end to end, Free-tier async-audit version (no verifyReplay()/resimulation — see functions/_lib/ranking/scoresEndpoint.test.ts\'s spy-based structural test), in-process, single-threaded, serial (D1/KV stubbed)',
+        'POST /api/scores onRequestPost() end to end, Free-tier async-audit version (no verifyReplay()/resimulation — see functions/_lib/ranking/scoresEndpoint.test.ts\'s spy-based structural test), in-process, single-threaded, serial (D1 stubbed, including rate-limit UPSERT)',
       warmupCount: WARMUP,
       measuredCount: MEASURED,
       p99Ms: { Worst: by.Worst.p99Ms, Realistic: by.Realistic.p99Ms },

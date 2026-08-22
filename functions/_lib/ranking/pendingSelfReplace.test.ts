@@ -54,9 +54,6 @@ function rleBase64For(seed: number): string {
 
 function makeEnv(db: D1Database) {
   return {
-    // Always-allowing KV stub: this suite isolates D1-level behavior, not the
-    // separate (already-covered) non-atomic KV rate limiter.
-    SHARES: { get: async () => null, put: async () => undefined },
     DB: db,
     RANKING_IP_HASH_KEY: IP_HASH_KEY,
   };
@@ -157,6 +154,7 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
 
   beforeEach(async () => {
     await testDb.db.prepare(`DELETE FROM scores`).run();
+    await testDb.db.prepare(`DELETE FROM ranking_rate_limits`).run();
   });
 
   /** Seeds one fresh pending row with this suite's defaults. */

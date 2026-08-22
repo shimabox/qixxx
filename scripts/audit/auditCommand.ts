@@ -11,6 +11,7 @@ import { runAudit, type AuditEvent } from './runAudit';
 import { requireIpHashKey, MissingIpHashKeyError } from '../../functions/_lib/ranking/ipHash';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../functions/_lib/ranking/season';
 import { errorDetailEnabled } from './logSafety';
+import { deleteExpiredRankingRateLimits } from './rateLimitHousekeeping';
 
 // EVERYTHING THIS FILE PRINTS IS PUBLIC. The GitHub Actions run log for
 // .github/workflows/ranking-audit.yml is world-readable (public repository),
@@ -46,6 +47,13 @@ export async function runAuditCommand(): Promise<void> {
   const adapter = new LocalPlatformProxyD1Adapter();
   try {
     const db = await adapter.getDb();
+    try {
+      const deletedCount = await deleteExpiredRankingRateLimits(db);
+      console.log(`[audit] rate-limit housekeeping deleted=${deletedCount}`);
+    } catch {
+      console.error('[audit] rate-limit housekeeping failed');
+      process.exitCode = 1;
+    }
     const result = await runAudit({
       db,
       seasonId: CURRENT_SEASON_ID,

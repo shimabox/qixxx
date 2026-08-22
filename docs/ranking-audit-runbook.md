@@ -6,7 +6,7 @@ Paid 版(同期検証)の運用は [`docs/ranking-runbook.md`](./ranking-runbook
 
 関連ファイル:
 
-- 追加スキーマ: [`migrations/0002_ranking_free_async.sql`](../migrations/0002_ranking_free_async.sql)
+- 追加スキーマ: [`migrations/0002_ranking_free_async.sql`](../migrations/0002_ranking_free_async.sql)、[`migrations/0004_ranking_rate_limits.sql`](../migrations/0004_ranking_rate_limits.sql)
 - POST ハンドラ: [`functions/api/scores.ts`](../functions/api/scores.ts)
 - GET ハンドラ: [`functions/api/ranking.ts`](../functions/api/ranking.ts)
 - 監査ロジック: [`scripts/audit/runAudit.ts`](../scripts/audit/runAudit.ts)
@@ -25,7 +25,7 @@ Paid 版との違いは「投稿時に `verifyReplay()` で即座に真偽判定
 POST(このブランチでは呼ばない)と監査ジョブの両方で共有する設計。
 
 ```
-POST /api/scores ─→ 基本検査 + 圏内事前ゲート ─→ D1 に status='pending' で保存 ─→ 即応答
+POST /api/scores ─→ ヘッダー検査 + D1 レート制限 ─→ 基本検査 + 圏内事前ゲート ─→ D1 に status='pending' で保存 ─→ 即応答
                                                           │
                                                           ▼
                                     scripts/audit/runAudit.ts (Node, 手動 or GitHub Actions)
@@ -57,6 +57,12 @@ POST /api/scores ─→ 基本検査 + 圏内事前ゲート ─→ D1 に statu
 verified 10位を上回る正当な投稿は事前ゲートを通過して受理される**
 (妨害防止。`functions/_lib/ranking/mergedBoardIntegration.test.ts` と
 `tests/e2e/ranking.spec.ts` の2本立てで担保)。
+
+`POST /api/scores` は `RANKING_IP_HASH_KEY` による HMAC-SHA-256 だけを D1 に保存し、
+同一 IP ハッシュにつき1時間固定窓で30回まで受け付ける。31回目以降は
+`429 {"error":"rate limit exceeded"}` と固定窓終了までの `Retry-After` を返す。
+レート制限 D1 が失敗した場合は KV へフォールバックせず、投稿を fail-closed の 500 にする。
+`SHARES` KV は X シェアと `/share` 用に残るが、ランキング投稿は読み書きしない。
 
 **24時間境界の統一定義**: `cutoff = now − 24時間` を全処理で共通に使い、
 **新鮮 = `created_at > cutoff`**、**期限切れ = `created_at <= cutoff`** とする
@@ -201,6 +207,7 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 出力例:
 
 ```
+[audit] rate-limit housekeeping deleted=0
 [audit] {"type":"lock-acquired","runStartedAt":1787156043}
 [audit] {"type":"expired-pending-deleted","count":0}
 [audit] {"type":"chunk-fetched","count":1}
@@ -259,6 +266,60 @@ UI 上の見た目も変わらない — §0.1.1)。`GET /api/ranking/:id/replay
 
 新設テーブル `audit_lock(id, owner_token, locked_until)`: 監査ジョブの多重起動防止用ロック。
 `id=1` の1行のみ、初期行はマイグレーション自体が投入する(`owner_token=''`, `locked_until=0`)。
+
+`migrations/0004_ranking_rate_limits.sql` は次のテーブルを追加する。
+
+| 列 | 型 | 意味 |
+| --- | --- | --- |
+| `ip_hash` | `TEXT PRIMARY KEY` | `RANKING_IP_HASH_KEY` による HMAC-SHA-256。生 IP は保存しない |
+| `window_index` | `INTEGER` | `floor(now_ms / 3,600,000)` の固定窓 |
+| `request_count` | `INTEGER` | 現在窓の消費数。1以上 |
+| `updated_at` | `INTEGER` | サーバー時刻の Unix epoch 秒 |
+
+1 IP ハッシュ1行で、次窓の最初の UPSERT が同じ行を `request_count=1` に戻す。
+監査コマンドはスコア監査の前に `updated_at` が24時間より古い行を自動削除し、
+公開ログへ削除件数だけを出す。24時間ちょうどの行と現行窓は削除しない。
+housekeeping が失敗してもスコア監査は続行するが、固定された失敗表示を出して
+コマンドの終了コードを非0にする。成否と件数は `RunAuditResult` に混ぜない。
+
+状態確認と手動 cleanup:
+
+```sh
+# local
+npx wrangler d1 execute qixxx-scores --local --command \
+  "SELECT COUNT(*) AS rows, MIN(updated_at) AS oldest_updated_at FROM ranking_rate_limits"
+npx wrangler d1 execute qixxx-scores --local --command \
+  "DELETE FROM ranking_rate_limits WHERE updated_at < unixepoch() - 86400"
+
+# remote（対象アカウント・DB を確認してから実行）
+npx wrangler d1 execute qixxx-scores --remote --command \
+  "SELECT COUNT(*) AS rows, MIN(updated_at) AS oldest_updated_at FROM ranking_rate_limits"
+npx wrangler d1 execute qixxx-scores --remote --command \
+  "DELETE FROM ranking_rate_limits WHERE updated_at < unixepoch() - 86400"
+```
+
+## 2.1 migration 0004 のデプロイとロールバック
+
+デプロイ順は固定する。
+
+1. 対象 D1 に migration 0004 を適用する。
+2. `ranking_rate_limits` と `idx_ranking_rate_limits_window` の存在を確認する。
+3. 新しい Pages Functions をデプロイする。
+4. 正常投稿、同一 IP ハッシュの30/31回境界、`Retry-After`、ランキング投稿由来の KV write が増えないことを確認する。
+
+テーブルより先にコードを出すと全投稿が fail-closed の500になる。ロールバック時は旧コードへ戻し、
+追加テーブルは即時 DROP しない。旧コードの動作確認後、不要と確定した場合のみ別作業で削除する。
+旧コードへ戻る間、ランキング投稿の制限も KV の1時間10回へ戻ることを運用者へ明示する。
+
+Paid 同期検証へ切り替える際の必須チェック:
+
+1. `verifyReplay()` を投稿内で同期実行する。
+2. 新規行を最初から `verified` で保存する。
+3. 切替前に既存 pending を監査して空にする。
+4. pending の24時間期限、IP 3件、全体200件、自己置換を停止する。
+5. 非同期スコア監査を停止する。
+6. D1 レート制限を同期検証より前に残し、30回/時の変更は本番メトリクスに基づく別判断にする。
+7. 非同期監査停止後も housekeeping だけを残すか、Cloudflare 側レート制限への移行を完了してから D1 housekeeping を止める。
 
 ---
 

@@ -1,5 +1,5 @@
 // POST /api/scores, exercised through the REAL handler
-// (functions/api/scores.ts) with only D1/KV stubbed — docs/plans/2026-08-19-
+// (functions/api/scores.ts) with only D1 stubbed — docs/plans/2026-08-19-
 // ranking-free-async task 9. Free-tier async-audit version: this handler
 // never calls verifyReplay() (see functions/api/scores.ts's own module
 // comment); score/stage are the client's claim, duration_ticks is derived
@@ -13,6 +13,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { onRequestPost, readBodyWithLimit, isUniqueConstraintViolation } from '../../api/scores';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
 import { computeSubmitterHash } from './submitterToken';
+import { computeIpHash } from './ipHash';
 import { PENDING_EXPIRY_MS } from './pendingGate';
 import { encodeRle, type InputSample } from '../../../src/core/rle';
 
@@ -63,20 +64,25 @@ function makeRequest(body: string | ReadableStream<Uint8Array>, headers: Record<
  */
 function makeEnv(opts: {
   runImpl?: (sql: string, args: unknown[]) => Promise<{ meta: { changes: number } }> | { meta: { changes: number } };
+  rateLimitRunImpl?: (sql: string, args: unknown[]) => Promise<{ meta: { changes: number } }> | { meta: { changes: number } };
   thresholdScore?: number;
   ipHashKey?: string;
 }) {
-  const { runImpl, thresholdScore = -1, ipHashKey = IP_HASH_KEY } = opts;
+  const { runImpl, rateLimitRunImpl, thresholdScore = -1, ipHashKey = IP_HASH_KEY } = opts;
   return {
     SHARES: {
-      get: async () => null,
-      put: async () => undefined,
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => undefined),
     },
     DB: {
       prepare: (sql: string) => ({
         bind: (...args: unknown[]) => ({
           first: async () => ({ threshold: thresholdScore }),
           run: async () => {
+            if (/INSERT INTO ranking_rate_limits/.test(sql)) {
+              if (rateLimitRunImpl) return rateLimitRunImpl(sql, args);
+              return { meta: { changes: 1 } };
+            }
             if (!runImpl) return { meta: { changes: 1 } };
             return runImpl(sql, args);
           },
@@ -207,6 +213,105 @@ describe('POST /api/scores ip_hash key gate (fail-closed)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const { response } = await callHandler(makeRequest(validShapedBody()), env);
     expect(response.status).toBe(500);
+  });
+});
+
+describe('POST /api/scores D1 rate limiting', () => {
+  it('lets the first 30 requests reach body parsing and rejects the 31st before parsing', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000);
+    let count = 0;
+    const env = makeEnv({
+      rateLimitRunImpl: () => ({ meta: { changes: ++count <= 30 ? 1 : 0 } }),
+    });
+
+    for (let request = 1; request <= 30; request++) {
+      const { response, body } = await callHandler(makeRequest('{'), env);
+      expect(response.status).toBe(400);
+      expect(body.error).toBe('invalid JSON body');
+    }
+    const { response, body } = await callHandler(makeRequest('{'), env);
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe('1800');
+    expect(body).toEqual({ error: 'rate limit exceeded' });
+  });
+
+  it('returns a retryable 429 without accepted and stops before other ranking SQL', async () => {
+    const nonRateSql: string[] = [];
+    const env = makeEnv({
+      rateLimitRunImpl: () => ({ meta: { changes: 0 } }),
+      runImpl: (sql) => {
+        nonRateSql.push(sql);
+        return { meta: { changes: 1 } };
+      },
+    });
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toMatch(/^\d+$/);
+    expect(body).toEqual({ error: 'rate limit exceeded' });
+    expect(nonRateSql).toEqual([]);
+    expect(env.SHARES.get).not.toHaveBeenCalled();
+    expect(env.SHARES.put).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with a fixed log when the rate-limit UPSERT throws', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = makeEnv({
+      rateLimitRunImpl: () => {
+        throw new Error('sensitive D1 detail');
+      },
+    });
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: 'internal error', accepted: false });
+    expect(consoleError).toHaveBeenCalledWith('POST /api/scores: D1 rate limit failed');
+    expect(JSON.stringify(body)).not.toContain('sensitive');
+  });
+
+  it('does not consume a slot for cheap header rejection, but consumes one before invalid JSON is parsed', async () => {
+    let consumed = 0;
+    const env = makeEnv({
+      rateLimitRunImpl: () => {
+        consumed++;
+        return { meta: { changes: 1 } };
+      },
+    });
+
+    expect((await callHandler(makeRequest('{}', { Origin: 'https://other.example' }), env)).response.status).toBe(403);
+    expect((await callHandler(makeRequest('{}', { 'Content-Type': 'text/plain' }), env)).response.status).toBe(415);
+    expect((await callHandler(makeRequest('{}', { 'Content-Length': String(300 * 1024) }), env)).response.status).toBe(413);
+    expect(consumed).toBe(0);
+
+    expect((await callHandler(makeRequest('{'), env)).response.status).toBe(400);
+    expect(consumed).toBe(1);
+  });
+
+  it('binds one HMAC value to both rate limiting and pending storage, never the raw IP or KV', async () => {
+    const statements: RecordedStatement[] = [];
+    const env = makeEnv({
+      rateLimitRunImpl: (sql, args) => {
+        statements.push({ sql, args });
+        return { meta: { changes: 1 } };
+      },
+      runImpl: (sql, args) => {
+        statements.push({ sql, args });
+        return { meta: { changes: 1 } };
+      },
+    });
+    const ip = '203.0.113.1';
+    const expectedHash = await computeIpHash(ip, IP_HASH_KEY);
+    const ipHashModule = await import('./ipHash');
+    const computeSpy = vi.spyOn(ipHashModule, 'computeIpHash');
+    const { response } = await callHandler(makeRequest(validShapedBody()), env);
+    expect(response.status).toBe(200);
+    expect(computeSpy).toHaveBeenCalledTimes(1);
+
+    const rate = statements.find((statement) => /INSERT INTO ranking_rate_limits/.test(statement.sql));
+    const pending = statements.find((statement) => /INSERT INTO scores/.test(statement.sql));
+    expect(rate?.args[0]).toBe(expectedHash);
+    expect(pending?.args[13]).toBe(expectedHash);
+    expect(statements.flatMap((statement) => statement.args)).not.toContain(ip);
+    expect(env.SHARES.get).not.toHaveBeenCalled();
+    expect(env.SHARES.put).not.toHaveBeenCalled();
   });
 });
 
@@ -457,6 +562,7 @@ function makeRecordingEnv(opts: {
   clockStart?: number;
 }) {
   const prepared: RecordedStatement[] = [];
+  const rateLimits: RecordedStatement[] = [];
   const batches: RecordedStatement[][] = [];
   let now = opts.clockStart ?? 1_800_000_000_000;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -470,6 +576,10 @@ function makeRecordingEnv(opts: {
           args,
           first: async () => ({ threshold: -1 }),
           run: async () => {
+            if (/INSERT INTO ranking_rate_limits/.test(sql)) {
+              rateLimits.push({ sql, args });
+              return { meta: { changes: 1 } };
+            }
             prepared.push({ sql, args });
             if (opts.advanceClockOnFirstInsert) now += opts.advanceClockOnFirstInsert;
             return { meta: { changes: opts.firstInsertChanges } };
@@ -485,7 +595,7 @@ function makeRecordingEnv(opts: {
     },
     RANKING_IP_HASH_KEY: IP_HASH_KEY,
   };
-  return { env, prepared, batches, clock: () => now };
+  return { env, prepared, rateLimits, batches, clock: () => now };
 }
 
 /** The delete/insert halves of a recorded replacement batch, by SQL shape rather than by index, so a reordering would fail loudly instead of silently asserting on the wrong statement. */

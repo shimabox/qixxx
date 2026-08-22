@@ -50,9 +50,6 @@ function makeRequest(body: string, ip: string): Request {
 
 function makeEnv(db: D1Database) {
   return {
-    // Always-allowing KV stub: this suite isolates D1-level atomicity, not
-    // the separate (already-covered-elsewhere), non-atomic KV rate limiter.
-    SHARES: { get: async () => null, put: async () => undefined },
     DB: db,
     RANKING_IP_HASH_KEY: IP_HASH_KEY,
   };
@@ -78,6 +75,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
 
   beforeEach(async () => {
     await testDb.db.prepare(`DELETE FROM scores`).run();
+    await testDb.db.prepare(`DELETE FROM ranking_rate_limits`).run();
   });
 
   it('per-IP cap: firing more concurrent POSTs than the cap from ONE IP lets exactly MAX_PENDING_PER_IP (3) through', async () => {
