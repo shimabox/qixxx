@@ -196,6 +196,12 @@ export class GameSession {
   // see the GameOverReason type doc comment above for the two causes and
   // their precedence. Reset to null by resetToFreshRun().
   private gameOverReason: GameOverReason = null;
+  // GameOver release gate (see update()'s 'gameover' branch): false from the
+  // tick a run dies until a tick with no movement/draw input has been seen,
+  // which is what arms `confirm` to dismiss the GAME OVER screen. Reset at
+  // every gameover entry, never anywhere else — Title/StageClear keep their
+  // instant any-key behavior.
+  private gameoverReleaseSeen = false;
 
   constructor(options: SessionOptions = {}) {
     this.seed = options.seed;
@@ -392,6 +398,7 @@ export class GameSession {
         if (this.getRemainingTicks() <= 0) {
           this.status = 'gameover';
           this.gameOverReason = 'time';
+          this.gameoverReleaseSeen = false;
           this.highScore = this.getHighScore();
         }
         break;
@@ -401,7 +408,24 @@ export class GameSession {
         }
         break;
       case 'gameover':
-        if (input.confirm) {
+        // Release gate (user feedback, 2026-08-22): the player is usually
+        // still steering — holding one arrow while re-pressing another, or
+        // re-tapping a draw key — in the instant the run dies, and each of
+        // those re-presses is a fresh `confirm` edge that used to dismiss
+        // this screen before it was ever seen. `confirm` therefore only
+        // counts once a tick with NO movement/draw input has been observed
+        // since gameover began ("hands off = the screen has been seen").
+        // The gate is updated BEFORE confirm is read, deliberately: a
+        // confirm arriving on an operation-neutral tick (Enter pressed with
+        // everything else released) is exactly the "released, then pressed"
+        // gesture the gate exists to wait for, so it passes immediately —
+        // while a press that itself moves/draws still needs a prior neutral
+        // tick. No time lock: as long as the player keeps steering nothing
+        // dismisses, and the moment they stop nothing makes them wait.
+        if (input.dx === 0 && input.dy === 0 && !input.drawHeld) {
+          this.gameoverReleaseSeen = true;
+        }
+        if (input.confirm && this.gameoverReleaseSeen) {
           this.resetToFreshRun();
           this.status = 'title';
         }
@@ -541,6 +565,7 @@ export class GameSession {
     if (stageStatus === 'gameover') {
       this.status = 'gameover';
       this.gameOverReason = 'life';
+      this.gameoverReleaseSeen = false;
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {
