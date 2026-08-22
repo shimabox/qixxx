@@ -1,0 +1,13 @@
+{
+  "generatedAt": "2026-08-19T16:11:53.346Z",
+  "node": "v20.19.5",
+  "measures": "POST /api/scores onRequestPost() end to end, Free-tier async-audit version (no verifyReplay()/resimulation — see functions/_lib/ranking/scoresEndpoint.test.ts's spy-based structural test), in-process, single-threaded, serial (D1/KV stubbed)",
+  "warmupCount": 10,
+  "measuredCount": 100,
+  "p99Ms": {
+    "Worst": 36.26,
+    "Realistic": 6.24
+  },
+  "thresholdMs": 5,
+  "verdict": "ABOVE 5ms REFERENCE TARGET (reference only)"
+}
