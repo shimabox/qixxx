@@ -1,0 +1,15 @@
+# Local-dev secret values for `wrangler pages dev`. Copy this file to `.dev.vars` (gitignored
+# — never commit a real key) and fill in a value; `wrangler pages dev`
+# auto-loads `.dev.vars` from the repo root. scripts/audit/cli.ts (the
+# Node-side audit runner) is a SEPARATE process and does NOT auto-load this
+# file — export the same variable in your shell before running it, e.g.:
+#
+# export RANKING_IP_HASH_KEY=some-dev-only-value
+# npx vite-node scripts/audit/cli.ts
+#
+# Any non-empty string works for local development — HMAC-SHA-256 (functions/
+# _lib/ranking/ipHash.ts) treats the key as opaque bytes, there is no format
+# requirement. In production this is a Cloudflare Pages secret (`wrangler
+# pages secret put RANKING_IP_HASH_KEY`), set to a real random value and
+# never checked into source control — see docs/ranking-audit-runbook.md.
+RANKING_IP_HASH_KEY=local-dev-only-change-me

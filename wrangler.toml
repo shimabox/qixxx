@@ -20,3 +20,59 @@ pages_build_output_dir = "dist"
 [[kv_namespaces]]
 binding = "SHARES"
 id = "6c911969b6e94e5d90ea71ca6ab529dd"
+
+# D1 binding for the score-ranking feature. `database_id` below is a placeholder, NOT a real
+# Cloudflare resource — `wrangler pages dev` / `wrangler d1 migrations apply`
+# happily create a purely local SQLite-backed D1 under .wrangler/state/ for
+# ANY database_id string, with zero Cloudflare account calls, which is
+# suitable for local development without a Cloudflare account. This must be
+# replaced with the real id `wrangler d1 create qixxx-scores` prints out
+# before any real (non-local) deploy — see docs/ranking-runbook.md's
+# deployment preparation steps.
+[[d1_databases]]
+binding = "DB"
+database_name = "qixxx-scores"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# CPU time ceiling — a denial-of-wallet / runaway brake, not a tuning knob.
+#
+# *** PROVISIONAL VALUE — NOT THE FINAL ONE. ***
+# 4000 is derived from the LOCAL IN-PROCESS WALL-CLOCK BENCHMARK
+# (docs/ranking-cpu-measurement.md §4), which is a reproducible local baseline
+# for the CPU-dominant part of the implementation — NOT a measurement of the
+# CPU time Cloudflare meters. The final value is decided from real CPU time on
+# a Paid preview deployment (§4.9 of that document), and this comment must be
+# rewritten when it is.
+#
+# How 4000 was reached: approximately twice the measured worst-case combination.
+# From §4.4 (single-process, strictly serial,
+# 2026-08-18, exercising the WHOLE onRequestPost path, every request asserted
+# against its series' expected status/accepted/tick count, and fixture A's
+# enemy parameters cross-checked field by field against getStageConfig(10)):
+# p99(A) 330.59ms + max(B-success 1,477.62ms, B-rejected 1,368.02ms)
+# = 1,808.21ms, doubled and rounded up.
+#
+# Why it is only provisional: the benchmark is Node in-process wall-clock, on
+# this hardware, with D1 and KV mocked out entirely (so no database or KV I/O
+# is included at all) — three separate reasons it is not the metered figure.
+# Note also how far it sits above realistic traffic: an ordinary run completes
+# the whole request in 60.40ms p99, ~66x under this ceiling. Deliberately
+# generous rather than tight: the failure mode of "too low" is rejecting real
+# players' runs.
+#
+# Three earlier values are superseded, all recorded in §3 of that document.
+# 2000 predates any full measurement. 6000 came from a local HTTP run in which
+# three copies of the harness ran concurrently and contaminated each other.
+# 5000 came from a core-only run whose fixture A silently died after 715 ticks
+# instead of completing 10800, so its "max enemy load" figure was not that.
+#
+# Free-tier viability is NOT in question here and is not decided by this
+# benchmark: the real Cloudflare measurement already settled it
+# (widespread exceededCpu at the 10ms request cap).
+#
+# This is a Workers Paid-plan setting (max 300000, default 30000 when unset)
+# that only takes effect on Cloudflare's edge under a Paid plan. Locally,
+# `wrangler pages dev`'s Miniflare/workerd does not enforce a request CPU cap
+# at all, so this key has no effect on local dev either way.
+[limits]
+cpu_ms = 4000
