@@ -17,7 +17,21 @@ export class KeyboardInput {
     this.target = target;
     target.addEventListener('keydown', this.onKeyDown);
     target.addEventListener('keyup', this.onKeyUp);
+    target.addEventListener('blur', this.onBlur);
   }
+
+  // A keyup fired while the window is unfocused never reaches us, so a key
+  // physically released during a focus switch (Cmd+Tab mid-hold) would stay
+  // "held" here forever — steering the marker on its own and, worse, keeping
+  // the GameOver release gate (core/session.ts) permanently closed. Losing
+  // focus means no key can still be meaningfully held, so drop them all; a
+  // pending confirm edge is dropped with them rather than firing on whatever
+  // screen is showing when focus returns.
+  private onBlur = (): void => {
+    this.pressed.clear();
+    this.pressOrder = [];
+    this.confirmPending = false;
+  };
 
   private onKeyDown = (event: Event): void => {
     const code = (event as KeyboardEvent).code;
@@ -83,5 +97,6 @@ export class KeyboardInput {
   dispose(): void {
     this.target.removeEventListener('keydown', this.onKeyDown);
     this.target.removeEventListener('keyup', this.onKeyUp);
+    this.target.removeEventListener('blur', this.onBlur);
   }
 }
