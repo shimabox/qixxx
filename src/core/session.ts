@@ -196,12 +196,18 @@ export class GameSession {
   // see the GameOverReason type doc comment above for the two causes and
   // their precedence. Reset to null by resetToFreshRun().
   private gameOverReason: GameOverReason = null;
-  // GameOver release gate (see update()'s 'gameover' branch): false from the
-  // tick a run dies until a tick with no movement/draw input has been seen,
-  // which is what arms `confirm` to dismiss the GAME OVER screen. Reset at
-  // every gameover entry, never anywhere else — Title/StageClear keep their
-  // instant any-key behavior.
+  // GameOver release gate (see update()'s 'gameover' branch): closed while
+  // the player is still steering into/after the death, opened by the first
+  // tick with no movement/draw input — including the dying tick itself, when
+  // the hands were already off — which is what arms `confirm` to dismiss the
+  // GAME OVER screen. Re-seeded at every gameover entry, never anywhere else
+  // — Title/StageClear keep their instant any-key behavior.
   private gameoverReleaseSeen = false;
+
+  /** "Hands off": no movement and no draw key engaged — the condition that arms the GameOver release gate. */
+  private static isOperationNeutral(input: SessionInput): boolean {
+    return input.dx === 0 && input.dy === 0 && !input.drawHeld;
+  }
 
   constructor(options: SessionOptions = {}) {
     this.seed = options.seed;
@@ -398,7 +404,12 @@ export class GameSession {
         if (this.getRemainingTicks() <= 0) {
           this.status = 'gameover';
           this.gameOverReason = 'time';
-          this.gameoverReleaseSeen = false;
+          // Seeded from the dying tick's own input (review P1, 2026-08-22):
+          // a run that ends with the hands already off (TIME UP while idle)
+          // must not make the very first arrow press wait for a second,
+          // "released" tick — PRESS ANY KEY has to mean any key, not just
+          // the operation-neutral ones.
+          this.gameoverReleaseSeen = GameSession.isOperationNeutral(input);
           this.highScore = this.getHighScore();
         }
         break;
@@ -422,7 +433,7 @@ export class GameSession {
         // while a press that itself moves/draws still needs a prior neutral
         // tick. No time lock: as long as the player keeps steering nothing
         // dismisses, and the moment they stop nothing makes them wait.
-        if (input.dx === 0 && input.dy === 0 && !input.drawHeld) {
+        if (GameSession.isOperationNeutral(input)) {
           this.gameoverReleaseSeen = true;
         }
         if (input.confirm && this.gameoverReleaseSeen) {
@@ -565,7 +576,8 @@ export class GameSession {
     if (stageStatus === 'gameover') {
       this.status = 'gameover';
       this.gameOverReason = 'life';
-      this.gameoverReleaseSeen = false;
+      // Same seeding as the TIME UP path — see update()'s comment there.
+      this.gameoverReleaseSeen = GameSession.isOperationNeutral(input);
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {

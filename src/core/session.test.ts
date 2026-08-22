@@ -524,6 +524,42 @@ describe('GameSession — GameOver release gate (user feedback, 2026-08-22)', ()
     expect(session.getStatus()).toBe('title');
   });
 
+  it('returns to Title on the very first arrow press when the run ended with the hands already off (TIME UP while idle)', () => {
+    const session = new GameSession({ gameFactory: missGame, timeLimitTicks: 3 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    let guard = 0;
+    while (session.getStatus() === 'playing' && guard++ < 10) {
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false }); // idle until time runs out
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('time');
+
+    // PRESS ANY KEY: an arrow must work as the first press, exactly like Enter would.
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('title');
+  });
+
+  it('returns to Title on the very first arrow press when the final life was lost with the hands already off', () => {
+    // Step one cell onto the field and stop mid-line: the Igniter spawns on a
+    // stationary marker and burns the line down, so every miss — including
+    // the last one — lands on an idle tick.
+    const session = new GameSession({ gameFactory: missGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    let guard = 0;
+    while (session.getStatus() === 'playing' && guard++ < 20_000) {
+      const livesBefore = session.getLives();
+      session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+      while (session.getStatus() === 'playing' && session.getLives() === livesBefore && guard++ < 20_000) {
+        session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+      }
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('life');
+
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('title');
+  });
+
   it('closes the gate again on every new gameover', () => {
     const session = freshGameOver();
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Title
