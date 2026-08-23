@@ -35,6 +35,7 @@ export class KeyboardInput {
 
   private onKeyDown = (event: Event): void => {
     const code = (event as KeyboardEvent).code;
+    if (code === 'Tab') return;
     if (!this.pressed.has(code)) {
       this.pressed.add(code);
       this.pressOrder.push(code);
