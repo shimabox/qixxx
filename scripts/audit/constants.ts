@@ -13,6 +13,9 @@ export const AUDIT_CHUNK_SIZE = 50;
 /** Soft five-minute wall-clock budget for one audit run, checked between chunks rather than preemptively mid-chunk. */
 export const AUDIT_MAX_RUNTIME_MS = 5 * 60 * 1000;
 
+/** Maximum time allowed for one remote D1 request, including response body consumption. */
+export const REMOTE_D1_REQUEST_TIMEOUT_MS = 30 * 1000;
+
 /** A pending row is deleted after this many unexpected-error attempts rather than retried again. */
 export const AUDIT_MAX_ATTEMPTS = 3;
 
@@ -33,4 +36,13 @@ export const RANKING_RATE_LIMIT_RETENTION_SECONDS = 24 * 60 * 60;
 // mid-chunk under entirely normal conditions.
 if (LOCK_LEASE_SECONDS <= AUDIT_MAX_RUNTIME_MS / 1000) {
   throw new Error('invariant violated: LOCK_LEASE_SECONDS must exceed AUDIT_MAX_RUNTIME_MS');
+}
+
+// A stalled request must consume only a small fraction of both the run
+// budget and the lock lease, leaving time for orderly failure handling.
+if (REMOTE_D1_REQUEST_TIMEOUT_MS * 10 > AUDIT_MAX_RUNTIME_MS) {
+  throw new Error('invariant violated: REMOTE_D1_REQUEST_TIMEOUT_MS must be much shorter than AUDIT_MAX_RUNTIME_MS');
+}
+if (REMOTE_D1_REQUEST_TIMEOUT_MS * 10 > LOCK_LEASE_SECONDS * 1000) {
+  throw new Error('invariant violated: REMOTE_D1_REQUEST_TIMEOUT_MS must be much shorter than LOCK_LEASE_SECONDS');
 }
