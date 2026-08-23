@@ -1232,16 +1232,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     button.id = 'ranking-button';
     button.type = 'button';
     button.textContent = 'RANKING';
-    // Deliberately mounted into `anchor` (canvas-wrap), absolutely
-    // positioned, rather than as a flex child of the HUD row like MUTE/the
-    // credit link: the HUD row's available single-line width is a tightly
-    // -budgeted, test-guarded calculation (main.ts's
-    // measureNonHudRowWidth()/wouldSingleLineFit(), exercised by
-    // tests/e2e/narrow-title-hud.spec.ts and tests/e2e/smoke.spec.ts, both
-    // pre-existing and off-limits to edit) — adding another persistent HUD
-    // -row sibling shifts that budget and clips text at viewports those
-    // tests pin down exactly. Sitting in the canvas's own top-right corner
-    // instead never touches that layout at all.
+    // Mounted into `anchor` (canvas-wrap) and absolutely positioned to
+    // preserve the HUD row's single-line width budget, which main.ts
+    // calculates in measureNonHudRowWidth()/wouldSingleLineFit(). Adding a
+    // persistent HUD-row sibling reduces the available width and can clip
+    // text in narrow viewports. The canvas's top-right corner does not
+    // participate in that layout.
     button.style.position = 'absolute';
     button.style.top = '8px';
     button.style.right = '8px';
