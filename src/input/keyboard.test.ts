@@ -14,6 +14,16 @@ function key(
   return event;
 }
 
+class ElementTarget extends EventTarget {
+  constructor(private readonly selector: string) {
+    super();
+  }
+
+  closest(selector: string): ElementTarget | null {
+    return selector.split(',').some((part) => part.trim() === this.selector) ? this : null;
+  }
+}
+
 describe('KeyboardInput — confirm keys', () => {
   it('leaves Tab and Shift+Tab to browser focus navigation without confirming', () => {
     const target = new EventTarget();
@@ -36,6 +46,31 @@ describe('KeyboardInput — confirm keys', () => {
 
     key(target, 'keydown', 'KeyA');
     expect(input.getInput().confirm).toBe(true);
+    input.dispose();
+  });
+
+  it.each(['button', 'a[href]', 'input'])('ignores keydown from a %s control', (selector) => {
+    const target = new ElementTarget(selector);
+    const input = new KeyboardInput(target);
+
+    const event = key(target, 'keydown', 'ArrowRight');
+    const state = input.getInput();
+
+    expect(state.confirm).toBe(false);
+    expect(state.dx).toBe(0);
+    expect(event.defaultPrevented).toBe(false);
+    input.dispose();
+  });
+
+  it('continues treating keydown from document.body as confirm input', () => {
+    const document = { body: new ElementTarget('body') };
+    const input = new KeyboardInput(document.body);
+
+    key(document.body, 'keydown', 'ArrowRight');
+    const state = input.getInput();
+
+    expect(state.confirm).toBe(true);
+    expect(state.dx).toBe(1);
     input.dispose();
   });
 });
