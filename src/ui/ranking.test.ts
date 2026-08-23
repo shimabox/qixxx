@@ -11,9 +11,36 @@ import {
   isSnapshotEligible,
   isReplayPayloadPlayable,
   formatRankingDate,
+  stopKeyPropagation,
   type RankingEntry,
   type RunSubmissionSnapshot,
 } from './ranking';
+
+describe('stopKeyPropagation', () => {
+  for (const type of ['keydown', 'keyup']) {
+    it(`keeps ${type} from reaching document and window listeners`, () => {
+      const control = new EventTarget();
+      const documentTarget = new EventTarget();
+      const windowTarget = new EventTarget();
+      let documentEvents = 0;
+      let windowEvents = 0;
+      documentTarget.addEventListener(type, () => documentEvents++);
+      windowTarget.addEventListener(type, () => windowEvents++);
+      stopKeyPropagation(control as HTMLElement);
+
+      const event = new Event(type, { bubbles: true });
+      control.dispatchEvent(event);
+      if (!event.cancelBubble) {
+        documentTarget.dispatchEvent(event);
+        windowTarget.dispatchEvent(event);
+      }
+
+      expect(event.cancelBubble).toBe(true);
+      expect(documentEvents).toBe(0);
+      expect(windowEvents).toBe(0);
+    });
+  }
+});
 
 function snapshot(overrides: Partial<RunSubmissionSnapshot> = {}): RunSubmissionSnapshot {
   return {

@@ -227,11 +227,10 @@ function bytesToBase64(bytes: Uint8Array): string {
  * Stops keydown/keyup from bubbling past this element to `window` — where
  * KeyboardInput (src/input/keyboard.ts) listens for gameplay input and the
  * GAME OVER/Title/StageClear screens' edge-triggered "any key" confirm.
- * Without this, typing into a text field would both leak keystrokes into
- * the game's move/draw state and (worse) fire that "any key" confirm on
- * every character, instantly dismissing whatever screen the field is on.
+ * Without this, keyboard use of a ranking control would also leak into the
+ * game's move/draw state and fire the "any key" confirm beneath the UI.
  */
-function stopKeyPropagation(el: HTMLElement): void {
+export function stopKeyPropagation(el: HTMLElement): void {
   el.addEventListener('keydown', (e) => e.stopPropagation());
   el.addEventListener('keyup', (e) => e.stopPropagation());
 }
@@ -308,6 +307,7 @@ function resolveDisplayName(entry: { name: string; xHandle: string | null }): st
 /** The x.com profile link for a handle. Caller decides where it goes and at what size. */
 function createHandleLink(xHandle: string): HTMLAnchorElement {
   const link = document.createElement('a');
+  stopKeyPropagation(link);
   link.href = `https://x.com/${encodeURIComponent(xHandle)}`;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
@@ -318,6 +318,7 @@ function createHandleLink(xHandle: string): HTMLAnchorElement {
 
 function styledButton(label: string): HTMLButtonElement {
   const button = document.createElement('button');
+  stopKeyPropagation(button);
   button.type = 'button';
   button.textContent = label;
   button.style.font = HUD_FONT;
@@ -698,6 +699,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleRow.style.fontSize = '0.75em';
   const handleCheckbox = document.createElement('input');
   handleCheckbox.type = 'checkbox';
+  stopKeyPropagation(handleCheckbox);
   const handleLabelText = document.createElement('span');
   handleLabelText.textContent = 'USE X HANDLE INSTEAD';
   handleRow.appendChild(handleCheckbox);
@@ -1226,6 +1228,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function mountTitleButton(): void {
     const button = document.createElement('button');
+    stopKeyPropagation(button);
     button.id = 'ranking-button';
     button.type = 'button';
     button.textContent = 'RANKING';
