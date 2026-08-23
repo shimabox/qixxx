@@ -565,7 +565,7 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
 
 ## 6. 既知の残余リスク
 
-- D1 REST API の数値 bind と BLOB 表現は、migration 後の初回手動疎通で確認する。
+- D1 REST API の BLOB 表現は、migration 後の初回手動疎通で確認する。
 - launchd と Keychain はログイン状態、Keychain lock、ACL の影響を受ける。
 - Free 10ms CPU 適合の最終確定(実測 `cpuTime`)は未了 — デプロイ後の
   Cloudflare preview 環境での実測に委ねる。

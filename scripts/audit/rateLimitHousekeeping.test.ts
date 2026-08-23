@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
+import { AUDIT_D1_BIND_MODES, auditDatabaseWithBindMode, createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
+import type { AuditD1Database } from './d1Adapter';
 import { deleteExpiredRankingRateLimits } from './rateLimitHousekeeping';
 import { RANKING_RATE_LIMIT_RETENTION_SECONDS } from './constants';
 
-describe('rate-limit housekeeping (real local D1)', () => {
+describe.each(AUDIT_D1_BIND_MODES)('rate-limit housekeeping (real local D1, %s binds)', (bindMode) => {
   let testD1: TestD1;
+  let auditDb: AuditD1Database;
 
   beforeAll(async () => {
     testD1 = await createTestD1();
+    auditDb = auditDatabaseWithBindMode(testD1.db, bindMode);
   }, 30_000);
 
   beforeEach(async () => {
@@ -35,7 +38,7 @@ describe('rate-limit housekeeping (real local D1)', () => {
 
     const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(deleteExpiredRankingRateLimits(testD1.db, now)).resolves.toBe(2);
+    await expect(deleteExpiredRankingRateLimits(auditDb, now)).resolves.toBe(2);
     expect(consoleLog).not.toHaveBeenCalled();
     expect(consoleError).not.toHaveBeenCalled();
 
