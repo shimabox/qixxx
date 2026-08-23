@@ -696,9 +696,8 @@ function measureRequiredSingleLineWidth(): number {
 // — it never reads `hudTwoLineMode` or any other previous-decision state, so
 // repeated calls during a continuous resize always converge to the same
 // answer for the same viewport geometry rather than flip-flopping on their
-// own. (Verified live by dragging a browser window's edge across every
-// threshold below — see this change's PR notes for the exact viewports
-// checked.)
+// own. The relevant viewport thresholds are covered by
+// tests/e2e/narrow-title-hud.spec.ts.
 function wouldSingleLineFit(): boolean {
   const prevLine2Display = hudLine2.style.display;
   const prevLine3Display = hudLine3.style.display;
