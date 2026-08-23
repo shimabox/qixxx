@@ -8,13 +8,14 @@ import { createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
 import { runAudit, type AuditEvent } from './runAudit';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
+import type { AuditD1BindValue, AuditD1Database } from './d1Adapter';
 
 const SEASON_ID = 1;
 const RULESET_VERSION = 1;
 const REPLAY_FORMAT_VERSION = 1;
 const HOUR_MS = 60 * 60 * 1000;
 
-function baseOptions(db: D1Database, overrides: Partial<Parameters<typeof runAudit>[0]> = {}) {
+function baseOptions(db: AuditD1Database, overrides: Partial<Parameters<typeof runAudit>[0]> = {}) {
   return {
     db,
     seasonId: SEASON_ID,
@@ -437,13 +438,13 @@ describe('runAudit (real local D1)', () => {
      * ownership check and its execution, which is the only window the write's
      * fencing (and nothing else) is supposed to cover.
      */
-    function wrapDbForTheftBefore(realDb: D1Database, stealBeforeSql: (sql: string) => boolean): { db: D1Database; stolen: () => boolean } {
+    function wrapDbForTheftBefore(realDb: D1Database, stealBeforeSql: (sql: string) => boolean): { db: AuditD1Database; stolen: () => boolean } {
       let stolen = false;
       const wrapped = {
         prepare(sql: string) {
           if (!stealBeforeSql(sql)) return realDb.prepare(sql);
           return {
-            bind(...args: unknown[]) {
+            bind(...args: AuditD1BindValue[]) {
               const bound = realDb.prepare(sql).bind(...args);
               return {
                 ...bound,
@@ -458,11 +459,11 @@ describe('runAudit (real local D1)', () => {
             },
           };
         },
-      } as unknown as D1Database;
+      } as AuditD1Database;
       return { db: wrapped, stolen: () => stolen };
     }
 
-    function wrapDbForLeaseTheft(realDb: D1Database, stealAfterNRowWrites: number): { db: D1Database; rowWriteCount: () => number } {
+    function wrapDbForLeaseTheft(realDb: D1Database, stealAfterNRowWrites: number): { db: AuditD1Database; rowWriteCount: () => number } {
       let rowWriteCount = 0;
       let stolen = false;
       const wrapped = {
@@ -470,7 +471,7 @@ describe('runAudit (real local D1)', () => {
           const isRowWrite = sql.includes('WHERE rank_seq =') && sql.includes('audit_lock');
           if (!isRowWrite) return realDb.prepare(sql);
           return {
-            bind(...args: unknown[]) {
+            bind(...args: AuditD1BindValue[]) {
               const bound = realDb.prepare(sql).bind(...args);
               return {
                 ...bound,
@@ -486,7 +487,7 @@ describe('runAudit (real local D1)', () => {
             },
           };
         },
-      } as unknown as D1Database;
+      } as AuditD1Database;
       return { db: wrapped, rowWriteCount: () => rowWriteCount };
     }
 
@@ -724,19 +725,19 @@ describe('runAudit (real local D1)', () => {
     }
 
     /** Captures the audit lock's owner_token as acquireLock() binds it, so the assertions below can look for the REAL secret, not a stand-in. */
-    function wrapDbCapturingOwnerToken(realDb: D1Database): { db: D1Database; ownerToken: () => string | null } {
+    function wrapDbCapturingOwnerToken(realDb: D1Database): { db: AuditD1Database; ownerToken: () => string | null } {
       let token: string | null = null;
       const wrapped = {
         prepare(sql: string) {
           if (!sql.includes('UPDATE audit_lock') || !sql.includes('SET owner_token = ?1')) return realDb.prepare(sql);
           return {
-            bind(...args: unknown[]) {
+            bind(...args: AuditD1BindValue[]) {
               if (typeof args[0] === 'string' && args[0] !== '') token = args[0];
               return realDb.prepare(sql).bind(...args);
             },
           };
         },
-      } as unknown as D1Database;
+      } as AuditD1Database;
       return { db: wrapped, ownerToken: () => token };
     }
 

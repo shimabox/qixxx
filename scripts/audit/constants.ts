@@ -17,16 +17,12 @@ export const AUDIT_MAX_RUNTIME_MS = 5 * 60 * 1000;
 export const AUDIT_MAX_ATTEMPTS = 3;
 
 /**
- * How far into the future `next_attempt_at` is pushed after an unexpected-
- * error attempt (`next_attempt_at = now + cron
- * 間隔`) — set equal to AUDIT_CRON_INTERVAL_MINUTES below, so a retried row
- * is normally picked up again on the very next scheduled run, never the
- * same one (guaranteed structurally regardless of this value — see
- * runStartedAt's own doc comment in lock.ts — this constant only controls
- * how soon a *later* run becomes eligible to retry it).
+ * How far into the future `next_attempt_at` is pushed after an unexpected
+ * error. This is no greater than the shortest normal launch interval
+ * (launchd's five minutes), but scheduler timing is not exact. The D1-side
+ * runStartedAt condition prevents the same run from reacquiring a retry row.
  */
-export const AUDIT_CRON_INTERVAL_MINUTES = 5;
-export const AUDIT_RETRY_DELAY_SECONDS = AUDIT_CRON_INTERVAL_MINUTES * 60;
+export const AUDIT_RETRY_DELAY_SECONDS = 300;
 
 /** Rate-limit rows untouched for longer than this are eligible for cleanup. */
 export const RANKING_RATE_LIMIT_RETENTION_SECONDS = 24 * 60 * 60;

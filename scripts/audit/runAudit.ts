@@ -12,9 +12,10 @@ import type { BenchVerifyHooks } from '../../functions/_lib/ranking/benchHooks';
 import { acquireLock, renewLock, releaseLock, LOCK_FENCE_SQL_FRAGMENT } from './lock';
 import { safeErrorName, safeErrorDetail } from './logSafety';
 import { AUDIT_CHUNK_SIZE, AUDIT_MAX_RUNTIME_MS, AUDIT_MAX_ATTEMPTS, AUDIT_RETRY_DELAY_SECONDS } from './constants';
+import type { AuditD1Database, AuditD1PreparedStatement } from './d1Adapter';
 
 export interface RunAuditOptions {
-  db: D1Database;
+  db: AuditD1Database;
   seasonId: number;
   rulesetVersion: number;
   replayFormatVersion: number;
@@ -109,7 +110,7 @@ interface PendingRow {
  * 0` (see runFencedWrite()'s own doc comment for why that disambiguation is
  * necessary at all).
  */
-async function stillHoldsLock(db: D1Database, ownerToken: string): Promise<boolean> {
+async function stillHoldsLock(db: AuditD1Database, ownerToken: string): Promise<boolean> {
   const row = await db.prepare(`SELECT ${LOCK_FENCE_SQL_FRAGMENT} AS held`).bind(ownerToken).first<{ held: number }>();
   return row?.held === 1;
 }
@@ -146,7 +147,7 @@ interface FencedWriteResult {
  * happens on most runs (nothing to trim), which is exactly why the ownership
  * re-check, not the raw count, has to be what distinguishes the two.
  */
-async function runFencedWrite(db: D1Database, ownerToken: string, statement: D1PreparedStatement): Promise<FencedWriteResult> {
+async function runFencedWrite(db: AuditD1Database, ownerToken: string, statement: AuditD1PreparedStatement): Promise<FencedWriteResult> {
   const result = await statement.run();
   const changes = result.meta.changes;
   if (changes > 0) return { outcome: 'applied', changes };
