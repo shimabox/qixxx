@@ -21,18 +21,16 @@ pages_build_output_dir = "dist"
 binding = "SHARES"
 id = "6c911969b6e94e5d90ea71ca6ab529dd"
 
-# D1 binding for the score-ranking feature. `database_id` below is a placeholder, NOT a real
-# Cloudflare resource — `wrangler pages dev` / `wrangler d1 migrations apply`
-# happily create a purely local SQLite-backed D1 under .wrangler/state/ for
-# ANY database_id string, with zero Cloudflare account calls, which is
-# suitable for local development without a Cloudflare account. This must be
-# replaced with the real id `wrangler d1 create qixxx-scores` prints out
-# before any real (non-local) deploy — see docs/ranking-runbook.md's
-# deployment preparation steps.
+# D1 binding for the score-ranking feature. Local development with
+# `wrangler pages dev` / `wrangler d1 migrations apply --local` creates a
+# SQLite-backed D1 under .wrangler/state/ without calling the Cloudflare account.
+# For production (remote), apply the schema before deployment with
+# `wrangler d1 migrations apply qixxx-scores --remote` — see
+# docs/ranking-runbook.md's deployment preparation steps.
 [[d1_databases]]
 binding = "DB"
 database_name = "qixxx-scores"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "e2e97a0a-02dc-4708-b34a-d3d9606f5678"
 
 # CPU time ceiling — a denial-of-wallet / runaway brake, not a tuning knob.
 #
