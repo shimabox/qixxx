@@ -62,7 +62,7 @@ describe('RemoteD1Adapter', () => {
     const adapter = createRemote(fetchStub);
     const db = await adapter.getDb();
 
-    await expect(db.prepare('SELECT ?1, ?2, ?3').bind('text', 42, null).first<{ value: number }>()).resolves.toEqual({ value: 7 });
+    await expect(db.prepare('SELECT ?1, ?2').bind('text', 42).first<{ value: number }>()).resolves.toEqual({ value: 7 });
     expect(fetchStub).toHaveBeenCalledTimes(1);
     const [url, init] = fetchStub.mock.calls[0];
     expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`);
@@ -70,7 +70,9 @@ describe('RemoteD1Adapter', () => {
       method: 'POST',
       headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
     });
-    expect(JSON.parse(String(init?.body))).toEqual({ sql: 'SELECT ?1, ?2, ?3', params: ['text', 42, null] });
+    const body = JSON.parse(String(init?.body)) as { sql: string; params: unknown[] };
+    expect(body).toEqual({ sql: 'SELECT ?1, ?2', params: ['text', '42'] });
+    expect(body.params.every((param) => typeof param === 'string')).toBe(true);
     expect(String(init?.body)).not.toContain(API_TOKEN);
   });
 

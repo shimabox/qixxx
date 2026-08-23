@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPlatformProxy } from 'wrangler';
+import type { AuditD1BindValue, AuditD1Database, AuditD1PreparedStatement } from '../d1Adapter';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -23,6 +24,27 @@ export interface TestD1 {
   /** The directory the D1 files under this database live in — for debugging a failed test only, never asserted on. */
   persistDir: string;
   dispose: () => Promise<void>;
+}
+
+export const AUDIT_D1_BIND_MODES = ['native', 'stringified'] as const;
+export type AuditD1BindMode = (typeof AUDIT_D1_BIND_MODES)[number];
+
+/** Applies the REST adapter's bind normalization before executing the same SQL on real local D1. */
+export function auditDatabaseWithBindMode(db: D1Database, mode: AuditD1BindMode): AuditD1Database {
+  if (mode === 'native') return db;
+  return {
+    prepare(sql: string): AuditD1PreparedStatement {
+      const statement = db.prepare(sql);
+      return {
+        bind(...values: AuditD1BindValue[]): AuditD1PreparedStatement {
+          return statement.bind(...values.map(String));
+        },
+        first: <T = Record<string, unknown>>() => statement.first<T>(),
+        all: <T = Record<string, unknown>>() => statement.all<T>(),
+        run: <T = Record<string, unknown>>() => statement.run<T>(),
+      };
+    },
+  };
 }
 
 /**

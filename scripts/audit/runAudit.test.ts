@@ -4,7 +4,7 @@
 // mock, so D1/SQLite's own transaction/UNIQUE-constraint/AUTOINCREMENT
 // semantics are exercised for real.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
+import { AUDIT_D1_BIND_MODES, auditDatabaseWithBindMode, createTestD1, seedScoreRow, type TestD1 } from './testSupport/localD1';
 import { runAudit, type AuditEvent } from './runAudit';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
@@ -41,11 +41,13 @@ function recordRealReplay(seed: number): { rle: Uint8Array; score: number; stage
   return { rle: encodeRle(samples), score: session.getScore(), stage: session.getStage(), durationTicks: session.getTotalTicks() };
 }
 
-describe('runAudit (real local D1)', () => {
+describe.each(AUDIT_D1_BIND_MODES)('runAudit (real local D1, %s binds)', (bindMode) => {
   let testDb: TestD1;
+  let auditDb: AuditD1Database;
 
   beforeAll(async () => {
     testDb = await createTestD1();
+    auditDb = auditDatabaseWithBindMode(testDb.db, bindMode);
   }, 30_000);
 
   afterAll(async () => {
@@ -77,7 +79,7 @@ describe('runAudit (real local D1)', () => {
   }
 
   it('a fresh, empty database: acquires, processes nothing, releases cleanly', async () => {
-    const result = await runAudit(baseOptions(testDb.db));
+    const result = await runAudit(baseOptions(auditDb));
     expect(result.acquired).toBe(true);
     expect(result.processedCount).toBe(0);
     expect(result.verifiedCount).toBe(0);
@@ -88,7 +90,7 @@ describe('runAudit (real local D1)', () => {
   it('does not acquire (and touches nothing) while another run already holds the lock', async () => {
     await testDb.db.prepare(`UPDATE audit_lock SET owner_token = 'someone-else', locked_until = unixepoch() + 600 WHERE id = 1`).run();
     const id = await seedScoreRow(testDb.db, { status: 'pending' });
-    const result = await runAudit(baseOptions(testDb.db));
+    const result = await runAudit(baseOptions(auditDb));
     expect(result.acquired).toBe(false);
     expect(await statusOf(id)).toBe('pending'); // untouched
     // Release for subsequent tests.
@@ -98,14 +100,14 @@ describe('runAudit (real local D1)', () => {
 
   it('can acquire the lock after a previous (crashed) run left it expired', async () => {
     await testDb.db.prepare(`UPDATE audit_lock SET owner_token = 'a-dead-run', locked_until = unixepoch() - 100 WHERE id = 1`).run();
-    const result = await runAudit(baseOptions(testDb.db));
+    const result = await runAudit(baseOptions(auditDb));
     expect(result.acquired).toBe(true);
   });
 
   it('deletes a pending row older than 24 hours at the start of the run, and counts it', async () => {
     const staleId = await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 25 * HOUR_MS });
     const freshId = await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 1000 });
-    const result = await runAudit(baseOptions(testDb.db));
+    const result = await runAudit(baseOptions(auditDb));
     expect(result.expiredDeletedCount).toBeGreaterThanOrEqual(1);
     expect(await statusOf(staleId)).toBeNull();
     // The fresh row should still exist (may since have been processed/deleted
@@ -131,7 +133,7 @@ describe('runAudit (real local D1)', () => {
         ruleset_version: RULESET_VERSION,
         replay_format_version: REPLAY_FORMAT_VERSION,
       });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.verifiedCount).toBeGreaterThanOrEqual(1);
       const row = await testDb.db.prepare(`SELECT status, score, stage, duration_ticks FROM scores WHERE id = ?`).bind(id).first<{
         status: string;
@@ -167,7 +169,7 @@ describe('runAudit (real local D1)', () => {
       const before = await testDb.db.prepare(`SELECT submitter_hash FROM scores WHERE id = ?`).bind(id).first<{ submitter_hash: string | null }>();
       expect(before!.submitter_hash).toBe('a'.repeat(64));
 
-      await runAudit(baseOptions(testDb.db));
+      await runAudit(baseOptions(auditDb));
 
       const row = await testDb.db.prepare(`SELECT status, submitter_hash FROM scores WHERE id = ?`).bind(id).first<{ status: string; submitter_hash: string | null }>();
       expect(row).toEqual({ status: 'verified', submitter_hash: null });
@@ -200,7 +202,7 @@ describe('runAudit (real local D1)', () => {
 
       const staleId = await seedRow();
       const events: AuditEvent[] = [];
-      const bumped = await runAudit(baseOptions(testDb.db, { seasonId: SEASON_ID + 1, onEvent: (e) => events.push(e) }));
+      const bumped = await runAudit(baseOptions(auditDb, { seasonId: SEASON_ID + 1, onEvent: (e) => events.push(e) }));
       expect(await statusOf(staleId)).toBeNull(); // swept, not left pending forever
       expect(bumped.verifiedCount).toBe(0); // and NOT confirmed into the dead season
       expect(bumped.deletedConfirmedInvalidCount).toBe(1);
@@ -210,14 +212,14 @@ describe('runAudit (real local D1)', () => {
       // season it actually belongs to — proving the deletion above came from
       // the season check and not from anything else about this fixture.
       const currentId = await seedRow();
-      const sameSeason = await runAudit(baseOptions(testDb.db, { seasonId: SEASON_ID }));
+      const sameSeason = await runAudit(baseOptions(auditDb, { seasonId: SEASON_ID }));
       expect(sameSeason.verifiedCount).toBe(1);
       expect(await statusOf(currentId)).toBe('verified');
     });
 
     it('deletes a pending row with malformed RLE data (verifyReplay malformed-replay -> confirmed invalid)', async () => {
       const id = await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.deletedConfirmedInvalidCount).toBeGreaterThanOrEqual(1);
       expect(await statusOf(id)).toBeNull();
     });
@@ -233,14 +235,14 @@ describe('runAudit (real local D1)', () => {
         stage: fixture.stage,
         duration_ticks: fixture.durationTicks,
       });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.deletedConfirmedInvalidCount).toBeGreaterThanOrEqual(1);
       expect(await statusOf(id)).toBeNull();
     });
 
     it('deletes a pending row whose declared ruleset_version no longer matches the server\'s current value', async () => {
       const id = await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([0, 1]), ruleset_version: RULESET_VERSION - 1 });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.deletedConfirmedInvalidCount).toBeGreaterThanOrEqual(1);
       expect(await statusOf(id)).toBeNull();
     });
@@ -253,7 +255,7 @@ describe('runAudit (real local D1)', () => {
       vi.spyOn(verifyPendingEntryModule, 'verifyPendingEntry').mockImplementation(() => {
         throw new Error('simulated unexpected runtime error');
       });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.retriedCount).toBeGreaterThanOrEqual(1);
       const row = await testDb.db.prepare(`SELECT status, audit_attempts, next_attempt_at FROM scores WHERE id = ?`).bind(id).first<{
         status: string;
@@ -269,7 +271,7 @@ describe('runAudit (real local D1)', () => {
     it('a row with next_attempt_at in the future is NOT re-fetched within the same run (same-run re-acquisition is structurally impossible)', async () => {
       const farFuture = Math.floor(Date.now() / 1000) + 10_000;
       const id = await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([0, 1]), audit_attempts: 1, next_attempt_at: farFuture });
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.processedCount).toBe(0);
       expect(await statusOf(id)).toBe('pending');
       await testDb.db.prepare(`DELETE FROM scores WHERE id = ?`).bind(id).run();
@@ -286,7 +288,7 @@ describe('runAudit (real local D1)', () => {
       vi.spyOn(verifyPendingEntryModule, 'verifyPendingEntry').mockImplementation(() => {
         throw new Error('simulated unexpected runtime error');
       });
-      const result = await runAudit(baseOptions(testDb.db, { maxAttempts: 3 }));
+      const result = await runAudit(baseOptions(auditDb, { maxAttempts: 3 }));
       expect(result.deletedAttemptsExhaustedCount).toBeGreaterThanOrEqual(1);
       expect(await statusOf(id)).toBeNull();
     });
@@ -332,7 +334,7 @@ describe('runAudit (real local D1)', () => {
         .all<{ id: string; rank_seq: number }>();
       const rankSeqById = new Map(rankSeqBefore.results.map((r) => [r.id, r.rank_seq]));
 
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.top10CleanedCount).toBeGreaterThanOrEqual(2); // 12 verified -> only 10 survive
 
       const remaining = await testDb.db
@@ -357,7 +359,7 @@ describe('runAudit (real local D1)', () => {
       for (let i = 0; i < 7; i++) {
         ids.push(await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) })); // malformed -> cheap, deterministic deletion
       }
-      const result = await runAudit(baseOptions(testDb.db, { chunkSize: 2 })); // 4 fetches: 2+2+2+1
+      const result = await runAudit(baseOptions(auditDb, { chunkSize: 2 })); // 4 fetches: 2+2+2+1
       expect(result.processedCount).toBeGreaterThanOrEqual(7);
       expect(result.deletedConfirmedInvalidCount).toBeGreaterThanOrEqual(7);
       for (const id of ids) expect(await statusOf(id)).toBeNull();
@@ -367,13 +369,13 @@ describe('runAudit (real local D1)', () => {
       const ids = [await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) }), await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) })];
       // -1: guarantees `Date.now() - wallClockStart > maxRuntimeMs` is true
       // on the very first check, deterministically, without any real sleep.
-      const cutShort = await runAudit(baseOptions(testDb.db, { maxRuntimeMs: -1 }));
+      const cutShort = await runAudit(baseOptions(auditDb, { maxRuntimeMs: -1 }));
       expect(cutShort.reachedTimeLimit).toBe(true);
       expect(cutShort.processedCount).toBe(0);
       for (const id of ids) expect(await statusOf(id)).toBe('pending');
 
       // A normal follow-up run picks up exactly what was left behind.
-      const followUp = await runAudit(baseOptions(testDb.db));
+      const followUp = await runAudit(baseOptions(auditDb));
       expect(followUp.processedCount).toBeGreaterThanOrEqual(2);
       for (const id of ids) expect(await statusOf(id)).toBeNull();
     });
@@ -385,7 +387,7 @@ describe('runAudit (real local D1)', () => {
       }
       // No chunkSize override here — exercises the REAL AUDIT_CHUNK_SIZE (50)
       // default across 5 fetches (50+50+50+50+5) within a single run.
-      const result = await runAudit(baseOptions(testDb.db));
+      const result = await runAudit(baseOptions(auditDb));
       expect(result.reachedTimeLimit).toBe(false); // finished well within the (default, generous) time budget
       expect(result.processedCount).toBe(205);
       expect(result.deletedConfirmedInvalidCount).toBe(205);
@@ -438,7 +440,7 @@ describe('runAudit (real local D1)', () => {
      * ownership check and its execution, which is the only window the write's
      * fencing (and nothing else) is supposed to cover.
      */
-    function wrapDbForTheftBefore(realDb: D1Database, stealBeforeSql: (sql: string) => boolean): { db: AuditD1Database; stolen: () => boolean } {
+    function wrapDbForTheftBefore(realDb: AuditD1Database, stealBeforeSql: (sql: string) => boolean): { db: AuditD1Database; stolen: () => boolean } {
       let stolen = false;
       const wrapped = {
         prepare(sql: string) {
@@ -451,7 +453,7 @@ describe('runAudit (real local D1)', () => {
                 run: async () => {
                   if (!stolen) {
                     stolen = true;
-                    await stealLockAsRival(realDb);
+                    await stealLockAsRival(testDb.db);
                   }
                   return bound.run();
                 },
@@ -463,7 +465,7 @@ describe('runAudit (real local D1)', () => {
       return { db: wrapped, stolen: () => stolen };
     }
 
-    function wrapDbForLeaseTheft(realDb: D1Database, stealAfterNRowWrites: number): { db: AuditD1Database; rowWriteCount: () => number } {
+    function wrapDbForLeaseTheft(realDb: AuditD1Database, stealAfterNRowWrites: number): { db: AuditD1Database; rowWriteCount: () => number } {
       let rowWriteCount = 0;
       let stolen = false;
       const wrapped = {
@@ -479,7 +481,7 @@ describe('runAudit (real local D1)', () => {
                   rowWriteCount++;
                   if (!stolen && rowWriteCount > stealAfterNRowWrites) {
                     stolen = true;
-                    await stealLockAsRival(realDb);
+                    await stealLockAsRival(testDb.db);
                   }
                   return bound.run();
                 },
@@ -501,7 +503,7 @@ describe('runAudit (real local D1)', () => {
       // (proving the theft doesn't fire prematurely); the theft fires
       // immediately before row #2's write, which must then observe
       // fencing failure.
-      const { db: theftDb, rowWriteCount } = wrapDbForLeaseTheft(testDb.db, 1);
+      const { db: theftDb, rowWriteCount } = wrapDbForLeaseTheft(auditDb, 1);
 
       const result = await runAudit(baseOptions(theftDb, { chunkSize: 10 })); // all 3 rows fetched in one chunk, so the theft happens WITHIN a chunk, not caught by the next chunk's own renewLock() heartbeat
       expect(result.leaseLostMidRun).toBe(true);
@@ -534,7 +536,7 @@ describe('runAudit (real local D1)', () => {
         await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) }),
         await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) }),
       ];
-      const { db: theftDb } = wrapDbForLeaseTheft(testDb.db, 0); // steal before the very first row's write
+      const { db: theftDb } = wrapDbForLeaseTheft(auditDb, 0); // steal before the very first row's write
       const dispossessed = await runAudit(baseOptions(theftDb, { chunkSize: 10 }));
       expect(dispossessed.leaseLostMidRun).toBe(true);
       expect(dispossessed.processedCount).toBeGreaterThanOrEqual(1);
@@ -543,7 +545,7 @@ describe('runAudit (real local D1)', () => {
 
       // Release the rival, then run for real.
       await releaseRivalHold();
-      const followUp = await runAudit(baseOptions(testDb.db));
+      const followUp = await runAudit(baseOptions(auditDb));
       expect(followUp.leaseLostMidRun).toBe(false);
       expect(followUp.lockReleased).toBe(true);
       expect(followUp.deletedConfirmedInvalidCount).toBe(2);
@@ -587,7 +589,7 @@ describe('runAudit (real local D1)', () => {
         const pendingIds = [await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) }), await seedScoreRow(testDb.db, { status: 'pending', inputs: new Uint8Array([255, 1]) })];
 
         const events: string[] = [];
-        const { db: theftDb, stolen } = wrapDbForTheftBefore(testDb.db, (sql) => sql.includes('rank_seq NOT IN'));
+        const { db: theftDb, stolen } = wrapDbForTheftBefore(auditDb, (sql) => sql.includes('rank_seq NOT IN'));
         const result = await runAudit(baseOptions(theftDb, { onEvent: (e) => events.push(e.type) }));
 
         expect(stolen()).toBe(true); // the cleanup DELETE really was reached (and the theft really did fire right before it)
@@ -619,7 +621,7 @@ describe('runAudit (real local D1)', () => {
         // work, TOP10 cleanup included, has already succeeded at this point,
         // so the ONLY signal that this run did not end cleanly is
         // releaseLock()'s false return.
-        const { db: theftDb, stolen } = wrapDbForTheftBefore(testDb.db, (sql) => sql.includes('SET owner_token = NULL'));
+        const { db: theftDb, stolen } = wrapDbForTheftBefore(auditDb, (sql) => sql.includes('SET owner_token = NULL'));
         const result = await runAudit(baseOptions(theftDb, { onEvent: (e) => events.push(e.type) }));
 
         expect(stolen()).toBe(true);
@@ -725,7 +727,7 @@ describe('runAudit (real local D1)', () => {
     }
 
     /** Captures the audit lock's owner_token as acquireLock() binds it, so the assertions below can look for the REAL secret, not a stand-in. */
-    function wrapDbCapturingOwnerToken(realDb: D1Database): { db: AuditD1Database; ownerToken: () => string | null } {
+    function wrapDbCapturingOwnerToken(realDb: AuditD1Database): { db: AuditD1Database; ownerToken: () => string | null } {
       let token: string | null = null;
       const wrapped = {
         prepare(sql: string) {
@@ -788,7 +790,7 @@ describe('runAudit (real local D1)', () => {
       for (let i = 0; i < 12; i++) await seedScoreRow(testDb.db, { status: 'verified', score: 500 + i, ip_hash: IP_HASH });
 
       const events: AuditEvent[] = [];
-      const { db: captureDb, ownerToken } = wrapDbCapturingOwnerToken(testDb.db);
+      const { db: captureDb, ownerToken } = wrapDbCapturingOwnerToken(auditDb);
       await runAudit(baseOptions(captureDb, { onEvent: (e) => events.push(e) }));
 
       // The run really did produce the interesting events, so the assertions
@@ -823,7 +825,7 @@ describe('runAudit (real local D1)', () => {
       });
 
       const events: AuditEvent[] = [];
-      await runAudit(baseOptions(testDb.db, { onEvent: (e) => events.push(e) }));
+      await runAudit(baseOptions(auditDb, { onEvent: (e) => events.push(e) }));
 
       const retry = events.find((e) => e.type === 'entry-retry-scheduled');
       // 'D1ConnectionError' is a plausible-looking but UNLISTED class name, so
@@ -843,7 +845,7 @@ describe('runAudit (real local D1)', () => {
       });
 
       const events: AuditEvent[] = [];
-      await runAudit(baseOptions(testDb.db, { onEvent: (e) => events.push(e) }));
+      await runAudit(baseOptions(auditDb, { onEvent: (e) => events.push(e) }));
 
       expect(events.find((e) => e.type === 'entry-retry-scheduled')).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'TypeError' });
       assertOnlyAllowedFields(events);
@@ -858,7 +860,7 @@ describe('runAudit (real local D1)', () => {
       });
 
       const events: AuditEvent[] = [];
-      await runAudit(baseOptions(testDb.db, { includeErrorDetail: true, onEvent: (e) => events.push(e) }));
+      await runAudit(baseOptions(auditDb, { includeErrorDetail: true, onEvent: (e) => events.push(e) }));
 
       const retry = events.find((e) => e.type === 'entry-retry-scheduled');
       expect(retry).toEqual({ type: 'entry-retry-scheduled', id: expect.any(String), attempts: 1, errorName: 'Error', errorDetail: 'first line only' });
@@ -868,7 +870,7 @@ describe('runAudit (real local D1)', () => {
   });
 
   it('two concurrent runAudit() calls against the same D1: exactly one acquires the lock', async () => {
-    const [a, b] = await Promise.all([runAudit(baseOptions(testDb.db)), runAudit(baseOptions(testDb.db))]);
+    const [a, b] = await Promise.all([runAudit(baseOptions(auditDb)), runAudit(baseOptions(auditDb))]);
     const acquiredCount = [a, b].filter((r) => r.acquired).length;
     expect(acquiredCount).toBe(1);
   });

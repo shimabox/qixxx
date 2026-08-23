@@ -1,7 +1,7 @@
 import { getPlatformProxy } from 'wrangler';
 import { fileURLToPath } from 'node:url';
 
-export type AuditD1BindValue = string | number | null;
+export type AuditD1BindValue = string | number;
 
 export interface AuditD1Result<T = Record<string, unknown>> {
   results: T[];
@@ -210,7 +210,7 @@ export class RemoteD1Adapter implements AuditD1Adapter {
           Authorization: `Bearer ${this.apiToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ sql, params }),
+        body: JSON.stringify({ sql, params: params.map(String) }),
       });
     } catch {
       throw new RemoteD1RequestError();
