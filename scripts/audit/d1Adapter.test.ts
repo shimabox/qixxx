@@ -14,6 +14,7 @@ import {
   type RemoteD1Response,
 } from './d1Adapter';
 import { safeErrorDetail } from './logSafety';
+import { REMOTE_D1_REQUEST_TIMEOUT_MS } from './constants';
 
 describe('LocalPlatformProxyD1Adapter default config path', () => {
   it('decodes spaces and non-ASCII characters in the source file URL', () => {
@@ -56,6 +57,15 @@ function createRemote(fetchStub: RemoteD1Fetch): RemoteD1Adapter {
   return new RemoteD1Adapter({ accountId: ACCOUNT_ID, databaseId: DATABASE_ID, apiToken: API_TOKEN, fetch: fetchStub });
 }
 
+const webGlobals = globalThis as typeof globalThis & {
+  AbortController: new () => { abort(): void; signal: RemoteD1RequestInit['signal'] };
+  AbortSignal: {
+    prototype: RemoteD1RequestInit['signal'];
+    timeout(milliseconds: number): RemoteD1RequestInit['signal'];
+  };
+  DOMException: new (message?: string, name?: string) => Error;
+};
+
 describe('RemoteD1Adapter', () => {
   it('sends a single authenticated request with SQL and ordered bind values separated', async () => {
     const fetchStub = vi.fn<[string, RemoteD1RequestInit], Promise<RemoteD1Response>>().mockResolvedValue(jsonResponse(successEnvelope([{ value: 7 }], 0)));
@@ -70,10 +80,30 @@ describe('RemoteD1Adapter', () => {
       method: 'POST',
       headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
     });
+    expect(init.signal).toBeInstanceOf(webGlobals.AbortSignal);
     const body = JSON.parse(String(init?.body)) as { sql: string; params: unknown[] };
     expect(body).toEqual({ sql: 'SELECT ?1, ?2', params: ['text', '42'] });
     expect(body.params.every((param) => typeof param === 'string')).toBe(true);
     expect(String(init?.body)).not.toContain(API_TOKEN);
+  });
+
+  it('uses the remote request timeout and classifies an abort while reading the body without retrying', async () => {
+    const controller = new webGlobals.AbortController();
+    controller.abort();
+    const timeout = vi.spyOn(webGlobals.AbortSignal, 'timeout').mockReturnValue(controller.signal);
+    const fetchStub = vi.fn<[string, RemoteD1RequestInit], Promise<RemoteD1Response>>().mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new webGlobals.DOMException('request timed out', 'AbortError');
+      },
+    });
+    const db = await createRemote(fetchStub).getDb();
+
+    await expect(db.prepare('SELECT 1').all()).rejects.toEqual(new RemoteD1RequestError());
+    expect(timeout).toHaveBeenCalledWith(REMOTE_D1_REQUEST_TIMEOUT_MS);
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls[0][1].signal).toBe(controller.signal);
+    timeout.mockRestore();
   });
 
   it('returns the same facade, supports first null, all, run, and changes', async () => {
