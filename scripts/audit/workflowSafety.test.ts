@@ -25,7 +25,7 @@ describe('.github/workflows/ranking-audit.yml safety', () => {
   // The regex matches UNCOMMENTED, top-level keys (2-space-indented under
   // `on:`) unambiguously for this specific file.
   const activeTriggerKeys = lines
-    .map((line) => /^  ([A-Za-z_]+):/.exec(line))
+    .map((line) => /^ {2}([A-Za-z_]+):/.exec(line))
     .filter((m): m is RegExpExecArray => m !== null)
     .map((m) => m[1]);
 

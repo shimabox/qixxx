@@ -100,4 +100,34 @@ export default [
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
   },
+  {
+    files: ['scripts/**/*.ts', 'migrations/**/*.ts'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module',
+        project: './tsconfig.scripts.json',
+      },
+      globals: {
+        console: 'readonly',
+        crypto: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+        // Ambient type names from tsconfig.scripts.json. ESLint's no-undef
+        // rule is not type-aware, while TypeScript validates their usage.
+        D1Database: 'readonly',
+        D1PreparedStatement: 'readonly',
+        NodeJS: 'readonly',
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tsPlugin,
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      ...tsPlugin.configs.recommended.rules,
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    },
+  },
 ];
