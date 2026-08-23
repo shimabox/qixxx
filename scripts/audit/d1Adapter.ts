@@ -23,6 +23,9 @@
 // is unambiguous — see its own doc comment for the two real options it
 // would choose between.
 import { getPlatformProxy } from 'wrangler';
+import { fileURLToPath } from 'node:url';
+
+export const DEFAULT_CONFIG_PATH = fileURLToPath(new URL('../../wrangler.toml', import.meta.url));
 
 export interface AuditD1Adapter {
   /** Returns the D1Database binding this adapter connects to. May be called more than once (should return the same instance/connection). */
@@ -49,7 +52,7 @@ export class LocalPlatformProxyD1Adapter implements AuditD1Adapter {
   private readonly configPath: string;
 
   constructor(options: LocalPlatformProxyD1AdapterOptions = {}) {
-    this.configPath = options.configPath ?? new URL('../../wrangler.toml', import.meta.url).pathname;
+    this.configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
   }
 
   async getDb(): Promise<D1Database> {
