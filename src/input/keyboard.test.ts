@@ -14,6 +14,14 @@ function key(
   return event;
 }
 
+function keyFrom(target: EventTarget, source: EventTarget, type: 'keydown' | 'keyup', code: string): Event {
+  const event = new Event(type, { cancelable: true });
+  Object.assign(event, { code });
+  Object.defineProperty(event, 'target', { value: source });
+  target.dispatchEvent(event);
+  return event;
+}
+
 class ElementTarget extends EventTarget {
   constructor(private readonly selector: string) {
     super();
@@ -71,6 +79,20 @@ describe('KeyboardInput — confirm keys', () => {
 
     expect(state.confirm).toBe(true);
     expect(state.dx).toBe(1);
+    input.dispose();
+  });
+
+  it('releases a held key when keyup comes from an interactive element', () => {
+    const body = new ElementTarget('body');
+    const button = new ElementTarget('button');
+    const input = new KeyboardInput(body);
+
+    key(body, 'keydown', 'ArrowRight');
+    expect(input.getInput().dx).toBe(1);
+
+    keyFrom(body, button, 'keyup', 'ArrowRight');
+    expect((input as unknown as { pressed: Set<string> }).pressed.has('ArrowRight')).toBe(false);
+    expect(input.getInput().dx).toBe(0);
     input.dispose();
   });
 });
