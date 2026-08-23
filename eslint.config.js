@@ -101,7 +101,7 @@ export default [
     },
   },
   {
-    files: ['scripts/**/*.ts', 'migrations/**/*.ts'],
+    files: ['scripts/**/*.ts', 'migrations/**/*.ts', 'docs/measurements/**/*.ts'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -110,9 +110,12 @@ export default [
         project: './tsconfig.scripts.json',
       },
       globals: {
+        Buffer: 'readonly',
         console: 'readonly',
         crypto: 'readonly',
+        performance: 'readonly',
         process: 'readonly',
+        Request: 'readonly',
         URL: 'readonly',
         // Ambient type names from tsconfig.scripts.json. ESLint's no-undef
         // rule is not type-aware, while TypeScript validates their usage.
