@@ -78,6 +78,8 @@
 
 - ミス条件: QIX が引き途中ラインに接触 / スパークスに接触 / ヒューズに追いつかれる
 - ミス時: 引き途中のラインは消滅し、マーカーはライン開始点に戻る。ライフ -1、得点倍率リセット
+- ライン閉鎖 tick に QIX が引き途中ラインへ接触した場合は、面確定より先にミスとして処理する。接触済みのラインから無効な面を確定させないため、マーカー移動とエリア確定はその tick では行わない
+- ミス後は一定 tick の grace を設け、持続する接触でライフが連続して減らないようにする。判定は tick 開始時の grace 状態を使い、tick 中に発生したミスが開始した grace は同じ tick に減算しない。grace が 0 になった tick は保護を維持し、ライン進入だけを次 tick に向けて再許可する
 - 初期ライフ 3。0 でゲームオーバー
 
 ### 3.6 スコアリング（独自チューニング値）
@@ -135,18 +137,38 @@
 
 ラインが境界に到達して閉じたとき:
 
-1. 引いたラインの全セルを `BORDER` に変換
-2. QIX の現在位置（頭部セル）から `UNCLAIMED` セルを **flood fill**（4 近傍）
-3. fill で到達 **できなかった** `UNCLAIMED` セルをすべて `CLAIMED_FAST` または `CLAIMED_SLOW` に変換
-4. 不要になった境界線の掃除: `BORDER` セルのうち、4 近傍 + 斜めに `UNCLAIMED` が 1 つもないもの（= 完全に確定エリアに埋まった線）を、今回成立したクレームの `CLAIMED_*` に変換（スパークスの移動範囲を正しく保ち、古い色が新しい塗りへはみ出すのを防ぐため）
-5. 占有率を再計算（`CLAIMED_*` セル数 ÷ 初期 `UNCLAIMED` セル数）
+1. QIX の現在位置から、フィールド内、現在 `UNCLAIMED`、かつ閉じるライン上ではない位置を、入力順を保った `validPositions` として抽出する
+2. 有効位置が 0 件なら claim を拒否し、入力ラインのうち現在 `LINE` のセルだけを `UNCLAIMED` に戻す。既存 `BORDER` と `CLAIMED_*` は維持し、面確定と不要境界の掃除は行わない
+3. 有効位置がある場合だけ、引いたラインの全セルを `BORDER` に変換する
+4. `validPositions[0]` から `UNCLAIMED` セルを **flood fill**（4 近傍）し、到達 **できなかった** `UNCLAIMED` セルをすべて `CLAIMED_FAST` または `CLAIMED_SLOW` に変換する
+5. 2 件目以降の有効位置が先頭位置の到達集合外にあれば分断と判定する。有効 QIX 同士の相対順は変更せず、先頭の有効位置が従来どおり残す領域を決める
+6. 不要になった境界線の掃除: `BORDER` セルのうち、4 近傍 + 斜めに `UNCLAIMED` が 1 つもないもの（= 完全に確定エリアに埋まった線）を、今回成立したクレームの `CLAIMED_*` に変換（スパークスの移動範囲を正しく保ち、古い色が新しい塗りへはみ出すのを防ぐため）
+7. 占有率を再計算（`CLAIMED_*` セル数 ÷ 初期 `UNCLAIMED` セル数）
 
 実装例（擬似コード）:
 
 ```ts
-function claimArea(field: Field, line: Point[], qixPos: Point, speed: LineSpeed): ClaimResult {
-  for (const p of line) field.set(p, BORDER);
-  const reachable = floodFill(field, qixPos, UNCLAIMED); // Set<index>
+type ClaimResult =
+  | { accepted: false; claimedCells: 0; occupancy: number; split: false }
+  | { accepted: true; claimedCells: number; occupancy: number; split: boolean };
+
+function claimArea(field: Field, line: Point[], qixPositions: Point[], speed: LineSpeed): ClaimResult {
+  const lineIndices = indicesOfInBounds(line);
+  const validPositions = qixPositions.filter(
+    (position) => field.isInBounds(position)
+      && field.get(position) === UNCLAIMED
+      && !lineIndices.has(field.indexOf(position))
+  );
+  if (validPositions.length === 0) {
+    for (const p of line) {
+      if (field.isInBounds(p) && field.get(p) === LINE) field.set(p, UNCLAIMED);
+    }
+    return { accepted: false, claimedCells: 0, occupancy: field.occupancy(), split: false };
+  }
+
+  for (const p of line) if (field.isInBounds(p)) field.set(p, BORDER);
+  const reachable = floodFill(field, validPositions[0], UNCLAIMED); // Set<index>
+  const split = validPositions.slice(1).some((position) => !reachable.has(field.indexOf(position)));
   let claimed = 0;
   for (const idx of field.indicesOf(UNCLAIMED)) {
     if (!reachable.has(idx)) {
@@ -155,16 +177,17 @@ function claimArea(field: Field, line: Point[], qixPos: Point, speed: LineSpeed)
     }
   }
   pruneDeadBorders(field);
-  return { claimedCells: claimed, occupancy: field.occupancy() };
+  return { accepted: true, claimedCells: claimed, occupancy: field.occupancy(), split };
 }
 ```
 
-このアルゴリズムは「QIX がいない側が塗られる」という原作仕様を自然に満たす。**純関数として実装し、ユニットテストの主対象とする。**
+このアルゴリズムは「QIX がいない側が塗られる」という原作仕様を自然に満たす。ライン上やフィールド外などの無効位置は除外するため、無効位置を配列のどこへ挿入しても有効位置の選択結果は変わらない。**純関数として実装し、ユニットテストの主対象とする。**
 
-**2 匹 QIX への拡張（分断判定）**: ライン閉鎖時に各 QIX の頭部から個別に flood fill する。
+**2 匹 QIX への拡張（分断判定）**: ライン閉鎖時に先頭の有効な QIX の頭部から flood fill する。
 
 - QIX1 の到達集合に QIX2 が含まれない → **分断成功**（即ステージクリア、倍率カウント +1）
-- 含まれる場合 → 通常確定。「どの QIX からも到達できない `UNCLAIMED` セル」を塗る（上記 2〜3 の `reachable` を全 QIX の和集合にするだけ）
+- 含まれる場合 → 通常確定。先頭 QIX から到達できない `UNCLAIMED` セルを塗る
+- claim 拒否時、Game は Igniter だけを終了する。marker は到達した終端 `BORDER` に残し、field、occupancy、score、lives、分断状態、status、claim／clear／miss event を更新しない
 
 ### 4.3 敵の移動
 
@@ -280,6 +303,12 @@ qixxx/
   - 2 匹が同じ側に残る通常確定: どちらからも到達できない領域だけが塗られる
   - 分断成功の検出: ラインで 2 匹が別領域に分かれたら分断クリアと判定される
   - 分断とみなされない境界ケース（ラインが片方の領域を 0 セルにする等）
+  - 無効位置を先頭・有効位置の間・末尾へ挿入しても、有効位置の相対順と claim 結果が変わらず、占有率 100% の不正確定にならない
+  - 有効位置が 0 件なら claim を拒否し、現在 `LINE` のセルだけを戻して既存 `BORDER`、`CLAIMED_*`、occupancy を維持する
+- **game / claim・miss**
+  - ライン閉鎖 tick に Wisp が既存ラインへ接触した場合、marker 移動と claim より先に miss となり、ライン・score・occupancy・分断状態・イベントが正しく保たれる
+  - tick 中に発生した miss の grace は同 tick に減算されず、既存の line entry 再許可タイミングを維持する
+  - 有効 Wisp がいない rejected claim で、保存した field、Game／Field occupancy、score、lives、分断状態、status を維持し、Igniter のみ終了する
 - **marker**
   - 境界線上のみ自由移動でき、ボタンなしで領域内へ入れない
   - 引き途中ラインとの自己交差が拒否される
