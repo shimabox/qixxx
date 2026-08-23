@@ -12,6 +12,6 @@
     "noEmit": true,
     "allowJs": false
   },
-  "include": ["scripts/**/*.ts", "migrations/**/*.ts"],
+  "include": ["scripts/**/*.ts", "migrations/**/*.ts", "docs/measurements/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
