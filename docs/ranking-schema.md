@@ -24,7 +24,7 @@
 ```mermaid
 erDiagram
     audit_lock ||..o{ scores : "監査書き込みを保護（論理）"
-    ranking_rate_limits ||..o{ scores : "ip_hashを共有（論理）"
+    ranking_rate_limits o|..o{ scores : "ip_hashを共有（論理）"
 
     scores {
         INTEGER rank_seq PK
@@ -56,7 +56,7 @@ erDiagram
     }
 ```
 
-図の破線は外部キーではなく論理関係を表す。`scores.ip_hash` と `ranking_rate_limits.ip_hash` に `FOREIGN KEY` はなく、同じ `RANKING_IP_HASH_KEY` による HMAC 値を共有するだけである。`audit_lock` も `scores` を参照せず、監査の各 `UPDATE` / `DELETE` が有効な `owner_token` と `locked_until` を同一 SQL 内で確認することで書き込みを保護する。
+図の破線は外部キーではなく論理関係を表す。`scores.ip_hash` と `ranking_rate_limits.ip_hash` に `FOREIGN KEY` はなく、同じ `RANKING_IP_HASH_KEY` による HMAC 値を共有するだけである。`ranking_rate_limits` 行は `ip_hash` が NULL の行や housekeeping 後の行には対応しないため、対応する行は0または1件である。`audit_lock` も `scores` を参照せず、監査の各 `UPDATE` / `DELETE` が有効な `owner_token` と `locked_until` を同一 SQL 内で確認することで書き込みを保護する。
 
 ## 3. テーブルごとの詳細
 
