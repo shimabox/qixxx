@@ -464,12 +464,16 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
   // (The "…and comes back once the run really ends" half of this rule is
   // asserted on a genuine gameover -> Title transition in the stale-response
   // test below, which already pays for a real run.)
-  test('pressing Enter on the focused RANKING button opens the list without starting a run', async ({ page }) => {
+  test('tabbing to RANKING and pressing Enter opens the list without starting a run', async ({ page }) => {
     await mockRanking(page, []);
     await page.goto(APP_URL);
 
     const rankingButton = page.locator('#ranking-button');
-    await rankingButton.focus();
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press('Tab');
+      await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    }
+    await expect(rankingButton).toBeFocused();
     await page.keyboard.press('Enter');
 
     await expect(page.getByText('X handles are self-reported')).toBeVisible();
