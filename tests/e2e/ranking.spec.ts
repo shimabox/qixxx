@@ -464,6 +464,18 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
   // (The "…and comes back once the run really ends" half of this rule is
   // asserted on a genuine gameover -> Title transition in the stale-response
   // test below, which already pays for a real run.)
+  test('pressing Enter on the focused RANKING button opens the list without starting a run', async ({ page }) => {
+    await mockRanking(page, []);
+    await page.goto(APP_URL);
+
+    const rankingButton = page.locator('#ranking-button');
+    await rankingButton.focus();
+    await page.keyboard.press('Enter');
+
+    await expect(page.getByText('X handles are self-reported')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+  });
+
   test('the RANKING button is visible on Title, hidden while playing, and present again on a fresh Title', async ({ page }) => {
     await mockRanking(page, []);
     await page.goto(APP_URL);
@@ -523,6 +535,7 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
     await page.getByRole('button', { name: 'REPLAY' }).click();
 
     // Start a run while the replay request is still in flight.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
 
@@ -1422,6 +1435,7 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'REPLAY' }).click();
     await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeVisible();
 
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space'); // start a run with the message still up
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
     await expect(page.getByText('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.')).toBeHidden();
@@ -1603,6 +1617,7 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'REPLAY' }).click();
 
     // Start a run while the fetch + pre-pass are still under way.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
 
