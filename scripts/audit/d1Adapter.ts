@@ -1,5 +1,6 @@
 import { getPlatformProxy } from 'wrangler';
 import { fileURLToPath } from 'node:url';
+import { REMOTE_D1_REQUEST_TIMEOUT_MS } from './constants';
 
 export type AuditD1BindValue = string | number;
 
@@ -101,10 +102,13 @@ export interface RemoteD1AdapterOptions {
   fetch?: RemoteD1Fetch;
 }
 
+type RemoteD1Signal = NonNullable<NonNullable<Parameters<typeof globalThis.fetch>[1]>['signal']>;
+
 export interface RemoteD1RequestInit {
   method: 'POST';
   headers: Record<string, string>;
   body: string;
+  signal: RemoteD1Signal;
 }
 
 export interface RemoteD1Response {
@@ -202,6 +206,10 @@ export class RemoteD1Adapter implements AuditD1Adapter {
   }
 
   private async execute(sql: string, params: AuditD1BindValue[]): Promise<AuditD1Result<Record<string, unknown>>> {
+    const abortSignal = (globalThis as typeof globalThis & {
+      AbortSignal: { timeout(milliseconds: number): RemoteD1Signal };
+    }).AbortSignal;
+    const signal = abortSignal.timeout(REMOTE_D1_REQUEST_TIMEOUT_MS);
     let response: RemoteD1Response;
     try {
       response = await this.fetchImpl(this.endpoint, {
@@ -211,6 +219,7 @@ export class RemoteD1Adapter implements AuditD1Adapter {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ sql, params: params.map(String) }),
+        signal,
       });
     } catch {
       throw new RemoteD1RequestError();
@@ -221,6 +230,7 @@ export class RemoteD1Adapter implements AuditD1Adapter {
     try {
       envelope = await response.json();
     } catch {
+      if (signal.aborted) throw new RemoteD1RequestError();
       throw new RemoteD1ResponseError();
     }
     if (!isRecord(envelope)) throw new RemoteD1ResponseError();
