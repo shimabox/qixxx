@@ -25,7 +25,11 @@
 import { getPlatformProxy } from 'wrangler';
 import { fileURLToPath } from 'node:url';
 
-export const DEFAULT_CONFIG_PATH = fileURLToPath(new URL('../../wrangler.toml', import.meta.url));
+export function resolveDefaultConfigPath(fromUrl: string): string {
+  return fileURLToPath(new URL('../../wrangler.toml', fromUrl));
+}
+
+export const DEFAULT_CONFIG_PATH = resolveDefaultConfigPath(import.meta.url);
 
 export interface AuditD1Adapter {
   /** Returns the D1Database binding this adapter connects to. May be called more than once (should return the same instance/connection). */
