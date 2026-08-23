@@ -11,10 +11,24 @@ import {
   isSnapshotEligible,
   isReplayPayloadPlayable,
   formatRankingDate,
+  limitRankingName,
   stopKeyPropagation,
   type RankingEntry,
   type RunSubmissionSnapshot,
 } from './ranking';
+
+describe('limitRankingName', () => {
+  it('allows 24 emoji code points and removes the 25th', () => {
+    const emoji = '🚀';
+    expect(limitRankingName(emoji.repeat(24))).toBe(emoji.repeat(24));
+    expect(limitRankingName(emoji.repeat(25))).toBe(emoji.repeat(24));
+  });
+
+  it('allows 24 ASCII characters as before', () => {
+    const ascii = 'a'.repeat(24);
+    expect(limitRankingName(ascii)).toBe(ascii);
+  });
+});
 
 describe('stopKeyPropagation', () => {
   for (const type of ['keydown', 'keyup']) {
