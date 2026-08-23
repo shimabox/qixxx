@@ -3,6 +3,13 @@
 import { SessionInput } from '../core/session';
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS, isTrackedKey } from './keys';
 
+const INTERACTIVE_SELECTOR = 'button, a[href], input, select, textarea, [contenteditable], summary';
+
+function isFromInteractiveElement(event: Event): boolean {
+  const target = event.target as Element | null;
+  return typeof target?.closest === 'function' && target.closest(INTERACTIVE_SELECTOR) !== null;
+}
+
 export class KeyboardInput {
   private pressed = new Set<string>();
   private pressOrder: string[] = [];
@@ -34,6 +41,7 @@ export class KeyboardInput {
   };
 
   private onKeyDown = (event: Event): void => {
+    if (isFromInteractiveElement(event)) return;
     const code = (event as KeyboardEvent).code;
     if (code === 'Tab') return;
     if (!this.pressed.has(code)) {
@@ -48,6 +56,7 @@ export class KeyboardInput {
   };
 
   private onKeyUp = (event: Event): void => {
+    if (isFromInteractiveElement(event)) return;
     const code = (event as KeyboardEvent).code;
     this.pressed.delete(code);
     this.pressOrder = this.pressOrder.filter((c) => c !== code);

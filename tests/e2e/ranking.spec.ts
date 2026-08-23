@@ -480,6 +480,22 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
   });
 
+  test('pressing Enter on the focused MUTE button toggles sound without starting a run', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('qixxx.muted', 'false'));
+    await page.goto(APP_URL);
+
+    const muteButton = page.locator('#mute-button');
+    await expect(muteButton).toHaveText('MUTE');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(muteButton).toBeFocused();
+
+    await page.keyboard.press('Enter');
+
+    await expect(muteButton).toHaveText('UNMUTE');
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+  });
+
   test('the RANKING button is visible on Title, hidden while playing, and present again on a fresh Title', async ({ page }) => {
     await mockRanking(page, []);
     await page.goto(APP_URL);
