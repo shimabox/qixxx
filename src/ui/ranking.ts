@@ -10,6 +10,7 @@
 // HTML-interpreting API.
 import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
+import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
@@ -22,6 +23,10 @@ export interface RankingEntry {
   name: string;
   xHandle: string | null;
   replayAvailable: boolean;
+}
+
+export function limitRankingName(value: string): string {
+  return Array.from(value).slice(0, MAX_NAME_LENGTH).join('');
 }
 
 /**
@@ -676,7 +681,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.placeholder = 'NAME';
-  nameInput.maxLength = 24;
   nameInput.style.font = HUD_FONT;
   nameInput.style.fontSize = '0.8em';
   nameInput.style.padding = '4px 8px';
@@ -786,7 +790,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // The hint depends on BOTH values, so editing the visible one can change it
   // (typing a different handle over a carried-over name makes the kept name
   // worth mentioning again).
-  nameInput.addEventListener('input', syncRetainedValueHint);
+  nameInput.addEventListener('input', (event) => {
+    if (!(event as InputEvent).isComposing) nameInput.value = limitRankingName(nameInput.value);
+    syncRetainedValueHint();
+  });
+  nameInput.addEventListener('compositionend', () => {
+    nameInput.value = limitRankingName(nameInput.value);
+    syncRetainedValueHint();
+  });
   handleInput.addEventListener('input', syncRetainedValueHint);
 
   const submitStatus = document.createElement('div');

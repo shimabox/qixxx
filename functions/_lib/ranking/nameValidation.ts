@@ -1,10 +1,11 @@
 // Name / X-handle validation for POST /api/scores. Pure — no Request/KV dependency —
 // so it's directly unit-testable, matching functions/_lib/validation.ts's
 // existing pattern for the share feature.
+import { MAX_NAME_LENGTH } from '../../../src/core/rankingLimits';
 
 // Generous but bounded — long enough for real names in most scripts, short
 // enough to keep the ranking overlay's row layout predictable.
-export const MAX_NAME_LENGTH = 24;
+export { MAX_NAME_LENGTH };
 
 // Control characters (C0 + the C1 range, including DEL) and a set of
 // invisible/formatting Unicode characters (zero-width spaces/joiners,
