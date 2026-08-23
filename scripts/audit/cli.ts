@@ -1,12 +1,12 @@
 // Manual/CI entrypoint for the async audit job. Run locally via:
 //
-// npx vite-node scripts/audit/cli.ts
+// npx vite-node scripts/audit/cli.ts [--remote]
 //
 // (see docs/ranking-audit-runbook.md for the full manual-run walkthrough —
 // applying migrations first, seeding a pending row via a real POST, then
-// running this). The GitHub Actions workflow (.github/workflows/
-// ranking-audit.yml) invokes the exact same command for a `workflow_dispatch`
-// -triggered run — no separate "CI mode" branch in this file.
+// running this). With no argument the command uses local D1; `--remote`
+// selects the D1 HTTP REST adapter. Both scheduled runners invoke the remote
+// npm script, with no separate scheduler-specific branch in this file.
 //
 // ---------------------------------------------------------------------------
 // WHY THIS FILE IS A BOOTSTRAP AND NOT THE COMMAND ITSELF

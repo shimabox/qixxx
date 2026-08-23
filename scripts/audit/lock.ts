@@ -1,4 +1,5 @@
 // The audit job's mutex, based on owner identity and write fencing.
+import type { AuditD1Database } from './d1Adapter';
 // `audit_lock` is a single
 // row (id=1, created by migrations/0002_ranking_free_async.sql, initial row
 // included) acting as a mutex across concurrent/overlapping audit runs.
@@ -32,7 +33,7 @@ export interface AcquiredLock {
  * currently holds an unexpired lease — that is the expected, ordinary
  * outcome of a concurrent/overlapping invocation, not a failure.
  */
-export async function acquireLock(db: D1Database): Promise<AcquiredLock | null> {
+export async function acquireLock(db: AuditD1Database): Promise<AcquiredLock | null> {
   const ownerToken = randomOwnerToken();
   const row = await db
     .prepare(
@@ -57,7 +58,7 @@ export async function acquireLock(db: D1Database): Promise<AcquiredLock | null> 
  * MUST NOT issue any further writes for the in-progress chunk; processing
  * stops immediately.
  */
-export async function renewLock(db: D1Database, ownerToken: string): Promise<boolean> {
+export async function renewLock(db: AuditD1Database, ownerToken: string): Promise<boolean> {
   const result = await db
     .prepare(`UPDATE audit_lock SET locked_until = unixepoch() + ?2 WHERE id = 1 AND owner_token = ?1 AND locked_until >= unixepoch()`)
     .bind(ownerToken, LOCK_LEASE_SECONDS)
@@ -71,7 +72,7 @@ export async function renewLock(db: D1Database, ownerToken: string): Promise<boo
  * lock is effectively already free for the next acquirer either way, this
  * call just has nothing left to do.
  */
-export async function releaseLock(db: D1Database, ownerToken: string): Promise<boolean> {
+export async function releaseLock(db: AuditD1Database, ownerToken: string): Promise<boolean> {
   // locked_until = unixepoch() - 1 (strictly in the past), not
   // `unixepoch()` itself: acquireLock()'s condition is `locked_until < now`,
   // and a release+immediate-reacquire happening within the same D1-clock

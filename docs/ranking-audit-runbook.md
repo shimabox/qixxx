@@ -28,7 +28,7 @@ POST(このブランチでは呼ばない)と監査ジョブの両方で共有�
 POST /api/scores ─→ ヘッダー検査 + D1 レート制限 ─→ 基本検査 + 圏内事前ゲート ─→ D1 に status='pending' で保存 ─→ 即応答
                                                           │
                                                           ▼
-                                    scripts/audit/runAudit.ts (Node, 手動 or GitHub Actions)
+                           scripts/audit/runAudit.ts (Node, 手動 / launchd / GitHub Actions)
                                                           │
                               verifyPendingEntry() (= verifyReplay() + 申告値/version 突合)
                                                           │
@@ -323,28 +323,151 @@ Paid 同期検証へ切り替える際の必須チェック:
 
 ---
 
-## 3. GitHub Actions での定期実行を有効化する手順(未実施・本番接続後の作業)
+## 3. 本番 D1 接続と定期実行
 
-`.github/workflows/ranking-audit.yml` は現状 `workflow_dispatch` のみ有効。
-`schedule` はコメントアウトされている(理由はワークフローファイル自身のコメントを参照)。
-有効化には以下がすべて必要:
+本番監査は Cloudflare D1 HTTP REST API の query endpoint を使う。
+`npm run ranking:remote:audit` だけが remote adapter を選び、SQL と bind 値は
+`sql` / `params` に分離して送る。HTTP 失敗や応答形式不正を自動リトライしない。
+書き込み適用後に応答だけ失われた場合をクライアントから安全に判別できないため、
+失敗した run は非0で終え、D1 ロックの失効後に次の定期起動へ委ねる。
 
-1. **本番 D1 への接続を実装する**(未実装)。
-   `scripts/audit/d1Adapter.ts` の `RemoteD1Adapter` が現状 throw するだけの
-   スタブになっている — 実装時の選択肢は次の2つ:
-   - `wrangler d1 execute --remote` をシェルアウトして呼ぶ(Actions 上で
-     `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` を secret として渡す)
-   - D1 の REST API を直接 `fetch` する(Cloudflare API トークンで認証)
-   どちらも「Actions から D1 への認証・接続」という同じ論点で、
-   ローカル監査スクリプトの `getPlatformProxy()` とは別の実装になる。
-2. リポジトリ変数 `AUDIT_CRON_ENABLED` を `true` に設定
-   (Settings → Secrets and variables → Actions → Variables)。
-3. ワークフローファイルの `schedule:` ブロックのコメントアウトを外す。
-4. リポジトリ secret `RANKING_IP_HASH_KEY` を、本番の Cloudflare Pages secret と
-   **同じ値**で設定する(Settings → Secrets and variables → Actions → Secrets)。
-   値が食い違っても監査ジョブ自体は動く(audit コマンドは ip_hash を再計算せず、
-   POST 時に確定済みの値を読むだけ)ので実害はないが、鍵管理の一貫性のため
-   揃えておくこと。
+必須設定は次のとおり。空値を含む不足は DB/fetch より前に
+`RemoteD1ConfigurationError` で終了する。
+
+| 環境変数 | GitHub Actions | launchd |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Secret | Keychain |
+| `CLOUDFLARE_ACCOUNT_ID` | Repository Variable | plist |
+| `CLOUDFLARE_D1_DATABASE_ID` | Repository Variable | plist |
+| `RANKING_IP_HASH_KEY` | Secret | Keychain |
+
+`CLOUDFLARE_D1_DATABASE_ID` は `wrangler.toml` の `database_id` と一致させる。
+API token は対象 account の D1 Write/Edit のみに絞る。これより広い Workers、Pages、
+Account Settings、Zone 権限を要求される場合は両 scheduler を有効にせず、権限と接続先を確認する。
+
+remote の固定エラーは次の4種類で、response body、Cloudflare の error message、URL、
+account/database ID、token、Authorization、SQL、params を保持・出力しない。
+
+- `RemoteD1ConfigurationError`: 必須設定の不足または空値
+- `RemoteD1RequestError`: fetch 例外または HTTP 非2xx
+- `RemoteD1ResponseError`: JSON または応答 envelope の形式不正
+- `RemoteD1QueryError`: top-level または個別 query の失敗
+
+設定済み環境での手動疎通は、対象 DB と commit を確認してから次で1回だけ行う。
+
+```sh
+npm run ranking:remote:audit
+```
+
+### 3.1 有効化順序
+
+順序を入れ替えない。
+
+1. GitHub Actions の Secrets に `CLOUDFLARE_API_TOKEN` と `RANKING_IP_HASH_KEY`、
+   Variables に `CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_D1_DATABASE_ID`、
+   `AUDIT_CRON_ENABLED=false` を登録する。secret 値は出力して比較しない。
+2. 実装とは別の運用作業で `wrangler d1 migrations apply qixxx-scores --remote` を実行する。
+   本番 migration は監査有効化前の必須依存であり、この実装の検証には含めない。
+3. reviewed commit の checkout から `npm run ranking:remote:audit` を1回実行し、
+   `done.`、`lockReleased=true`、既知 pending の確定または削除、ログの秘匿を確認する。
+4. reviewed commit を main へマージする。
+5. main の `workflow_dispatch` を実行し、同じ完了条件を確認する。main 以外では手動実行も job が開始されない。
+6. §3.3 の launchd を導入し、通常周期とスリープ復帰を確認する。
+7. 最後に `AUDIT_CRON_ENABLED=true` へ変更し、毎時23分の Actions バックストップを有効にする。
+
+### 3.2 二つの scheduler
+
+- 主系: launchd。毎時 2, 7, 12, …, 57 分の5分間隔。
+- バックストップ: GitHub Actions。`23 * * * *`。main かつ手動、または
+  `AUDIT_CRON_ENABLED=true` のときだけ実行する。
+
+GitHub Actions の `concurrency.group` は `ranking-audit`、`cancel-in-progress` は
+`false`。scheduler 間の排他は D1 の10分 lease、heartbeat、fenced write が担う。
+300秒の retry delay は最小の通常起動間隔以下という目安で、正確な起動時刻を保証しない。
+
+### 3.3 launchd の導入
+
+1. 自動更新を行わない専用の main checkout を用意する。運用者が reviewed commit を
+   確認して明示的に更新する場所とし、ラッパーから `git pull`、install、checkout 更新を行わない。
+2. 専用 checkout で `npm ci` を実行する。
+3. Keychain service `qixxx-ranking-audit` に2 secret を対話入力する。値をコマンドラインに書かず、`-A` を使わない。
+
+   ```sh
+   security add-generic-password -U -s qixxx-ranking-audit -a CLOUDFLARE_API_TOKEN -w
+   security add-generic-password -U -s qixxx-ranking-audit -a RANKING_IP_HASH_KEY -w
+   ```
+
+4. `scripts/audit/launchd/com.qixxx.ranking-audit.plist.example` を
+   `$HOME/Library/LaunchAgents/com.qixxx.ranking-audit.plist` へコピーし、5種類の
+   placeholder を置換する。repo path は専用 checkout、node bin dir は `node` と
+   `npm` が存在するディレクトリ、log dir は専用ディレクトリ、account/database ID は
+   確認済み値とする。`rg '__[A-Z0-9_]+__' <plist>` が0件になることを確認する。
+5. log dir を700にし、stdout/stderr ファイルを事前作成して600にする。
+
+   ```sh
+   mkdir -p <log-dir>
+   chmod 700 <log-dir>
+   touch <log-dir>/ranking-audit.stdout.log <log-dir>/ranking-audit.stderr.log
+   chmod 600 <log-dir>/ranking-audit.stdout.log <log-dir>/ranking-audit.stderr.log
+   ```
+
+6. `plutil -lint <plist>` を実行する。追加検査には公開版
+   [launchd-plist-generator](https://launchd-plist-generator.orukubami.sh) と
+   GitHub リポジトリ `shimabox/launchd-plist-generator` を使う。リポジトリを clone し、
+   展開済み plist に対して strict check を行う。
+
+   ```sh
+   git clone https://github.com/shimabox/launchd-plist-generator.git <launchd-plist-generator-dir>
+   cd <launchd-plist-generator-dir>
+   node bin/launchd-plist check <plist> --strict
+   ```
+
+7. 登録して即時起動する。
+
+   ```sh
+   launchctl bootstrap gui/$(id -u) <plist>
+   launchctl kickstart -k gui/$(id -u)/com.qixxx.ranking-audit
+   ```
+
+8. 登録後に検査とログ確認を行う。
+
+   ```sh
+   node bin/launchd-plist doctor <plist>
+   launchctl print gui/$(id -u)/com.qixxx.ranking-audit
+   ```
+
+   stdout/stderr と `done.` / `lockReleased=true` を確認する。
+9. 2つ以上の予定時刻をまたいで Mac をスリープさせ、復帰時に missed run が1回だけ
+   補完され、その後は次の5分 slot で通常実行されることを確認する。
+
+### 3.4 専用 checkout の更新とログローテーション
+
+更新時は `launchctl bootout gui/$(id -u)/com.qixxx.ranking-audit` で停止し、運用者が
+reviewed commit を確認して main を fast-forward 更新する。`npm ci`、commit SHA、
+typecheck・lint・test・build の gate を確認し、必要なら plist を再検査してから
+`bootstrap` する。ラッパー自身は checkout 更新や install を行わない。
+
+ログローテーションは `bootout` → timestamp 付きファイルへ rename → 空ファイルを再作成
+→ `chmod 600` → 必要なら旧ログを圧縮または期限削除 → `bootstrap` の順に行う。
+launchd の開いた file descriptor を残さず、secret が含まれないことを確認してから保管する。
+
+### 3.5 停止、ロールバック、障害対応
+
+無効化・ロールバックでは最初に `AUDIT_CRON_ENABLED=false` と launchd の `bootout` を行う。
+実行中 Actions job の終了と、`audit_lock` の解放または10分失効を確認する。remote adapter や
+workflow を revert しても schema は DROP せず、verified 化や削除を自動で戻さない。
+
+- Keychain failure: account/service 名、login Keychain の unlock/ACL、ラッパーの stderr を確認する。secret を plist やファイルへ退避しない。
+- 401/403: token の対象 account と D1 Write/Edit 権限、account/database ID を確認する。権限を広げない。
+- 429: 両 scheduler を止め、Cloudflare API の rate limit を確認する。自動 retry を追加しない。
+- response error: 両 scheduler を止め、API 応答仕様と fixture の差を確認する。想定外 BLOB を成功扱いしない。
+- lease loss: `leaseLostMidRun` / `lockReleased` と D1 遅延を確認する。10分 lease や5分 runtime を独断で変更しない。
+- Mac 停止: Actions の毎時バックストップを確認し、復旧後の launchd 実行を確認する。
+- Actions failure: main ガード、variable gate、Secrets/Variables、migration、job log の固定エラー名を確認する。
+- token 漏洩疑い: Cloudflare token を失効・再発行し、GitHub Secret と Keychain の両方を更新する。
+
+本番 migration 未適用、Pages/GitHub/Keychain の鍵一致を値の出力なしに確認できない、
+数値 bind や BLOB が想定と異なる場合は scheduler を有効にせず運用者確認で停止する。
 
 ## 4. ip_hash 鍵の管理
 
@@ -352,6 +475,7 @@ Paid 同期検証へ切り替える際の必須チェック:
   (IP は低エントロピーで公開ソルトでは総当たり可能なため)。
 - ローカル: `.dev.vars`(gitignore 済み。`.dev.vars.example` を雛形として使う)。
 - 本番: Cloudflare Pages の secret(`wrangler pages secret put RANKING_IP_HASH_KEY`)。
+- 定期監査: GitHub Actions Secret と Keychain service `qixxx-ranking-audit`。Pages と同じ値を登録するが、値をログへ出して比較しない。
 - 鍵が未設定の場合、POST ハンドラ・監査コマンドの両方が **DB 操作前に** 検出して
   fail-closed する(`functions/_lib/ranking/ipHash.ts`)。生 IP へのフォールバックはしない。
 
@@ -439,9 +563,10 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
       通る」抜け道になるため)。実際に発生させるのが難しい種別(`lease-lost-*` 等)も
       fixture 経由で必ず衛生チェックを通る。
 
-## 6. 既知の残余リスク・未決事項
+## 6. 既知の残余リスク
 
-- Actions からの実 D1 接続方式(§3 の1)は未実装・未決定。
+- D1 REST API の数値 bind と BLOB 表現は、migration 後の初回手動疎通で確認する。
+- launchd と Keychain はログイン状態、Keychain lock、ACL の影響を受ける。
 - Free 10ms CPU 適合の最終確定(実測 `cpuTime`)は未了 — デプロイ後の
   Cloudflare preview 環境での実測に委ねる。
 - 監査までの偽スコア表示窓(通常運用で cron 間隔+実行時間、リトライ対象は最大3周期まで。

@@ -6,7 +6,13 @@
 //
 // Run via `npx vite-node scripts/audit/cli.ts` — never by importing this
 // module directly, outside tests.
-import { LocalPlatformProxyD1Adapter } from './d1Adapter';
+import {
+  LocalPlatformProxyD1Adapter,
+  RemoteD1Adapter,
+  RemoteD1ConfigurationError,
+  missingRemoteConfiguration,
+  type AuditD1Adapter,
+} from './d1Adapter';
 import { runAudit, type AuditEvent } from './runAudit';
 import { requireIpHashKey, MissingIpHashKeyError } from '../../functions/_lib/ranking/ipHash';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../functions/_lib/ranking/season';
@@ -25,6 +31,18 @@ function logEvent(event: AuditEvent): void {
 }
 
 export async function runAuditCommand(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--remote')) {
+    console.error('[audit] usage: npx vite-node scripts/audit/cli.ts [--remote]');
+    process.exitCode = 1;
+    return;
+  }
+  const remote = args[0] === '--remote';
+  if (remote) {
+    const missing = missingRemoteConfiguration(process.env);
+    if (missing.length > 0) throw new RemoteD1ConfigurationError(missing);
+  }
+
   // Fail closed before any DB operation when RANKING_IP_HASH_KEY is missing.
   // This command does not itself compute any ip_hash
   // (audit rows already have theirs from POST time), but the same
@@ -43,7 +61,13 @@ export async function runAuditCommand(): Promise<void> {
     throw err;
   }
 
-  const adapter = new LocalPlatformProxyD1Adapter();
+  const adapter: AuditD1Adapter = remote
+    ? new RemoteD1Adapter({
+        apiToken: process.env.CLOUDFLARE_API_TOKEN!,
+        accountId: process.env.CLOUDFLARE_ACCOUNT_ID!,
+        databaseId: process.env.CLOUDFLARE_D1_DATABASE_ID!,
+      })
+    : new LocalPlatformProxyD1Adapter();
   try {
     const db = await adapter.getDb();
     try {
