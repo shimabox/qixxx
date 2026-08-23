@@ -73,6 +73,10 @@ export const ALLOWED_ERROR_NAMES: readonly string[] = [
   'MissingIpHashKeyError',
   'RleDecodeError',
   'ReplayAbortedError',
+  'RemoteD1ConfigurationError',
+  'RemoteD1RequestError',
+  'RemoteD1ResponseError',
+  'RemoteD1QueryError',
 ];
 
 const ALLOWED_ERROR_NAME_SET = new Set(ALLOWED_ERROR_NAMES);

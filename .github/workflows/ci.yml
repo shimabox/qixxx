@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check ranking audit wrapper syntax
+        run: sh -n scripts/audit/launchd/run-ranking-audit.sh
+
       - name: Lint
         run: npm run lint
 

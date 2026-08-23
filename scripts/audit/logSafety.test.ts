@@ -33,6 +33,14 @@ describe('safeErrorName', () => {
     expect(safeErrorName(decode)).toBe('RleDecodeError');
   });
 
+  it('returns each fixed remote D1 error name', () => {
+    for (const name of ['RemoteD1ConfigurationError', 'RemoteD1RequestError', 'RemoteD1ResponseError', 'RemoteD1QueryError']) {
+      const error = new Error('fixed');
+      error.name = name;
+      expect(safeErrorName(error)).toBe(name);
+    }
+  });
+
   it('refuses a name that is not a plain identifier (a forged/interpolated one)', () => {
     const forged = new Error('boom');
     forged.name = 'Error: leaked /etc/passwd';
