@@ -56,7 +56,6 @@ export class KeyboardInput {
   };
 
   private onKeyUp = (event: Event): void => {
-    if (isFromInteractiveElement(event)) return;
     const code = (event as KeyboardEvent).code;
     this.pressed.delete(code);
     this.pressOrder = this.pressOrder.filter((c) => c !== code);
