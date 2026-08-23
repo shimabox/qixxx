@@ -246,6 +246,8 @@ UI 上の見た目も変わらない — §0.1.1)。`GET /api/ranking/:id/replay
 
 ## 2. D1 スキーマ(非同期監査のために追加した列)
 
+スキーマ全体の定義・インデックス・クエリとの対応は [`docs/ranking-schema.md`](./ranking-schema.md) を参照。
+
 `migrations/0002_ranking_free_async.sql` が `scores` テーブルに追加する列:
 
 | 列 | 型 | 意味 |

@@ -6,6 +6,7 @@
 
 関連ファイル:
 
+- スキーマ設計: [`docs/ranking-schema.md`](./ranking-schema.md)
 - スキーマ: [`migrations/0001_create_scores.sql`](../migrations/0001_create_scores.sql)
 - シーズン定数: [`functions/_lib/ranking/season.ts`](../functions/_lib/ranking/season.ts)
 - ルール定数: [`src/config.ts`](../src/config.ts)(`RULESET_VERSION` / `REPLAY_FORMAT_VERSION` / `MAX_VERIFIED_CLAIMS`)
