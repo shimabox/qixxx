@@ -20,21 +20,22 @@ describe('rate-limit housekeeping (real local D1)', () => {
   });
 
   it('deletes only rows older than 24 hours and leaves score data unchanged', async () => {
+    const now = 1_800_000_000;
     await seedScoreRow(testD1.db, { id: 'score-preserved', replay_hash: 'score-preserved-hash' });
     await testD1.db
       .prepare(
         `INSERT INTO ranking_rate_limits (ip_hash, window_index, request_count, updated_at)
-         VALUES ('expired-a', 1, 3, unixepoch() - ?1 - 1),
-                ('expired-b', 1, 4, unixepoch() - ?1 - 100),
-                ('boundary', 1, 5, unixepoch() - ?1),
-                ('current', 2, 6, unixepoch())`
+         VALUES ('expired-a', 1, 3, ?1 - ?2 - 1),
+                ('expired-b', 1, 4, ?1 - ?2 - 100),
+                ('boundary', 1, 5, ?1 - ?2),
+                ('current', 2, 6, ?1)`
       )
-      .bind(RANKING_RATE_LIMIT_RETENTION_SECONDS)
+      .bind(now, RANKING_RATE_LIMIT_RETENTION_SECONDS)
       .run();
 
     const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(deleteExpiredRankingRateLimits(testD1.db)).resolves.toBe(2);
+    await expect(deleteExpiredRankingRateLimits(testD1.db, now)).resolves.toBe(2);
     expect(consoleLog).not.toHaveBeenCalled();
     expect(consoleError).not.toHaveBeenCalled();
 
