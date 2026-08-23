@@ -31,8 +31,8 @@ function staticImportSpecifiers(source: string): string[] {
 }
 
 /** Runs a vite-node entrypoint to completion and returns everything an operator (or the public) would see. */
-function runEntrypoint(entryPath: string, env: NodeJS.ProcessEnv): { status: number | null; output: string } {
-  const result = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vite-node', entryPath], {
+function runEntrypoint(entryPath: string, env: NodeJS.ProcessEnv, args: string[] = []): { status: number | null; output: string } {
+  const result = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vite-node', entryPath, ...args], {
     cwd: REPO_ROOT,
     env,
     encoding: 'utf8',
@@ -175,6 +175,43 @@ describe('scripts/audit/cli.ts (the entrypoint as a process)', () => {
 
       expect(output).toContain('[audit] RANKING_IP_HASH_KEY is not set in the environment');
       expect(output).not.toMatch(/RANKING_IP_HASH_KEY\s*=/); // the name, never a value
+      assertPublishableOutput(output);
+      expect(status).toBe(1);
+    }, 60_000);
+
+    it('remote mode reports all missing settings in fixed order before the existing key check', () => {
+      const env = envWithout(
+        'CLOUDFLARE_API_TOKEN',
+        'CLOUDFLARE_ACCOUNT_ID',
+        'CLOUDFLARE_D1_DATABASE_ID',
+        'RANKING_IP_HASH_KEY'
+      );
+      const { status, output } = runEntrypoint(CLI_PATH, { ...env, AUDIT_LOG_ERROR_DETAIL: '1' }, ['--remote']);
+
+      expect(output).toContain(
+        'RemoteD1ConfigurationError Remote D1 configuration is incomplete. Missing: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, RANKING_IP_HASH_KEY.'
+      );
+      expect(output).not.toContain('MissingIpHashKeyError');
+      assertPublishableOutput(output);
+      expect(status).toBe(1);
+    }, 60_000);
+
+    it('remote configuration failure is sanitized when detail logging is off', () => {
+      const env = envWithout('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_D1_DATABASE_ID', 'AUDIT_LOG_ERROR_DETAIL');
+      const { status, output } = runEntrypoint(CLI_PATH, { ...env, RANKING_IP_HASH_KEY: 'fake-key' }, ['--remote']);
+
+      expect(output).toContain('[audit] fatal error: RemoteD1ConfigurationError');
+      expect(output).not.toContain('Remote D1 configuration is incomplete');
+      assertPublishableOutput(output);
+      expect(status).toBe(1);
+    }, 60_000);
+
+    it('unknown arguments fail with usage instead of falling back to local D1', () => {
+      const { status, output } = runEntrypoint(CLI_PATH, { ...process.env, RANKING_IP_HASH_KEY: 'fake-key' }, ['--unknown']);
+
+      expect(output).toContain('[audit] usage: npx vite-node scripts/audit/cli.ts [--remote]');
+      expect(output).not.toContain('[audit] fatal error:');
+      expect(output).not.toContain('rate-limit housekeeping');
       assertPublishableOutput(output);
       expect(status).toBe(1);
     }, 60_000);
