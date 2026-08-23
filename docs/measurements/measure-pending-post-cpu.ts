@@ -83,7 +83,7 @@ function makeEnv() {
   let idSeq = 0;
   return {
     DB: {
-      prepare: (sql: string) => ({
+      prepare: (_sql: string) => ({
         bind: (..._args: unknown[]) => ({
           first: async () => ({ threshold: -1 }),
           run: async () => ({ meta: { changes: 1 } }),
