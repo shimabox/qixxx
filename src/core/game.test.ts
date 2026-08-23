@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { Field, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED } from './field';
-import { parseField } from './fieldFixture';
+import { Field, CLAIMED_FAST, CLAIMED_SLOW, BORDER, LINE, UNCLAIMED } from './field';
+import { parseField, renderField } from './fieldFixture';
 import { Game, GameInput } from './game';
 import { Wisp } from './enemy';
 import { Ember } from './patrol';
@@ -622,6 +622,33 @@ describe('Game — Igniter lifecycle (M3, docs/plan.md §3.2/§3.4 (3)/§3.5)', 
 });
 
 describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4.2/§3.6/§12.7)', () => {
+  it('resolves a Wisp entering the open line on its closing tick as a miss before claiming', () => {
+    const field = new Field(10, 5);
+    const leadingWisp = new Wisp({ x: 4, y: 3 }, () => 0.5, 0, 0.5);
+    const rightWisp = new Wisp({ x: 7, y: 2 }, () => 0.5, Math.PI / 2, 0.1);
+    const game = new Game(field, { x: 5, y: 0 }, undefined, undefined, { wisps: [leadingWisp, rightWisp] });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    const closingTick = game.update({ dx: 0, dy: 1, drawHeld: true });
+
+    expect(closingTick).toBeNull();
+    expect(game.getLives()).toBe(INITIAL_LIVES - 1);
+    expect(game.getStatus()).toBe('playing');
+    expect(game.getOccupancy()).toBe(0);
+    expect(game.getLastClearWasSplit()).toBe(false);
+    expect(game.getScore()).toBe(0);
+    expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS);
+    expect(game.drainEvents()).toEqual(['miss']);
+    expect(game.getMarker().getPosition()).toEqual({ x: 5, y: 0 });
+    expect(game.getMarker().isDrawing()).toBe(false);
+    expect(field.get({ x: 5, y: 1 })).toBe(UNCLAIMED);
+    expect(field.get({ x: 5, y: 2 })).toBe(UNCLAIMED);
+    expect(field.get({ x: 5, y: 3 })).toBe(UNCLAIMED);
+    expect(field.getCellsOfState(LINE)).toHaveLength(0);
+  });
+
   it('clears the stage instantly via a split, even when occupancy is well under the required threshold', () => {
     const field = new Field(10, 5); // interior x=1..8, y=1..3 -> 24 UNCLAIMED cells
     const leftWisp = new Wisp({ x: 2, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 2
@@ -669,6 +696,57 @@ describe('Game — 2 Wisps and split-triggered stage clear (M4, docs/plan.md §4
 
     expect(game.getOccupancy()).toBeCloseTo(18 / 24);
     expect(game.getStatus()).toBe('playing'); // not cleared — requirement wasn't met
+  });
+
+  it('preserves game and field state when a closed line has no valid Wisp position', () => {
+    const field = new Field(10, 5);
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2);
+    const game = new Game(field, { x: 7, y: 0 }, wisp, undefined, { requiredOccupancy: 0.9 });
+
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+    game.update({ dx: 0, dy: 1, drawHeld: true });
+
+    expect(game.getStatus()).toBe('playing');
+    expect(game.getOccupancy()).toBeCloseTo(18 / 24);
+    expect(game.drainEvents()).toEqual(['area-claimed']);
+
+    const fieldBeforeRejectedClaim = renderField(field);
+    const gameOccupancyBefore = game.getOccupancy();
+    const fieldOccupancyBefore = field.getOccupancy();
+    const scoreBefore = game.getScore();
+    const livesBefore = game.getLives();
+    const splitBefore = game.getLastClearWasSplit();
+
+    game.applyDebugOverrides({ wispCount: 0 });
+    game.update({ dx: 1, dy: 0, drawHeld: false });
+    game.update({ dx: 0, dy: -1, drawHeld: true });
+    for (let tick = 0; tick < IGNITER_SPAWN_STILL_TICKS; tick++) {
+      game.update({ dx: 0, dy: 0, drawHeld: false });
+    }
+    expect(game.getIgniter()).not.toBeNull();
+    expect(game.drainEvents()).toEqual(['igniter-spawned']);
+
+    game.update({ dx: 0, dy: -1, drawHeld: true });
+    game.update({ dx: 0, dy: -1, drawHeld: true });
+    const rejectedClose = game.update({ dx: 0, dy: -1, drawHeld: true });
+
+    expect(rejectedClose?.lineClosed).toBe(true);
+    expect(game.getMarker().getPosition()).toEqual({ x: 8, y: 0 });
+    expect(game.getMarker().isDrawing()).toBe(false);
+    expect(game.getIgniter()).toBeNull();
+    expect(field.getCellsOfState(LINE)).toHaveLength(0);
+    expect(renderField(field)).toBe(fieldBeforeRejectedClaim);
+    expect(field.get({ x: 7, y: 2 })).toBe(BORDER);
+    expect(field.get({ x: 1, y: 2 })).toBe(CLAIMED_FAST);
+    expect(game.getOccupancy()).toBe(gameOccupancyBefore);
+    expect(field.getOccupancy()).toBe(fieldOccupancyBefore);
+    expect(game.getScore()).toBe(scoreBefore);
+    expect(game.getLives()).toBe(livesBefore);
+    expect(game.getLastClearWasSplit()).toBe(splitBefore);
+    expect(game.getStatus()).toBe('playing');
+    expect(game.drainEvents()).toEqual([]);
   });
 
   it('carries a starting score and lives via GameOptions (docs/plan.md §6 M4 stage-to-stage carryover)', () => {

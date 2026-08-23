@@ -512,15 +512,20 @@ export class Game {
    * Advances the game by one fixed tick given the current input state.
    * Returns the marker move result (or null if no move was attempted this
    * tick, e.g. no direction held, still on movement cooldown, or the game
-   * has already ended). Enemies always advance (and can trigger a miss)
-   * regardless of marker input, as long as the game is still 'playing'.
+   * has already ended). Enemies advance before marker movement. A Wisp that
+   * reaches an existing line in that phase causes one miss before movement or
+   * claiming can occur. Miss checks use the grace state from tick start, so a
+   * newly-started grace period is not shortened in the same tick. A rejected
+   * claim ends the Igniter but does not advance game or scoring state.
    */
   update(input: GameInput): MarkerMoveResult | null {
     if (this.status !== 'playing') {
       return null;
     }
 
+    const inGraceAtTickStart = this.graceTicks > 0;
     const markerPositionBeforeMove = this.marker.getPosition();
+    let missedThisTick = false;
     for (const wisp of this.wisps) {
       wisp.update(this.field);
     }
@@ -548,14 +553,23 @@ export class Game {
     this.despawnStrandedEmbers();
     this.maybeSpawnEmbers();
 
+    if (
+      !inGraceAtTickStart &&
+      this.marker.isDrawing() &&
+      this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionBeforeMove))
+    ) {
+      this.handleMiss();
+      missedThisTick = true;
+    }
+
     const holdingDirection = input.dx !== 0 || input.dy !== 0;
     let result: MarkerMoveResult | null = null;
 
     if (!holdingDirection) {
       this.moveCooldownTicks = 0;
-    } else if (this.moveCooldownTicks > 0) {
+    } else if (!missedThisTick && this.moveCooldownTicks > 0) {
       this.moveCooldownTicks--;
-    } else {
+    } else if (!missedThisTick) {
       const speed: LineSpeed = input.slow ? 'slow' : 'fast';
       result = this.marker.tryMove(this.field, input.dx, input.dy, input.drawHeld, speed);
       this.moveCooldownTicks = (input.slow ? MARKER_MOVE_TICKS_SLOW : MARKER_MOVE_TICKS_FAST) - 1;
@@ -564,56 +578,48 @@ export class Game {
         const lineSpeed: LineSpeed = result.lineSpeed ?? 'fast';
         const wispPositions = this.wisps.map((w) => w.getPosition());
         const claimResult: ClaimResult = claimArea(this.field, result.closedLine, wispPositions, lineSpeed);
-        this.occupancy = claimResult.occupancy;
-        this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
         this.despawnIgniter();
-        this.despawnStrandedEmbers();
-        this.events.push('area-claimed');
-        this.lastClearWasSplit = claimResult.split;
-        if (claimResult.split) {
-          // Splitting the Wisps apart clears the stage instantly, regardless
-          // of occupancy (docs/plan.md §4.2/§3.6). The multiplier bump for
-          // next stage is the session layer's responsibility (it owns the
-          // split-success streak across stage boundaries).
-          this.status = 'stageclear';
-          this.events.push('split-clear');
-        } else if (this.occupancy >= this.requiredOccupancy) {
-          this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
-          this.status = 'stageclear';
-          this.events.push('stage-clear');
+        if (claimResult.accepted) {
+          this.occupancy = claimResult.occupancy;
+          this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
+          this.despawnStrandedEmbers();
+          this.events.push('area-claimed');
+          this.lastClearWasSplit = claimResult.split;
+          if (claimResult.split) {
+            // Splitting the Wisps apart clears the stage instantly, regardless
+            // of occupancy (docs/plan.md §4.2/§3.6). The multiplier bump for
+            // next stage is the session layer's responsibility (it owns the
+            // split-success streak across stage boundaries).
+            this.status = 'stageclear';
+            this.events.push('split-clear');
+          } else if (this.occupancy >= this.requiredOccupancy) {
+            this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
+            this.status = 'stageclear';
+            this.events.push('stage-clear');
+          }
         }
       }
     }
 
-    // Post-miss grace (docs/plan.md §3.5): while active, every miss check
-    // below is skipped so a sustained contact (e.g. an Ember sitting on the
-    // stationary marker's cell for several ticks) costs exactly one life.
-    // Note everything above — enemy movement, marker movement, line
-    // drawing/claiming — still ran normally this tick; only miss *detection*
-    // is suspended. The Igniter lifecycle is also still driven during grace
-    // (via updateIgniter below); its catch-up result is simply not acted on
-    // until the grace period ends.
-    const inGrace = this.graceTicks > 0;
-    if (inGrace) {
+    // Grace is measured from tick start so a miss created above retains its
+    // full duration. A tick that starts protected remains protected even when
+    // this decrement reaches zero; collision checks resume on the next tick.
+    if (inGraceAtTickStart) {
       this.graceTicks--;
       if (this.graceTicks === 0) {
-        // Grace period just elapsed this tick (docs/plan.md §3.5 "案B"): line
-        // entry re-enabled from this tick onward, same tick miss detection
-        // resumes below. A fresh handleMiss() later this same tick (e.g. the
-        // Igniter/collision checks just below) will immediately re-disable
-        // it, so there's no window where a miss mid-grace-expiry leaves line
-        // entry wrongly enabled.
+        // Movement has already run for this tick, so line entry becomes
+        // available to the next tick without shortening the protected window.
         this.marker.setLineEntryEnabled(true);
       }
     }
 
-    let missedThisTick = false;
-    if (this.status === 'playing' && this.updateIgniter(holdingDirection) && !inGrace) {
+    const igniterCaughtMarker = this.status === 'playing' && this.updateIgniter(holdingDirection);
+    if (igniterCaughtMarker && !inGraceAtTickStart && !missedThisTick) {
       this.handleMiss();
       missedThisTick = true;
     }
 
-    if (!inGrace && !missedThisTick && this.status === 'playing') {
+    if (!inGraceAtTickStart && !missedThisTick && this.status === 'playing') {
       // Marker position after this tick's move (not `markerPositionBeforeMove`
       // above, which enemy movement was given) — fetched once and reused for
       // both checks below instead of calling getPosition() (a fresh
@@ -624,6 +630,7 @@ export class Game {
         this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))
       ) {
         this.handleMiss();
+        missedThisTick = true;
       }
     }
 

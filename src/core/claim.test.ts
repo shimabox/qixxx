@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { claimArea, pruneDeadBorders } from './claim';
-import { Field, CLAIMED_FAST, CLAIMED_SLOW, UNCLAIMED, BORDER } from './field';
+import { Field, CLAIMED_FAST, CLAIMED_SLOW, UNCLAIMED, BORDER, LINE } from './field';
 import { parseField, renderField, pathFrom, markerAt } from './fieldFixture';
 
 describe('claimArea', () => {
@@ -26,6 +26,7 @@ describe('claimArea', () => {
     );
     expect(result.claimedCells).toBe(12);
     expect(result.occupancy).toBeCloseTo(12 / 32);
+    expect(result.accepted).toBe(true);
   });
 
   it('flips which side is claimed when the enemy position is mirrored', () => {
@@ -214,6 +215,7 @@ describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
 
     const result = claimArea(parsed.field, line, [q, r], 'fast');
 
+    expect(result.accepted).toBe(true);
     expect(result.split).toBe(false);
     expect(parsed.field.get({ x: 7, y: 1 })).toBe(CLAIMED_FAST);
     expect(parsed.field.get({ x: 10, y: 2 })).toBe(CLAIMED_FAST);
@@ -240,6 +242,7 @@ describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
 
     const result = claimArea(parsed.field, line, [q, r], 'fast');
 
+    expect(result.accepted).toBe(true);
     expect(result.split).toBe(true);
     // The split-off Wisp's entire side is claimed (anchored on q, the first
     // position); the anchor Wisp's own side stays open.
@@ -290,6 +293,80 @@ describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
 
     expect(result.split).toBe(false);
     expect(result.claimedCells).toBe(12);
+  });
+
+  it('ignores an invalid line position wherever it appears without changing the valid Wisp order', () => {
+    const fixture = `
+      ##########
+      #........#
+      #.Q..I.R.#
+      #........#
+      #........#
+      ##########
+    `;
+    const orders = [
+      ['I', 'Q', 'R'],
+      ['Q', 'I', 'R'],
+      ['Q', 'R', 'I'],
+    ];
+
+    const outcomes = orders.map((order) => {
+      const parsed = parseField(fixture);
+      const positions = order.map((name) => markerAt(parsed, name));
+      const line = pathFrom('(5,0) D D D D');
+      const result = claimArea(parsed.field, line, positions, 'fast');
+
+      return { result, field: renderField(parsed.field) };
+    });
+
+    for (const outcome of outcomes) {
+      expect(outcome).toEqual(outcomes[0]);
+      expect(outcome.result).toEqual({ accepted: true, claimedCells: 12, occupancy: 12 / 32, split: true });
+      expect(outcome.result.occupancy).toBeLessThan(1);
+    }
+  });
+
+  it('rejects a claim with no valid Wisp position and rolls back only current LINE cells', () => {
+    const parsed = parseField(`
+      ########
+      #fLLs..#
+      #f#Ls..#
+      #fLLs..#
+      ########
+    `);
+    const line = [
+      { x: 2, y: 0 },
+      { x: 2, y: 1 },
+      { x: 3, y: 1 },
+      { x: 2, y: 2 },
+      { x: 3, y: 2 },
+      { x: 2, y: 3 },
+      { x: 3, y: 3 },
+    ];
+    const occupancyBefore = parsed.field.getOccupancy();
+
+    const result = claimArea(
+      parsed.field,
+      line,
+      [
+        { x: 2, y: 1 },
+        { x: 2, y: 2 },
+        { x: 1, y: 1 },
+        { x: -1, y: 1 },
+      ],
+      'fast'
+    );
+
+    expect(result).toEqual({ accepted: false, claimedCells: 0, occupancy: occupancyBefore, split: false });
+    expect(parsed.field.getOccupancy()).toBe(occupancyBefore);
+    expect(renderField(parsed.field)).toBe(
+      ['########', '#f..s..#', '#f#.s..#', '#f..s..#', '########'].join('\n')
+    );
+    expect(parsed.field.get({ x: 2, y: 0 })).toBe(BORDER);
+    expect(parsed.field.get({ x: 2, y: 2 })).toBe(BORDER);
+    expect(parsed.field.get({ x: 1, y: 1 })).toBe(CLAIMED_FAST);
+    expect(parsed.field.get({ x: 4, y: 1 })).toBe(CLAIMED_SLOW);
+    expect(parsed.field.getCellsOfState(LINE)).toHaveLength(0);
   });
 });
 
