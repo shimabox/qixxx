@@ -42,7 +42,7 @@ POST /api/scores ─→ ヘッダー検査 + D1 レート制限 ─→ 基本検
         status='verified' に更新 → TOP10 整理(圏外 verified 行のみ削除)
 ```
 
-### 0.1 表示契約・24時間境界・リプレイ判定順
+### 0.1 表示契約・72時間境界・リプレイ判定順
 
 **`GET /api/ranking` は2系統を返す**(用途が違うので混同しないこと)。
 
@@ -64,11 +64,14 @@ verified 10位を上回る正当な投稿は事前ゲートを通過して受理
 レート制限 D1 が失敗した場合は KV へフォールバックせず、投稿を fail-closed の 500 にする。
 `SHARES` KV は X シェアと `/share` 用に残るが、ランキング投稿は読み書きしない。
 
-**24時間境界の統一定義**: `cutoff = now − 24時間` を全処理で共通に使い、
+**72時間境界の統一定義**: `cutoff = now − 72時間` を全処理で共通に使い、
 **新鮮 = `created_at > cutoff`**、**期限切れ = `created_at <= cutoff`** とする
 (実装は `functions/_lib/ranking/pendingGate.ts` の `pendingFreshnessCutoff()` に
 一本化。displayEntries 抽出・POST の上限 COUNT・リプレイ判定・監査の期限切れ削除の
-4箇所すべてがこれを参照する)。verified はこの判定の対象外。
+4箇所すべてがこれを参照する)。verified はこの判定の対象外。監査は launchd だけが
+定期実行し(Mac がスリープしている間の代替実行はない)、72時間という長めの窓は、
+監査が一度も走らない期間(Mac がスリープしている間だけ)未検証スコアが長く表示され
+得ることと引き換えに、週末をまたいでも投稿者のスコアを失わないための選択である。
 
 **`GET /api/ranking/:id/replay` の判定順**(この順で評価し、最初に該当したものを適用):
 
@@ -136,7 +139,7 @@ verified 基準・監査による削除)は、この表示方針とは独立に�
    - どちらにも空きがある → 候補なし(batch 内の INSERT が普通に成立する)
 2. **cutoff は batch 構築時に一度だけ評価し、batch 内の全文に同じ値をバインドする**。
    最初の INSERT 試行の値を使い回すことも、文ごとに再計算することも禁止。DELETE と INSERT が
-   異なる 24時間境界で件数を数えると「DELETE=1 / INSERT=0」が復活する。SQLite の単一ライター性が
+   異なる 72時間境界で件数を数えると「DELETE=1 / INSERT=0」が復活する。SQLite の単一ライター性が
    保証するのは batch 内の非交錯だけで、最初の試行と batch の間の状態変化は防がない。
 
 `replay_hash` UNIQUE 違反等の**エラー**時は batch 全体がロールバックされ旧行は失われない。
@@ -229,7 +232,7 @@ RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) \
 では同じ順位のまま `status` が `"pending"` から `"verified"` に変わる(順位は動かず、
 UI 上の見た目も変わらない — §0.1.1)。`GET /api/ranking/:id/replay` は pending の
 間も 200 で見られる(応答に `status:"pending"` が含まれるが、ビューアは描画に使わない)。404 になるのは「行が無い/監査で削除済み」か「pending かつ期限切れ
-(`created_at <= now-24h`)」の場合のみ。
+(`created_at <= now-72h`)」の場合のみ。
 
 ### 1.4 偽スコアの削除を確認する
 
@@ -318,7 +321,7 @@ Paid 同期検証へ切り替える際の必須チェック:
 1. `verifyReplay()` を投稿内で同期実行する。
 2. 新規行を最初から `verified` で保存する。
 3. 切替前に既存 pending を監査して空にする。
-4. pending の24時間期限、IP 3件、全体200件、自己置換を停止する。
+4. pending の72時間期限、IP 3件、全体200件、自己置換を停止する。
 5. 非同期スコア監査を停止する。
 6. D1 レート制限を同期検証より前に残し、30回/時の変更は本番メトリクスに基づく別判断にする。
 7. 非同期監査停止後も housekeeping だけを残すか、Cloudflare 側レート制限への移行を完了してから D1 housekeeping を止める。

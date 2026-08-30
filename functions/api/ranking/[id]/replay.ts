@@ -8,7 +8,7 @@
 // The judgement order below is FIXED, and the first matching rule wins:
 //
 // 1. no such row (never existed, or the audit deleted it) -> 404
-// 2. pending AND expired (the shared 24h boundary) -> 404
+// 2. pending AND expired (the shared 72h boundary) -> 404
 // 3. season/ruleset/format differs from this server's current -> 410
 // 4. anything else (fresh pending, or a version-matched verified row)
 // -> 200 + status
@@ -68,7 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   // Judgement 2: an expired pending row is treated as if it were gone — the
   // audit's own sweep will delete it shortly, and until then it must not be
-  // servable. Same 24h boundary as everywhere else (`created_at <= cutoff`).
+  // servable. Same 72h boundary as everywhere else (`created_at <= cutoff`).
   if (row.status === 'pending' && isPendingExpired(row.created_at, pendingFreshnessCutoff(Date.now()))) {
     return jsonResponse({ error: 'not found' }, 404);
   }

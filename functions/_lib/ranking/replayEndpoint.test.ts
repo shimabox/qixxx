@@ -7,7 +7,7 @@
 // The bulk of this file is the acceptance matrix for the FIXED
 // judgement order listed below:
 // 1. no row / deleted by the audit -> 404
-// 2. pending AND expired (created_at <= now-24h) -> 404
+// 2. pending AND expired (created_at <= now-72h) -> 404
 // 3. season/ruleset/format mismatch -> 410 (pending or verified)
 // 4. otherwise -> 200 + status
 // The order matters as much as the outcomes: an expired pending row at a
@@ -33,10 +33,10 @@ interface StubRow {
 
 const INPUT_BYTES = new Uint8Array([0x04, 0x0a, 0x11, 0x02]);
 const HOUR_MS = 60 * 60 * 1000;
-/** Comfortably inside the 24h freshness window: created_at > cutoff. */
+/** Comfortably inside the 72h freshness window: created_at > cutoff. */
 const FRESH_AT = () => Date.now() - HOUR_MS;
 /** Comfortably outside it (created_at <= cutoff). */
-const EXPIRED_AT = () => Date.now() - 25 * HOUR_MS;
+const EXPIRED_AT = () => Date.now() - 73 * HOUR_MS;
 
 function currentRow(overrides: Partial<StubRow> = {}): StubRow {
   return {

@@ -20,8 +20,8 @@ describe('isWithinProvisionalRange', () => {
 });
 
 describe('PENDING_EXPIRY_MS', () => {
-  it('is exactly 24 hours', () => {
-    expect(PENDING_EXPIRY_MS).toBe(24 * 60 * 60 * 1000);
+  it('is exactly 72 hours', () => {
+    expect(PENDING_EXPIRY_MS).toBe(72 * 60 * 60 * 1000);
   });
 });
 

@@ -1,6 +1,6 @@
 // Shared boundaries for the asynchronous audit flow:
 //
-// 1. The 24h pending freshness boundary — one definition used by every reader and writer.
+// 1. The 72h pending freshness boundary — one definition used by every reader and writer.
 // 2. The verified-10th-place submission gate — the
 // ONLY basis for whether a submission is accepted.
 //
@@ -8,12 +8,12 @@
 import type { Env } from '../types';
 
 /** The pending freshness window. */
-export const PENDING_EXPIRY_MS = 24 * 60 * 60 * 1000;
+export const PENDING_EXPIRY_MS = 72 * 60 * 60 * 1000;
 
 /**
  * The ONE cutoff every pending freshness/expiry decision is made against.
  * Given a "now" in epoch
- * milliseconds, returns `now - 24h`, also in epoch milliseconds (the unit
+ * milliseconds, returns `now - 72h`, also in epoch milliseconds (the unit
  * `scores.created_at` is stored in).
  *
  * The definition this cutoff carries, verbatim and everywhere:
