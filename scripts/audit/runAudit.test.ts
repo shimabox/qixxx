@@ -104,8 +104,8 @@ describe.each(AUDIT_D1_BIND_MODES)('runAudit (real local D1, %s binds)', (bindMo
     expect(result.acquired).toBe(true);
   });
 
-  it('deletes a pending row older than 24 hours at the start of the run, and counts it', async () => {
-    const staleId = await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 25 * HOUR_MS });
+  it('deletes a pending row older than 72 hours at the start of the run, and counts it', async () => {
+    const staleId = await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 73 * HOUR_MS });
     const freshId = await seedScoreRow(testDb.db, { status: 'pending', created_at: Date.now() - 1000 });
     const result = await runAudit(baseOptions(auditDb));
     expect(result.expiredDeletedCount).toBeGreaterThanOrEqual(1);

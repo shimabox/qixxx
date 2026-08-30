@@ -197,7 +197,7 @@ export async function runAudit(options: RunAuditOptions): Promise<RunAuditResult
 
   try {
     // 1. Expired-pending sweep ("監査ジョブの冒頭で削除"), against the SAME
-    // 24h boundary every reader uses:
+    // 72h boundary every reader uses:
     // expired = `created_at <= cutoff` — pendingFreshnessCutoff() is shared
     // with GET /api/ranking, POST /api/scores and the replay endpoint, so the
     // sweep can never delete a row a reader still considered fresh.

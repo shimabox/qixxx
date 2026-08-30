@@ -50,7 +50,7 @@ CREATE INDEX idx_scores_status_season_ruleset_rank
   ON scores(status, season_id, ruleset_version, score DESC, rank_seq ASC);
 
 -- The pending-cap atomic INSERT's two COUNT(*) subqueries (functions/api/
--- scores.ts) and the 24h-expiry sweep (scripts/audit/) both filter on
+-- scores.ts) and the 72h-expiry sweep (scripts/audit/) both filter on
 -- (status='pending', created_at) — global count — or additionally ip_hash
 -- for the per-IP count.
 CREATE INDEX idx_scores_pending_created ON scores(status, created_at);
