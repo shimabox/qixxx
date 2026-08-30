@@ -35,6 +35,14 @@ export default [
         localStorage: 'readonly',
         KeyboardEvent: 'readonly',
         AudioContext: 'readonly',
+        crypto: 'readonly',
+        fetch: 'readonly',
+        URLSearchParams: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
+        // Used by src/core/replayEngine.ts's chunked (viewer) simulation
+        // driver to hand control back to the event loop between chunks.
+        setTimeout: 'readonly',
       },
     },
     plugins: {
@@ -62,16 +70,58 @@ export default [
         console: 'readonly',
         crypto: 'readonly',
         atob: 'readonly',
+        btoa: 'readonly',
+        TextEncoder: 'readonly',
         Response: 'readonly',
         Request: 'readonly',
         Headers: 'readonly',
         URL: 'readonly',
+        // Streaming request-body reading (functions/api/scores.ts's
+        // readBodyWithLimit()) and its tests.
+        ReadableStream: 'readonly',
+        TextDecoder: 'readonly',
+        RequestInit: 'readonly',
         // Ambient types from @cloudflare/workers-types (tsconfig.functions.json's
         // "types"), not real JS globals — declared here purely so eslint's
         // (type-unaware) `no-undef` rule doesn't flag them; tsc itself
         // already validates their usage via tsconfig.functions.json.
         KVNamespace: 'readonly',
+        D1Database: 'readonly',
+        D1PreparedStatement: 'readonly',
         PagesFunction: 'readonly',
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tsPlugin,
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      ...tsPlugin.configs.recommended.rules,
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['scripts/**/*.ts', 'migrations/**/*.ts', 'docs/measurements/**/*.ts'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module',
+        project: './tsconfig.scripts.json',
+      },
+      globals: {
+        Buffer: 'readonly',
+        console: 'readonly',
+        crypto: 'readonly',
+        performance: 'readonly',
+        process: 'readonly',
+        Request: 'readonly',
+        URL: 'readonly',
+        // Ambient type names from tsconfig.scripts.json. ESLint's no-undef
+        // rule is not type-aware, while TypeScript validates their usage.
+        D1Database: 'readonly',
+        D1PreparedStatement: 'readonly',
+        NodeJS: 'readonly',
       },
     },
     plugins: {

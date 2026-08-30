@@ -5,7 +5,7 @@
 // constructing a fresh per-stage `Game` for each stage (see core/stage.ts
 // for the difficulty curve), carrying score/lives/multiplier/split-streak
 // across stage boundaries, and tracking a high-score *value* only —
-// persisting it to localStorage is main.ts's job (docs/plan.md's "core never
+// persisting it to localStorage is main.ts's job (docs/plan.md "core never
 // touches localStorage" invariant; see src/storage/highscore.ts).
 import { Field, Point } from './field';
 import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
@@ -28,8 +28,8 @@ import {
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
 
 /**
- * Why the current (or most recent) run ended in 'gameover'
- * (docs/plans/2026-08-13-time-limit-mode): 'life' when lives reached 0
+ * Why the current (or most recent) run ended in 'gameover':
+ * 'life' when lives reached 0
  * (core/game.ts's own gameover), 'time' when GameSession's own run-wide
  * time budget (see `timeLimitTicks`/getRemainingTicks() below) hit 0 first —
  * the latter always wins regardless of lives remaining, even if a stage
@@ -57,8 +57,8 @@ export interface SessionOptions {
   /** Random source threaded into every stage's Wisps. Defaults to Math.random. */
   rng?: Rng;
   /**
-   * Deterministic seed for a fully reproducible run (docs/plans/2026-08-11-
-   * daily-seed-time-attack request task 2: `?seed=`). When set, every stage
+   * Deterministic seed for a fully reproducible run.
+   * When set, every stage
    * builds its own rng from `deriveStageSeed(seed, stage)` (core/rng.ts)
    * rather than sharing one continuous stream — see that function's doc
    * comment for why (a stage's starting layout must not depend on how many
@@ -89,7 +89,7 @@ export interface SessionOptions {
    */
   gameFactory?: (stage: number, carry: { score: number; lives: number; multiplier: number }) => Game;
   /**
-   * Test hook (docs/plans/2026-08-13-time-limit-mode): overrides the run's
+   * Test hook: overrides the run's
    * time budget, in ticks, in place of config.ts's TIME_LIMIT_TICKS —
    * lets unit tests exercise the time-up transition without waiting out
    * 10800 real ticks. The debug panel applies its own override the same way
@@ -126,8 +126,34 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
-  private readonly seed?: number;
+  // Not readonly: a 'normal'
+  // run's seed is now replaced on every retry, at the resetToFreshRun()
+  // boundary — see `nextSeed`/setNextSeed() below for why that boundary
+  // (not Title->Playing) is the right one.
+  private seed?: number;
   private readonly baseRng?: Rng;
+  // Queued by setNextSeed():
+  // consumed the next time resetToFreshRun() runs, then cleared. Lets a
+  // caller (main.ts, normal-mode runs only) generate a fresh
+  // crypto.getRandomValues()-sourced seed ahead of time — e.g. every tick
+  // while status is 'gameover', so whichever value is queued at the moment
+  // the player actually confirms back to Title is already fresh — without
+  // needing to predict the exact tick resetToFreshRun() will fire on. A
+  // 'seeded' (`?seed=`) run's caller never calls this, so its fixed seed is
+  // simply reused on every retry exactly as before this field existed.
+  private nextSeed?: number;
+  // True from the moment any debug override becomes active, until the next
+  // resetToFreshRun(). Once any debug override is used, the run remains
+  // tainted. Deliberately *sticky* within a run — unlike
+  // hasActiveDebugOverrides() (which only reflects whether an override is
+  // *currently* active), this stays true even after the debug panel's own
+  // RESET button clears every override back to stage defaults, since the
+  // run itself was already influenced by non-standard parameters at some
+  // point and can never un-happen. Read by main.ts to exclude such a run
+  // from ranking submission, alongside `?seed=` mode (checked separately,
+  // via RunMode — a seeded run's board itself is the non-standard part, not
+  // anything this flag tracks).
+  private tainted = false;
   // The rng actually in effect for the stage currently being built — either
   // a fresh `mulberry32(deriveStageSeed(seed, stage))` (seeded runs) or
   // `baseRng` (the test-hook rng, unseeded runs). Recomputed by
@@ -139,10 +165,10 @@ export class GameSession {
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
-  // Tick counters (docs/plans/2026-08-11-daily-seed-time-attack request task
-  // 2): both count only ticks spent with status === 'playing' (including
-  // post-miss grace ticks — the stage is still 'playing' throughout grace,
-  // see game.ts's handleMiss()); title/stageclear/gameover ticks never
+  // Both tick counters count only ticks spent with status === 'playing'.
+  // This includes post-miss grace ticks because the stage remains 'playing'
+  // throughout grace (see game.ts's handleMiss()); title, stageclear, and
+  // gameover ticks never
   // advance either counter. `stageTicks` resets to 0 every time a stage's
   // Game is (re)built (buildStageGame(), called by both resetToFreshRun()
   // and advanceStage()) — freezing at its final value once the stage leaves
@@ -156,7 +182,7 @@ export class GameSession {
   // with a fresh per-stage instance ("オーバーライドはステージをまたいで
   // 維持"): buildStageGame() re-applies this to every newly-built Game.
   private debugOverrides: DebugOverrides = {};
-  // The run's time budget, in ticks (docs/plans/2026-08-13-time-limit-mode).
+  // The run's time budget, in ticks.
   // `baseTimeLimitTicks` is fixed for the session's lifetime (constructor
   // option or config.ts's TIME_LIMIT_TICKS default); `debugTimeLimitTicks`
   // — undefined unless the debug panel has touched it — takes priority over
@@ -166,10 +192,22 @@ export class GameSession {
   // / setDebugTimeLimitTicks() / resetDebugOverrides().
   private readonly baseTimeLimitTicks: number;
   private debugTimeLimitTicks: number | undefined;
-  // Set the instant a run ends (docs/plans/2026-08-13-time-limit-mode) —
+  // Set the instant a run ends —
   // see the GameOverReason type doc comment above for the two causes and
   // their precedence. Reset to null by resetToFreshRun().
   private gameOverReason: GameOverReason = null;
+  // GameOver release gate (see update()'s 'gameover' branch): closed while
+  // the player is still steering into/after the death, opened by the first
+  // tick with no movement/draw input — including the dying tick itself, when
+  // the hands were already off — which is what arms `confirm` to dismiss the
+  // GAME OVER screen. Re-seeded at every gameover entry, never anywhere else
+  // — Title/StageClear keep their instant any-key behavior.
+  private gameoverReleaseSeen = false;
+
+  /** "Hands off": no movement and no draw key engaged — the condition that arms the GameOver release gate. */
+  private static isOperationNeutral(input: SessionInput): boolean {
+    return input.dx === 0 && input.dy === 0 && !input.drawHeld;
+  }
 
   constructor(options: SessionOptions = {}) {
     this.seed = options.seed;
@@ -217,13 +255,41 @@ export class GameSession {
   }
 
   /**
-   * Ticks elapsed since the current stage started (docs/plans/2026-08-11-
-   * daily-seed-time-attack request task 2), counting only while
-   * `status === 'playing'`. Resets to 0 on every stage transition (fresh run
+   * The seed currently driving this run's per-stage boards, or `undefined`
+   * if this session was never seeded at all. main.ts reads this value to
+   * associate a normal run's `InputRecorder` samples with their seed for
+   * the ranking POST payload.
+   */
+  getSeed(): number | undefined {
+    return this.seed;
+  }
+
+  /**
+   * Queues `seed` to take effect the next time resetToFreshRun() runs (see
+   * `nextSeed`'s field doc comment for the full rationale). No effect on the
+   * *current* run in progress — only ever changes what the *next* fresh run
+   * (gameover -> title, or title -> title on repeated calls) is seeded with.
+   */
+  setNextSeed(seed: number): void {
+    this.nextSeed = seed;
+  }
+
+  /**
+   * True if this run has ever had a debug override active (see `tainted`'s
+   * field doc comment: sticky within a run, unlike hasActiveDebugOverrides()).
+   */
+  isRunTainted(): boolean {
+    return this.tainted;
+  }
+
+  /**
+   * Ticks elapsed since the current stage started, counting only while
+   * `status === 'playing'`.
+   * Resets to 0 on every stage transition (fresh run
    * or advanceStage()) and freezes at its final value once the stage leaves
-   * 'playing'. No longer surfaced in the UI as of docs/plans/2026-08-13-
-   * time-limit-mode (the StageClear screen's TIME/BEST display was removed
-   * along with `qixxx.bestTimes`) — kept for tests/future use. Format as
+   * 'playing'. The StageClear screen's TIME/BEST display was removed, so this
+   * value is retained only for tests and future use.
+   * Format as
    * `ticks / TICK_RATE` seconds (60 tick = 1s) — no wall-clock time involved.
    */
   getStageTicks(): number {
@@ -231,9 +297,9 @@ export class GameSession {
   }
 
   /**
-   * Ticks elapsed since the current run started (docs/plans/2026-08-11-
-   * daily-seed-time-attack request task 2), counting only while
-   * `status === 'playing'`, summed across every stage of the run. Resets to
+   * Ticks elapsed since the current run started, counting only while
+   * `status === 'playing'`, summed across every stage of the run.
+   * Resets to
    * 0 only on a brand-new run (resetToFreshRun()), not on a per-stage
    * advance.
    */
@@ -242,8 +308,8 @@ export class GameSession {
   }
 
   /**
-   * The run's current time budget, in ticks (docs/plans/2026-08-13-time-
-   * limit-mode): the debug panel's override (setDebugTimeLimitTicks()) when
+   * The run's current time budget, in ticks: the debug panel's override
+   * (setDebugTimeLimitTicks()) when
    * one is active, else the constructor's `timeLimitTicks` option/config.ts's
    * TIME_LIMIT_TICKS default. Exposed mainly for the debug panel's own
    * slider readout — most callers want getRemainingTicks() instead.
@@ -253,8 +319,8 @@ export class GameSession {
   }
 
   /**
-   * Ticks left before the run's time budget expires (docs/plans/2026-08-13-
-   * time-limit-mode), counting down from getTimeLimitTicks() as
+   * Ticks left before the run's time budget expires, counting down from
+   * getTimeLimitTicks() as
    * getTotalTicks() advances — so, like getTotalTicks(), only while
    * `status === 'playing'`; frozen otherwise. Clamped at 0 (never negative).
    * Reaching 0 forces a 'gameover' regardless of lives remaining — see
@@ -265,8 +331,8 @@ export class GameSession {
   }
 
   /**
-   * Why the run most recently ended in 'gameover' (docs/plans/2026-08-13-
-   * time-limit-mode) — 'life' (lives reached 0), 'time' (the run's time
+   * Why the run most recently ended in 'gameover': 'life' (lives reached 0),
+   * 'time' (the run's time
    * budget reached 0 first, regardless of lives), or `null` before any run
    * has ended. Lets callers (main.ts's GameOverModal) show a distinct
    * "TIME UP!" message instead of the ordinary life-loss GAME OVER.
@@ -276,8 +342,8 @@ export class GameSession {
   }
 
   /**
-   * Debug-panel-only override (docs/plan.md §6 M10 / §12.4 pattern,
-   * docs/plans/2026-08-13-time-limit-mode's own tuning item) for the run's
+   * Debug-panel-only override following the docs/plan.md §6 M10 / §12.4
+   * pattern, applied to the run's
    * time budget, in ticks — takes priority over the constructor's
    * `timeLimitTicks` option/config.ts's TIME_LIMIT_TICKS default until
    * resetDebugOverrides() clears it. Like every other debug override, an
@@ -287,6 +353,7 @@ export class GameSession {
    */
   setDebugTimeLimitTicks(ticks: number): void {
     this.debugTimeLimitTicks = ticks;
+    this.tainted = true;
   }
 
   /**
@@ -327,16 +394,22 @@ export class GameSession {
         this.stageTicks++;
         this.totalTicks++;
         this.updatePlaying(input);
-        // Time-up (docs/plans/2026-08-13-time-limit-mode): checked *after*
+        // Time-up: checked *after*
         // updatePlaying() so it can override whatever that call just decided
         // — including a life-loss gameover or even a stage clear landing on
         // this exact same tick — the instant the run's time budget hits 0,
-        // "残機・状態に関係なく" (regardless of lives/other state) per that
-        // request's completion criteria. 'time' always wins over 'life' on a
+        // The time limit applies regardless of lives or other state. 'time'
+        // always wins over 'life' on a
         // tick where both would otherwise apply.
         if (this.getRemainingTicks() <= 0) {
           this.status = 'gameover';
           this.gameOverReason = 'time';
+          // Seeded from the dying tick's own input:
+          // a run that ends with the hands already off (TIME UP while idle)
+          // must not make the very first arrow press wait for a second,
+          // "released" tick — PRESS ANY KEY has to mean any key, not just
+          // the operation-neutral ones.
+          this.gameoverReleaseSeen = GameSession.isOperationNeutral(input);
           this.highScore = this.getHighScore();
         }
         break;
@@ -346,7 +419,24 @@ export class GameSession {
         }
         break;
       case 'gameover':
-        if (input.confirm) {
+        // Release gate: the player is usually
+        // still steering — holding one arrow while re-pressing another, or
+        // re-tapping a draw key — in the instant the run dies, and each of
+        // those re-presses is a fresh `confirm` edge that used to dismiss
+        // this screen before it was ever seen. `confirm` therefore only
+        // counts once a tick with NO movement/draw input has been observed
+        // since gameover began ("hands off = the screen has been seen").
+        // The gate is updated BEFORE confirm is read, deliberately: a
+        // confirm arriving on an operation-neutral tick (Enter pressed with
+        // everything else released) is exactly the "released, then pressed"
+        // gesture the gate exists to wait for, so it passes immediately —
+        // while a press that itself moves/draws still needs a prior neutral
+        // tick. No time lock: as long as the player keeps steering nothing
+        // dismisses, and the moment they stop nothing makes them wait.
+        if (GameSession.isOperationNeutral(input)) {
+          this.gameoverReleaseSeen = true;
+        }
+        if (input.confirm && this.gameoverReleaseSeen) {
           this.resetToFreshRun();
           this.status = 'title';
         }
@@ -361,12 +451,33 @@ export class GameSession {
    * Title (docs/plan.md §6 M4's "full reset" requirement).
    */
   private resetToFreshRun(): void {
+    // Consume any queued seed
+    // *before* buildStageGame() below reads `this.seed` to build stage 1.
+    // This — not Title->Playing — is the boundary a queued seed takes
+    // effect at, because stage 1's board is already fully built by the time
+    // Title is ever shown (see this class's own module doc comment).
+    if (this.nextSeed !== undefined) {
+      this.seed = this.nextSeed;
+      this.nextSeed = undefined;
+    }
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
     this.totalTicks = 0;
     this.gameOverReason = null;
     this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
+    // NOT an unconditional `false`: debug overrides (`debugOverrides` /
+    // `debugTimeLimitTicks`) deliberately *persist* across a retry — they're
+    // session-level tuning state, and buildStageGame() above has already
+    // re-applied them to this brand-new run's stage-1 Game. Resetting
+    // `tainted` to false regardless would therefore hand the next run a
+    // board built with non-standard parameters while reporting it as clean,
+    // making it POST-eligible for the ranking. Seeding the flag from the
+    // overrides actually in effect at this run-start boundary keeps the two
+    // in step (and still yields `false` for the overwhelmingly common case
+    // of no overrides at all). Must run *after* buildStageGame(), since
+    // hasActiveDebugOverrides() reads through to `this.game`.
+    this.tainted = this.hasActiveDebugOverrides();
   }
 
   /**
@@ -398,14 +509,15 @@ export class GameSession {
    */
   applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
     this.debugOverrides = { ...this.debugOverrides, ...overrides };
+    this.tainted = true;
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 
   /**
    * Drops every active debug override, in the current stage and every
    * future one, restoring stage defaults — including the time-limit
-   * override set via setDebugTimeLimitTicks() (docs/plans/2026-08-13-time-
-   * limit-mode), so a single RESET button clears every debug-tunable
+   * override set via setDebugTimeLimitTicks(), so a single RESET button
+   * clears every debug-tunable
    * dimension at once.
    */
   resetDebugOverrides(): void {
@@ -423,10 +535,10 @@ export class GameSession {
    * True while at least one debug override is active — gates high-score
    * persistence (docs/plan.md §6 M10: main.ts skips `saveHighScore` while
    * this is true, so a debug-tuned run never taints the stored high score).
-   * Also true while a debug time-limit override is active (docs/plans/
-   * 2026-08-13-time-limit-mode's setDebugTimeLimitTicks()) — a run played
-   * under a tuned time budget is exactly as untrustworthy for a stored
-   * record as one played under any other tuned parameter.
+   * Also true while a debug time-limit override is active. A run played
+   * under a custom time budget is exactly as untrustworthy for a stored
+   * high score as one played under any other tuned parameter.
+   *
    */
   hasActiveDebugOverrides(): boolean {
     return this.game.hasActiveDebugOverrides() || this.debugTimeLimitTicks !== undefined;
@@ -463,6 +575,8 @@ export class GameSession {
     if (stageStatus === 'gameover') {
       this.status = 'gameover';
       this.gameOverReason = 'life';
+      // Same seeding as the TIME UP path — see update()'s comment there.
+      this.gameoverReleaseSeen = GameSession.isOperationNeutral(input);
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {
@@ -528,7 +642,7 @@ export class GameSession {
 
   /**
    * Builds this stage's Wisp cluster, spawned around a randomized center
-   * instead of the field's fixed center (docs/plan.md's anti-exploit fix,
+   * instead of the field's fixed center (docs/plan.md anti-exploit fix,
    * see config.ts's WISP_SPAWN_* constants for the full rationale): with the
    * old fixed-center spawn, a single straight line down the marker's own
    * start column reliably split the whole formation and instant-cleared

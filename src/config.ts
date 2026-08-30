@@ -27,9 +27,9 @@ export const MAX_FRAME_DELTA = 0.25;
 export const STAGE_MAX_DIFFICULTY = 10;
 export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
 
-// Time limit (docs/plans/2026-08-13-time-limit-mode): every run is capped at
+// Time limit: every run is capped at
 // a fixed time *budget* instead of running until lives run out — the whole
-// point of the "5分で1本" reframing (see that request's background), later
+// point of the "5分で1本" reframing, later
 // shortened to 3 minutes (2026-08-16 playtest decision). 10800 ticks = 180s
 // (3 minutes) at TICK_RATE=60. core/session.ts's GameSession counts this down
 // from getTotalTicks() (playing-only, same rule as the tick counters it
@@ -193,7 +193,7 @@ export const HUD_FONT = '16px monospace';
 export const HUD_TEXT_COLOR = '#ffffff';
 export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, reused for text-shadow accents (M5)
 
-// TIME countdown warning (docs/plans/2026-08-13-time-limit-mode): the HUD
+// TIME countdown warning: the HUD
 // line carrying TIME switches to this color once
 // GameSession.getRemainingTicks() drops to/below HUD_TIME_WARNING_TICKS
 // (30s), in both the single-line and stacked-lines HUD layouts (main.ts's
@@ -207,7 +207,7 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
 // STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
 // clipped by the ellipsis. See main.ts's updateHudMode()/wouldSingleLineFit()
-// doc comments for the decision itself (P2 fix, user review, 2026-08-12):
+// doc comments for the decision itself:
 // a *viewport-width-only* threshold (this constant's previous form) can't
 // account for a short viewport shrinking the canvas — and with it the HUD
 // row it's kept in sync with — via height rather than width, so a wide-but-
@@ -219,8 +219,7 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 //
 // Deliberately generous worst-case single-line stats text (main.ts's
 // measureRequiredSingleLineWidth()) used to size that decision: 3-digit
-// STAGE, 6-digit SCORE/HI (just under 1,000,000), TIME (docs/plans/
-// 2026-08-13-time-limit-mode: a run-total countdown from TIME_LIMIT_TICKS
+// STAGE, 6-digit SCORE/HI (just under 1,000,000), TIME (a run-total countdown from TIME_LIMIT_TICKS
 // down to 0, so its on-screen width is fixed at "D:SS.D" — single-digit
 // minutes, since TIME_LIMIT_TICKS's default 180s never reaches a 2-digit
 // minute — for the entire run, not just a worst case; 3:00.0 is simply its
@@ -382,3 +381,40 @@ export const TOUCH_CONTROLS_HEIGHT = 168;
 export const TOUCH_BUTTON_SIZE = 64;
 export const TOUCH_DPAD_GAP = 4;
 export const TOUCH_CONTROLS_OPACITY = 0.55;
+
+// Score ranking: the "rules" a
+// recorded/verified replay is judged under. Bumping RULESET_VERSION means
+// "an old replay can no longer be trusted to reproduce the same score" (a
+// core/game.ts or core/claim.ts balance change, say) — functions/ rejects a
+// POST whose client-reported ruleset doesn't match this build's value, and
+// the server-side CURRENT_SEASON_ID must be incremented in lockstep whenever
+// the rules change. REPLAY_FORMAT_VERSION instead means "the
+// *encoding* of a stored replay changed" (e.g. the RLE byte layout below) —
+// independent of whether the rules themselves changed, so an old row can
+// stay visible on the ranking (its score is still valid) while its replay
+// becomes unplayable until re-encoded. Both start at 1 for the
+// initial release.
+export const RULESET_VERSION = 1;
+export const REPLAY_FORMAT_VERSION = 1;
+
+// InputRecorder: the hard cap
+// on recorded PLAYING-tick samples for a single run, matching
+// TIME_LIMIT_TICKS exactly — a run can never accumulate more playing ticks
+// than its own time budget, so this is a natural (not arbitrary) ceiling.
+// Kept as its own named constant (rather than importing TIME_LIMIT_TICKS
+// everywhere this cap is checked) so RLE decoders — including the server's
+// verifyReplay(), which must reject anything past it as a protocol
+// violation rather than just "coincidentally equal to the current time
+// limit" — read as self-documenting on their own.
+export const MAX_INPUT_SAMPLES = TIME_LIMIT_TICKS;
+
+// Score ranking protocol cap: the server's replay verification rejects
+// a replay the
+// instant it detects a 101st successful area-claim. The 10800-tick budget's
+// theoretical max claim count is well past 100,
+// so an unbounded claim count would make the CPU-cost worst case
+// unbounded too — this is a protocol/DoS parameter, not a gameplay rule
+// (core/claim.ts itself is untouched), which is why it lives here in
+// config.ts rather than being folded into RULESET_VERSION's scope. Changing
+// it is documented (docs/ranking-runbook.md §4.3) as a season/verification-rule change.
+export const MAX_VERIFIED_CLAIMS = 100;

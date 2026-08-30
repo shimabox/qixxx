@@ -1,4 +1,6 @@
 import { GameSession, SessionInput } from './core/session';
+import { InputRecorder } from './core/inputRecorder';
+import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
 import { TouchControls, attachTapToConfirm } from './input/touch';
@@ -8,6 +10,7 @@ import { loadMuted, saveMuted } from './storage/settings';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
+import { initRankingUI, RankingUI } from './ui/ranking';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -21,6 +24,8 @@ import {
   HUD_WORST_CASE_STATS_TEXT,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
+  RULESET_VERSION,
+  REPLAY_FORMAT_VERSION,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -31,6 +36,8 @@ declare global {
     __game__?: {
       session: GameSession;
       sfx: SfxEngine;
+      /** Auto-advance transitions around replay skips — see replayAutoAdvanceLog. */
+      getReplayAutoAdvanceLog: () => boolean[];
     };
   }
 }
@@ -185,6 +192,14 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     screen.style.top = '50%';
     screen.style.left = '50%';
     screen.style.transform = 'translate(-50%, -50%)';
+    // Sized to its own longest line: with only
+    // `left: 50%`, an absolutely positioned box shrink-wraps to the space
+    // LEFT OF the right edge — i.e. half the field — and a line longer than
+    // that wrapped at an arbitrary word. max-content sizes it to the text;
+    // max-width keeps wrapping as the last-resort fallback for a line wider
+    // than the whole field.
+    screen.style.width = 'max-content';
+    screen.style.maxWidth = '100%';
     screen.style.color = HUD_TEXT_COLOR;
     screen.style.font = HUD_FONT;
     screen.style.textAlign = 'center';
@@ -256,8 +271,7 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     });
     row.appendChild(button);
 
-    // Reserve the width of the longer label ("UNMUTE") up front (P2 fix,
-    // user review, 2026-08-13): toggleMute()/updateMuteButtonLabel() below
+    // Reserve the width of the longer label ("UNMUTE") up front; toggleMute()/updateMuteButtonLabel() below
     // swap this button's text between "MUTE" and "UNMUTE" without ever
     // calling fitCanvasToViewport() again, so — before this fix — flipping
     // to the wider "UNMUTE" label grew the button in place, silently
@@ -294,14 +308,32 @@ let hudLine2: HTMLDivElement;
 let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
+let rankingUI: RankingUI;
 let muteButton: HTMLButtonElement;
+
+// REPLAY VIEWING isolates all live-run side effects. While
+// `viewMode === 'replay'`, update()/renderFrame()
+// branch almost entirely away from the live-run path below — no keyboard
+// input reaches core, no highscore persistence, no InputRecorder
+// observation, no GAME OVER modal/ranking-submission UI, no sfx. Driven by
+// `replayEngine` (src/core/replayEngine.ts) instead of the live `session`;
+// renderFrame() simply reads whichever of the two is currently active,
+// since both are the same GameSession class with an identical rendering
+// -relevant API.
+type ViewMode = 'live' | 'replay';
+let viewMode: ViewMode = 'live';
+let replayEngine: ReplayEngine | null = null;
+let replayAutoAdvance = true;
+// Test-visibility only (see the onReplayAutoAdvanceChange wiring in init()):
+// a capped record of the auto-advance transitions, exposed on window.__game__.
+const replayAutoAdvanceLog: boolean[] = [];
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
 let accumulator = 0;
 let lastTime = performance.now();
 // Tracks the highest value already written to storage, so we only touch
-// localStorage when the high score actually changes (docs/plan.md's "core
+// localStorage when the high score actually changes (docs/plan.md "core
 // never touches localStorage" invariant lives in src/storage/highscore.ts;
 // this is just the write-on-change guard, kept here in the DOM-facing layer).
 let lastSavedHighScore = 0;
@@ -328,8 +360,7 @@ let lastHudMultiplier = -1;
 // comparison above stays a single strict-equality check per field, same
 // shape as every other lastHud* cache.
 let lastHudTime = '';
-// Whether the last-30-seconds warning color (docs/plans/2026-08-13-time-
-// limit-mode) was applied on the previous write — see updateHud()'s doc
+// Whether the last-30-seconds warning color was applied on the previous write — see updateHud()'s doc
 // comment for why this is tracked separately from lastHudTime.
 let lastHudTimeWarning = false;
 
@@ -370,6 +401,33 @@ let runMode: RunMode = 'normal';
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
+// RANKING: records every
+// PLAYING-tick input of the *current* run. Read exactly once per run, at the
+// gameover edge in renderFrame(), where its contents are frozen into a
+// RunSubmissionSnapshot handed to src/ui/ranking.ts — that module never
+// touches this recorder (or the live session) itself, so a submission can
+// never accidentally describe the *next* run. See update()'s own
+// seed-requeuing/recorder-reset comments below.
+const inputRecorder = new InputRecorder();
+
+// Monotonic per-run identifier. Bumped at the one boundary
+// where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
+// resetToFreshRun()), so an /api/ranking response that arrives after the
+// player has already moved on can be recognized as belonging to a run that
+// no longer exists and discarded — see src/ui/ranking.ts's
+// decideSubmissionOffer().
+let runId = 1;
+
+// Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
+// Math.random — a normal run's board should be unpredictable/unseedable by
+// a player, unlike `?seed=` mode's deliberately-reproducible one. Never
+// called for 'seeded' mode, whose single seed comes from the URL instead.
+function generateNormalRunSeed(): number {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return buf[0];
+}
+
 // SEEDED RUNS helpers.
 
 /**
@@ -403,7 +461,11 @@ function init(): void {
     seededRunSeed = explicitSeedParam;
     session = new GameSession({ seed: explicitSeedParam, highScore });
   } else {
-    session = new GameSession({ highScore });
+    // Normal mode's initial Title board is seeded here, at construction —
+    // stage 1's board is already fully built by the time Title is ever
+    // shown (see GameSession's own module doc comment), so there's no later
+    // "Title -> Playing" moment this could instead hook into.
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore });
   }
 
   gameRoot = getGameRootElement();
@@ -436,6 +498,30 @@ function init(): void {
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap);
+  rankingUI = initRankingUI({
+    anchor: canvasWrap,
+    getSession: () => session,
+    getRunId: () => runId,
+    getRulesetVersion: () => RULESET_VERSION,
+    getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
+    onReplayStart: enterReplayMode,
+    onReplayExit: exitReplayMode,
+    // Paused for the duration of a chunked "skip to final stage": that skip
+    // steps the same engine between its own yields, so leaving this driver
+    // running would advance the replay twice per tick — see the option's own
+    // doc comment in src/ui/ranking.ts.
+    onReplayAutoAdvanceChange: (autoAdvance: boolean) => {
+      replayAutoAdvance = autoAdvance;
+      // Recorded for the E2E suite (docs/plan.md §7.2's window.__game__ debug
+      // hook): whether playback was actually suspended around a skip is
+      // otherwise unobservable from outside, and the bug it guards against
+      // (two drivers stepping one engine) is only a few ticks of drift on a
+      // short replay — far too small to detect by watching the board.
+      // Bounded so it can never grow without limit.
+      if (replayAutoAdvanceLog.length < 20) replayAutoAdvanceLog.push(autoAdvance);
+    },
+  });
+  rankingUI.mountTitleButton();
 
   sfx = new SfxEngine(loadMuted());
   getCreditLinkElement(hudRow);
@@ -452,7 +538,7 @@ function init(): void {
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
 
-  window.__game__ = { session, sfx };
+  window.__game__ = { session, sfx, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
   // shipped to players. The `import.meta.env.DEV` check is a compile-time
@@ -465,7 +551,7 @@ function init(): void {
       initDebugPanel(() => session, hudRow);
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
-      // for (P2 fix, user review, 2026-08-13) — it mounts asynchronously,
+      // for. It mounts asynchronously,
       // well after the fitCanvasToViewport() call above already ran, so
       // without this the single-line decision/HUD sizing would silently
       // keep using its pre-badge width until the next resize/
@@ -488,6 +574,35 @@ function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
 }
 
+/** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
+function currentSession(): GameSession {
+  return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
+}
+
+// REPLAY VIEWING mode switches (see `viewMode`'s module doc comment).
+function enterReplayMode(engine: ReplayEngine): void {
+  viewMode = 'replay';
+  replayEngine = engine;
+  replayAutoAdvance = true;
+  // Replays are silent, so stop any in-progress
+  // continuous draw tone left over from live play — otherwise the live
+  // run's audio state leaks into playback.
+  sfx.setDrawing(false, null);
+  gameOverModal.hide();
+  gameOverModalShown = false;
+  // Force the next renderFrame() to rewrite the HUD/screen text (they were
+  // last written for the live session and must not be left stale).
+  lastHudStage = -1;
+  lastScreenText = null;
+}
+
+function exitReplayMode(): void {
+  viewMode = 'live';
+  replayEngine = null;
+  lastHudStage = -1;
+  lastScreenText = null;
+}
+
 // The scale factor fitCanvasToViewport() would apply to CANVAS_WIDTH x
 // CANVAS_HEIGHT for a HUD row of the given height — i.e. the same
 // width<->height letterboxing math fitCanvasToViewport() itself uses below,
@@ -507,10 +622,10 @@ function predictCanvasScale(hudRowHeightPx: number): number {
 // and — only when `?debug` mounted it, see init() — the DEBUG badge) plus
 // #hud-row's own flex gaps between them all take up, regardless of hudRow's
 // own width. Sums *every* current child of hudRow except #hud itself,
-// rather than naming each sibling individually (P2 fix, user review,
-// 2026-08-13: a hardcoded credit-link + mute-button sum silently went stale
+// rather than naming each sibling individually: a hardcoded credit-link +
+// mute-button sum silently went stale
 // the moment the DEBUG badge was appended after this module's own initial
-// layout pass), so any element hudRow ever gains automatically counts here
+// layout pass, so any element hudRow ever gains automatically counts here
 // too, with no further changes needed here. Safe to measure each child at
 // *whatever* width it currently happens to be rendered at, regardless of
 // hudRow's own current width: every non-#hud child sets `flex: 0 0 auto`
@@ -554,12 +669,12 @@ function measureRequiredSingleLineWidth(): number {
 }
 
 // Whether switching to the single-line layout right now would actually fit
-// without clipping (P2 fix, user review, 2026-08-12: a *viewport-width-only*
+// without clipping: a *viewport-width-only*
 // threshold, this function's predecessor, can't account for a short
 // viewport shrinking the canvas — and with it hudRow, which
 // fitCanvasToViewport() keeps in sync with the canvas's own on-screen width
 // — via *height* rather than width; a wide-but-short window could then still
-// clip a single line the old fixed cutoff assumed would fit).
+// clip a single line the old fixed cutoff assumed would fit.
 //
 // Predicts the single-line layout's own HUD row height first — temporarily
 // toggling hudLine2/hudLine3 off to measure hudRow.offsetHeight, then
@@ -581,9 +696,8 @@ function measureRequiredSingleLineWidth(): number {
 // — it never reads `hudTwoLineMode` or any other previous-decision state, so
 // repeated calls during a continuous resize always converge to the same
 // answer for the same viewport geometry rather than flip-flopping on their
-// own. (Verified live by dragging a browser window's edge across every
-// threshold below — see this change's PR notes for the exact viewports
-// checked.)
+// own. The relevant viewport thresholds are covered by
+// tests/e2e/narrow-title-hud.spec.ts.
 function wouldSingleLineFit(): boolean {
   const prevLine2Display = hudLine2.style.display;
   const prevLine3Display = hudLine3.style.display;
@@ -632,19 +746,19 @@ function updateHudMode(): void {
 // frame, but usually a no-op) and updateHudMode() (once, right after a mode
 // flip, to force a rewrite via the invalidated cache).
 function updateHud(): void {
-  const game = session.getGame();
+  const activeSession = currentSession();
+  const game = activeSession.getGame();
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
-  const stage = session.getStage();
-  const score = session.getScore();
-  const hi = session.getHighScore();
-  const lives = session.getLives();
-  const multiplier = session.getMultiplier();
+  const stage = activeSession.getStage();
+  const score = activeSession.getScore();
+  const hi = activeSession.getHighScore();
+  const lives = activeSession.getLives();
+  const multiplier = activeSession.getMultiplier();
   // TIME: the run's remaining time budget, counting down from
-  // GameSession.getTimeLimitTicks() to 0 (docs/plans/2026-08-13-time-limit-
-  // mode) — a run-wide countdown, not a per-stage elapsed count.
-  const remainingTicks = session.getRemainingTicks();
+  // GameSession.getTimeLimitTicks() to 0 — a run-wide countdown, not a per-stage elapsed count.
+  const remainingTicks = activeSession.getRemainingTicks();
   const timeStr = formatTicks(remainingTicks);
-  // Last-30-seconds warning (docs/plans/2026-08-13-time-limit-mode): tracked
+  // Last-30-seconds warning: tracked
   // as its own boolean, separately from `timeStr === lastHudTime` below,
   // because the crossing tick doesn't always land on a decisecond-bucket
   // boundary (formatTicks() only changes its displayed string once every 6
@@ -679,8 +793,7 @@ function updateHud(): void {
   // mobile-viewport E2E test asserts stays unclipped), `SEED <n>` for a
   // `?seed=` run.
   const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
-  // Reset every line's color to its inherited default first (docs/plans/
-  // 2026-08-13-time-limit-mode), then apply the warning color only to
+  // Reset every line's color to its inherited default first, then apply the warning color only to
   // whichever line actually carries TIME this frame — necessary because a
   // HUD-mode flip (updateHudMode()) can move TIME from hudLine1 to hudLine3
   // (or back) between one write and the next, and a stale inline color left
@@ -705,7 +818,7 @@ function updateHud(): void {
 // once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
 // canvas's internal resolution never changes here, only its on-screen size.
 // Re-run on resize/orientation change; #game-root's own flex-computed size
-// already accounts for the touch controls' height (docs/plan.md's "縦持ち
+// already accounts for the touch controls' height (docs/plan.md "縦持ち
 // レイアウト: フィールド上部・コントロール下部") without this function
 // needing to know whether they're visible.
 //
@@ -741,9 +854,65 @@ function fitCanvasToViewport(): void {
 
 // Update logic (fixed timestep)
 function update(): void {
+  // Polled exactly once per tick regardless of mode (KeyboardInput.getInput()
+  // consumes the edge-triggered `confirm` pulse on read — calling it twice
+  // in the same tick would silently swallow a real confirm press).
   const input = keyboard.getInput();
+
+  // REPLAY VIEWING uses an entirely separate path to isolate side effects.
+  // Keyboard input is polled
+  // (so a held key doesn't "carry over" as a stale edge-triggered confirm
+  // once the player exits back to live play) but never read into core,
+  // InputRecorder never observes, highscore is never persisted, sfx never
+  // plays.
+  if (viewMode === 'replay') {
+    if (replayEngine && replayAutoAdvance) {
+      const advanced = replayEngine.stepTick();
+      const replaySession = replayEngine.getSession();
+      // Drain (not forward anywhere) every tick, same as a live run —
+      // GameSession's own doc comments warn these queues grow unbounded
+      // otherwise.
+      replaySession.drainEvents();
+      replaySession.drainDespawnedEmberPositions();
+      if (!advanced) replayAutoAdvance = false;
+    }
+    return;
+  }
+
   lastInput = input;
+
+  // Seed lifecycle: queue a fresh seed for the gameover-to-title reset.
+  // It takes effect whenever
+  // resetToFreshRun() next runs. Set every tick while 'gameover' (not just
+  // once, on the status-change edge) — simplest correct option, since
+  // GameSession.setNextSeed() only cares about whichever value is queued at
+  // the instant confirm actually triggers the reset; re-queuing a few dozen
+  // times while the GAME OVER screen sits idle is cheap. Never touches a
+  // 'seeded' (`?seed=`) run, whose fixed seed must keep reproducing the same
+  // board on every retry, exactly as before this feature existed.
+  const statusBeforeThisTick = session.getStatus();
+  if (runMode === 'normal' && statusBeforeThisTick === 'gameover') {
+    session.setNextSeed(generateNormalRunSeed());
+  }
+
   session.update(input);
+
+  // InputRecorder: reset the
+  // instant a fresh run actually starts (gameover -> title, i.e.
+  // resetToFreshRun() just fired inside the update() call above) — without
+  // this, the recorder's own "have we already seen this totalTicks value"
+  // guard would silently refuse to record the new run's early ticks (their
+  // totalTicks values are smaller than the previous run's final one).
+  // observe() itself is always safe to call unconditionally afterward: it's
+  // a no-op on any tick that didn't actually advance a *new* playing tick
+  // (title/stageclear/gameover ticks, or this same reset tick).
+  if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
+    inputRecorder.reset();
+    // A brand-new run starts here — see `runId`'s own comment.
+    runId++;
+  }
+  inputRecorder.observe(session, input);
+
   sfx.handleEvents(session.drainEvents());
   // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
   // tick granularity, same as the events above, so an effect is queued for
@@ -770,7 +939,8 @@ function update(): void {
 
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
-  const game = session.getGame();
+  const activeSession = currentSession();
+  const game = activeSession.getGame();
   const graceTicks = game.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
@@ -786,14 +956,56 @@ function renderFrame(): void {
     markerVisible
   );
 
+  const status = activeSession.getStatus();
+
+  // RANKING button/list availability: browsing the ranking
+  // — and therefore starting a replay, which suspends the live session
+  // entirely — is a Title-screen-only affordance, so that a mid-run
+  // RANKING -> REPLAY -> EXIT round trip can't be used to pause a
+  // time-limited run. Driven from here (rather than from ranking.ts on a
+  // timer of its own) so it tracks the same status this frame is rendering;
+  // the call is a no-op unless that availability actually flipped.
+  rankingUI.syncAvailability();
+
+  if (viewMode === 'replay') {
+    // No sound effects and no GAME OVER modal/ranking-submission UI: that
+    // modal's
+    // "POST TO X" button assumes a *live* run's just-finished score
+    // (see src/ui/gameOverModal.ts). A replay's own session can only ever be
+    // 'playing' or 'gameover' from the outside (ReplayEngine.stepTick()
+    // always auto-confirms all the way through Title/StageClear before
+    // returning) — the end-of-run line below covers the other case.
+    updateHud();
+    // Keeps the control bar's "STAGE n / N" line in step with the frame being
+    // drawn (see RankingUI.syncReplayStatus()).
+    rankingUI.syncReplayStatus();
+    // End-of-replay wording: "REPLAY FINISHED"
+    // read as "the video ended", leaving it ambiguous whether the run itself
+    // ended here or the playback merely stopped. It always means the former —
+    // a replay is a whole recorded run, so reaching 'gameover' IS the moment
+    // that run died — so say so, and show the stage as "n / N" to match the
+    // control bar. SCORE and STAGE sit on their OWN lines because placing
+    // them side by side overran the overlay's width and wrapped
+    // at an arbitrary word, so the layout is fixed here instead of left to
+    // the browser.
+    const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
+    const text =
+      status === 'gameover'
+        ? `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`
+        : '';
+    if (text !== lastScreenText) {
+      lastScreenText = text;
+      screen.textContent = text;
+    }
+    return;
+  }
+
   // Continuous line-drawing drone (docs/plan.md §3.8): driven off the
   // marker's actual drawing state plus whichever speed button the most
   // recent tick's merged input held.
   sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   updateHud();
-
-  const status = session.getStatus();
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
@@ -805,18 +1017,35 @@ function renderFrame(): void {
     if (!gameOverModalShown) {
       gameOverModalShown = true;
       gameOverModal.show({
-        score: session.getScore(),
-        stage: session.getStage(),
-        hiScore: session.getHighScore(),
-        // TIME UP! (docs/plans/2026-08-13-time-limit-mode): distinguishes a
+        score: activeSession.getScore(),
+        stage: activeSession.getStage(),
+        hiScore: activeSession.getHighScore(),
+        // TIME UP!: distinguishes a
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
-        reason: session.getGameOverReason() ?? undefined,
+        reason: activeSession.getGameOverReason() ?? undefined,
+      });
+      // Ranking submission offer: a no-op if this run isn't POST-eligible
+      // (`?seed=`/tainted, see
+      // src/ui/ranking.ts's isSnapshotEligible()) or isn't provisionally in
+      // range. Everything the offer/POST may ever read about the run is
+      // frozen here, synchronously, on the single frame the run ends —
+      // `session` (not `activeSession`) deliberately, to make it explicit
+      // this is the *live* run's final state and never a replay's.
+      rankingUI.offerSubmission({
+        runId,
+        seed: session.getSeed(),
+        rle: inputRecorder.encode(),
+        score: session.getScore(),
+        stage: session.getStage(),
+        runMode,
+        tainted: session.isRunTainted(),
       });
     }
   } else if (gameOverModalShown) {
     gameOverModalShown = false;
     gameOverModal.hide();
+    rankingUI.hideAll();
   }
 
   if (status === 'playing') {
