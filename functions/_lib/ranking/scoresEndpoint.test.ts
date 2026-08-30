@@ -550,7 +550,7 @@ interface RecordedStatement {
  *
  * `advanceClockOnFirstInsert` moves a Date.now() spy forward the moment the
  * first (non-batch) INSERT runs — reproducing the real gap between the first
- * attempt and the retry batch, which is exactly the window in which the 24h
+ * attempt and the retry batch, which is exactly the window in which the 72h
  * cutoff can shift.
  */
 function makeRecordingEnv(opts: {

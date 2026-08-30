@@ -382,7 +382,7 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
     expect(await pendingCount(testDb.db)).toBe(3);
   });
 
-  // The 24h boundary, exercised across the retry batch. The scenario is driven
+  // The 72h boundary, exercised across the retry batch. The scenario is driven
   // by mutating the WORLD (clock and table) in between the first INSERT
   // attempt and the retry batch, through a D1 wrapper that fires exactly once
   // — a Date.now() call-counting spy would be hostage to how many times
@@ -426,7 +426,7 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
     it('loses nothing when a pending row EXPIRES and a new one arrives in the gap (the cutoff really does move)', async () => {
       const mineIp = await ipHashFor(IP_MINE);
       const now = Date.now();
-      // Two comfortably-fresh own rows, plus one that falls off the 24h
+      // Two comfortably-fresh own rows, plus one that falls off the 72h
       // boundary 10 seconds from now.
       const fresh1 = await seedPending({ score: 200, ip_hash: mineIp, submitter_hash: myHash, created_at: now });
       const fresh2 = await seedPending({ score: 300, ip_hash: mineIp, submitter_hash: myHash, created_at: now });

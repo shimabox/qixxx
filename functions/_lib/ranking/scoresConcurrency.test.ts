@@ -115,9 +115,9 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
     expect(after!.c).toBe(200); // the global cap held exactly at 200, never 201
   });
 
-  it('expired (>24h old) pending rows are excluded from BOTH the global and per-IP cap counts', async () => {
+  it('expired (>72h old) pending rows are excluded from BOTH the global and per-IP cap counts', async () => {
     const ip = '203.0.113.40';
-    const twentyFiveHoursAgo = Date.now() - 25 * 60 * 60 * 1000;
+    const seventyThreeHoursAgo = Date.now() - 73 * 60 * 60 * 1000;
     // 3 expired rows for this exact IP (would already be at the per-IP cap
     // if they counted) plus 200 expired global filler rows (would already
     // be at the global cap if they counted) — a real, unaudited backlog.
@@ -127,7 +127,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
           `INSERT INTO scores (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
            VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, 1, X'0001', 1, ?2, ?3, 'pending', ?4, 0, NULL)`
         )
-        .bind(`expired-own-ip-${i}`, `expired-own-ip-hash-${i}`, twentyFiveHoursAgo, 'some-ip-hash-value')
+        .bind(`expired-own-ip-${i}`, `expired-own-ip-hash-${i}`, seventyThreeHoursAgo, 'some-ip-hash-value')
         .run();
     }
     for (let i = 0; i < 200; i++) {
@@ -136,7 +136,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
           `INSERT INTO scores (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
            VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, 1, X'0001', 1, ?2, ?3, 'pending', 'other-filler-ip-hash', 0, NULL)`
         )
-        .bind(`expired-filler-${i}`, `expired-filler-hash-${i}`, twentyFiveHoursAgo)
+        .bind(`expired-filler-${i}`, `expired-filler-hash-${i}`, seventyThreeHoursAgo)
         .run();
     }
     const totalPending = await testDb.db.prepare(`SELECT COUNT(*) AS c FROM scores WHERE status = 'pending'`).first<{ c: number }>();

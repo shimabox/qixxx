@@ -208,7 +208,7 @@ describe('merged display board + submission independence (real local D1)', () =>
     expect(after.entries.map((e) => e.id)).toContain(id);
   });
 
-  it('an expired pending row is invisible on the merged board AND uncounted by the caps (one 24h boundary, both readers)', async () => {
+  it('an expired pending row is invisible on the merged board AND uncounted by the caps (one 72h boundary, both readers)', async () => {
     await seedScoreRow(testDb.db, {
       id: 'expired-pending',
       season_id: CURRENT_SEASON_ID,
@@ -217,7 +217,7 @@ describe('merged display board + submission independence (real local D1)', () =>
       score: 999_999,
       status: 'pending',
       ip_hash: 'shared-ip-hash',
-      created_at: Date.now() - 25 * HOUR_MS,
+      created_at: Date.now() - 73 * HOUR_MS,
     });
     await seedScoreRow(testDb.db, {
       id: 'fresh-pending',

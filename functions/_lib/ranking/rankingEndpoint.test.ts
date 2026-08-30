@@ -222,8 +222,8 @@ describe('GET /api/ranking', () => {
       expect(body.displayEntries.filter((e) => e.status === 'verified')).toHaveLength(7);
     });
 
-    it('excludes an EXPIRED pending row (created_at <= now-24h) from the board entirely', async () => {
-      const stale = row({ rank_seq: 1, id: 'stale', score: 500, status: 'pending', created_at: Date.now() - 25 * 60 * 60 * 1000 });
+    it('excludes an EXPIRED pending row (created_at <= now-72h) from the board entirely', async () => {
+      const stale = row({ rank_seq: 1, id: 'stale', score: 500, status: 'pending', created_at: Date.now() - 73 * 60 * 60 * 1000 });
       const fresh = row({ rank_seq: 2, id: 'fresh', score: 500, status: 'pending', created_at: Date.now() - 1000 });
       const { body } = await callHandler([stale, fresh]);
       expect(body.displayEntries.map((e) => e.id)).toEqual(['fresh']);
