@@ -1,10 +1,9 @@
 // Shared tuning constants for the async audit job. These are normal-operation
 // guidelines, never guarantees —
-// GitHub Actions' `schedule` trigger can delay or skip a run outright, so
+// launchd (or the Mac it runs on) can delay or skip a run outright, so
 // nothing downstream may assume these bounds are hit exactly. Centralized
-// here (rather than inlined at each call site) so scripts/audit/runAudit.ts,
-// the GitHub Actions workflow's own comments, and docs/ranking-audit-runbook.md
-// all cite the same numbers.
+// here (rather than inlined at each call site) so scripts/audit/runAudit.ts
+// and docs/ranking-audit-runbook.md cite the same numbers.
 import { LOCK_LEASE_SECONDS } from './lock';
 
 /** Pending rows fetched per verification chunk: 50 rows/chunk. */

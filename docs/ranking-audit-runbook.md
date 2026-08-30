@@ -13,7 +13,7 @@ Paid 版(同期検証)の運用は [`docs/ranking-runbook.md`](./ranking-runbook
 - 監査ロック: [`scripts/audit/lock.ts`](../scripts/audit/lock.ts)
 - D1 接続アダプタ: [`scripts/audit/d1Adapter.ts`](../scripts/audit/d1Adapter.ts)
 - CLI エントリポイント: [`scripts/audit/cli.ts`](../scripts/audit/cli.ts)
-- GitHub Actions ワークフロー: [`.github/workflows/ranking-audit.yml`](../.github/workflows/ranking-audit.yml)
+- launchd 定期実行: [`scripts/audit/launchd/`](../scripts/audit/launchd/)
 
 ---
 
@@ -28,7 +28,7 @@ POST(このブランチでは呼ばない)と監査ジョブの両方で共有�
 POST /api/scores ─→ ヘッダー検査 + D1 レート制限 ─→ 基本検査 + 圏内事前ゲート ─→ D1 に status='pending' で保存 ─→ 即応答
                                                           │
                                                           ▼
-                           scripts/audit/runAudit.ts (Node, 手動 / launchd / GitHub Actions)
+                           scripts/audit/runAudit.ts (Node, 手動 / launchd)
                                                           │
                               verifyPendingEntry() (= verifyReplay() + 申告値/version 突合)
                                                           │
@@ -336,16 +336,23 @@ Paid 同期検証へ切り替える際の必須チェック:
 必須設定は次のとおり。空値を含む不足は DB/fetch より前に
 `RemoteD1ConfigurationError` で終了する。
 
-| 環境変数 | GitHub Actions | launchd |
-| --- | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Secret | Keychain |
-| `CLOUDFLARE_ACCOUNT_ID` | Repository Variable | plist |
-| `CLOUDFLARE_D1_DATABASE_ID` | Repository Variable | plist |
-| `RANKING_IP_HASH_KEY` | Secret | Keychain |
+| 環境変数 | launchd |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Keychain |
+| `CLOUDFLARE_ACCOUNT_ID` | plist |
+| `CLOUDFLARE_D1_DATABASE_ID` | plist |
+| `RANKING_IP_HASH_KEY` | Keychain |
 
 `CLOUDFLARE_D1_DATABASE_ID` は `wrangler.toml` の `database_id` と一致させる。
 API token は対象 account の D1 Write/Edit のみに絞る。これより広い Workers、Pages、
-Account Settings、Zone 権限を要求される場合は両 scheduler を有効にせず、権限と接続先を確認する。
+Account Settings、Zone 権限を要求される場合は launchd を有効にせず、権限と接続先を確認する。
+
+launchd は毎時 2, 7, 12, …, 57 分の5分間隔で監査を実行する
+(`scripts/audit/launchd/com.qixxx.ranking-audit.plist.example` の
+`StartCalendarInterval`)。手動実行(`npm run ranking:remote:audit`)と
+launchd の定期実行が重なっても、D1 の10分 lease、heartbeat、fenced write が
+排他を担うため安全(`audit_lock` の詳細は §0 参照)。300秒の retry delay は
+最小の通常起動間隔以下という目安で、正確な起動時刻を保証しない。
 
 remote の固定エラーは次の4種類で、response body、Cloudflare の error message、URL、
 account/database ID、token、Authorization、SQL、params を保持・出力しない。
@@ -365,27 +372,12 @@ npm run ranking:remote:audit
 
 順序を入れ替えない。
 
-1. GitHub Actions の Secrets に `CLOUDFLARE_API_TOKEN` と `RANKING_IP_HASH_KEY`、
-   Variables に `CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_D1_DATABASE_ID`、
-   `AUDIT_CRON_ENABLED=false` を登録する。secret 値は出力して比較しない。
-2. 実装とは別の運用作業で `wrangler d1 migrations apply qixxx-scores --remote` を実行する。
+1. 実装とは別の運用作業で `wrangler d1 migrations apply qixxx-scores --remote` を実行する。
    本番 migration は監査有効化前の必須依存であり、この実装の検証には含めない。
-3. reviewed commit の checkout から `npm run ranking:remote:audit` を1回実行し、
+2. reviewed commit の checkout から `npm run ranking:remote:audit` を1回実行し、
    `done.`、`lockReleased=true`、既知 pending の確定または削除、ログの秘匿を確認する。
-4. reviewed commit を main へマージする。
-5. main の `workflow_dispatch` を実行し、同じ完了条件を確認する。main 以外では手動実行も job が開始されない。
-6. §3.3 の launchd を導入し、通常周期とスリープ復帰を確認する。
-7. 最後に `AUDIT_CRON_ENABLED=true` へ変更し、毎時23分の Actions バックストップを有効にする。
-
-### 3.2 二つの scheduler
-
-- 主系: launchd。毎時 2, 7, 12, …, 57 分の5分間隔。
-- バックストップ: GitHub Actions。`23 * * * *`。main かつ手動、または
-  `AUDIT_CRON_ENABLED=true` のときだけ実行する。
-
-GitHub Actions の `concurrency.group` は `ranking-audit`、`cancel-in-progress` は
-`false`。scheduler 間の排他は D1 の10分 lease、heartbeat、fenced write が担う。
-300秒の retry delay は最小の通常起動間隔以下という目安で、正確な起動時刻を保証しない。
+3. reviewed commit を main へマージする。
+4. §3.3 の launchd を導入し、通常周期とスリープ復帰を確認する。
 
 ### 3.3 launchd の導入
 
@@ -455,21 +447,22 @@ launchd の開いた file descriptor を残さず、secret が含まれないこ
 
 ### 3.5 停止、ロールバック、障害対応
 
-無効化・ロールバックでは最初に `AUDIT_CRON_ENABLED=false` と launchd の `bootout` を行う。
-実行中 Actions job の終了と、`audit_lock` の解放または10分失効を確認する。remote adapter や
-workflow を revert しても schema は DROP せず、verified 化や削除を自動で戻さない。
+無効化・ロールバックでは launchd の `bootout` を行う。
+`audit_lock` の解放または10分失効を確認する。remote adapter を revert しても
+schema は DROP せず、verified 化や削除を自動で戻さない。
 
 - Keychain failure: account/service 名、login Keychain の unlock/ACL、ラッパーの stderr を確認する。secret を plist やファイルへ退避しない。
 - 401/403: token の対象 account と D1 Write/Edit 権限、account/database ID を確認する。権限を広げない。
-- 429: 両 scheduler を止め、Cloudflare API の rate limit を確認する。自動 retry を追加しない。
-- response error: 両 scheduler を止め、API 応答仕様と fixture の差を確認する。想定外 BLOB を成功扱いしない。
+- 429: launchd を止め、Cloudflare API の rate limit を確認する。自動 retry を追加しない。
+- response error: launchd を止め、API 応答仕様と fixture の差を確認する。想定外 BLOB を成功扱いしない。
 - lease loss: `leaseLostMidRun` / `lockReleased` と D1 遅延を確認する。10分 lease や5分 runtime を独断で変更しない。
-- Mac 停止: Actions の毎時バックストップを確認し、復旧後の launchd 実行を確認する。
-- Actions failure: main ガード、variable gate、Secrets/Variables、migration、job log の固定エラー名を確認する。
-- token 漏洩疑い: Cloudflare token を失効・再発行し、GitHub Secret と Keychain の両方を更新する。
+- Mac 停止: バックストップは存在しない。pending は Mac が復帰して次の launchd 実行が
+  走るまで待つか、それより先に(§0 の)期限で削除される。復旧後は通常周期での
+  launchd 実行を確認する。
+- token 漏洩疑い: Cloudflare token を失効・再発行し、Keychain を更新する。
 
-本番 migration 未適用、Pages/GitHub/Keychain の鍵一致を値の出力なしに確認できない、
-数値 bind や BLOB が想定と異なる場合は scheduler を有効にせず運用者確認で停止する。
+本番 migration 未適用、Pages/Keychain の鍵一致を値の出力なしに確認できない、
+数値 bind や BLOB が想定と異なる場合は launchd を有効にせず運用者確認で停止する。
 
 ## 4. ip_hash 鍵の管理
 
@@ -477,16 +470,18 @@ workflow を revert しても schema は DROP せず、verified 化や削除を�
   (IP は低エントロピーで公開ソルトでは総当たり可能なため)。
 - ローカル: `.dev.vars`(gitignore 済み。`.dev.vars.example` を雛形として使う)。
 - 本番: Cloudflare Pages の secret(`wrangler pages secret put RANKING_IP_HASH_KEY`)。
-- 定期監査: GitHub Actions Secret と Keychain service `qixxx-ranking-audit`。Pages と同じ値を登録するが、値をログへ出して比較しない。
+- 定期監査: Keychain service `qixxx-ranking-audit`。Pages と同じ値を登録するが、値をログへ出して比較しない。
 - 鍵が未設定の場合、POST ハンドラ・監査コマンドの両方が **DB 操作前に** 検出して
   fail-closed する(`functions/_lib/ranking/ipHash.ts`)。生 IP へのフォールバックはしない。
 
-## 5. ログ方針(公開ログ前提)
+## 5. ログ方針(共有前提)
 
-**このリポジトリは公開されており、GitHub Actions の実行ログは誰でも閲覧できる。**
-監査ジョブが出力するものは「運用者のコンソール」ではなく **公開された成果物** として扱う。
+**launchd のログは `$HOME` 配下のローカルファイルだが、デバッグのために共有され得る。**
+監査ジョブが出力するものは「運用者だけが見るコンソール」ではなく
+**共有され得る成果物** として扱い、公開ログと同じルールを適用する。
 対象は `scripts/audit/cli.ts` の標準出力/標準エラー、`runAudit()` が emit する
-`AuditEvent` 全種(cli がそのまま JSON で印字する)、および workflow の run ステップ出力。
+`AuditEvent` 全種(cli がそのまま JSON で印字する)、および launchd の
+stdout/stderr ログファイル(§3.3)の内容。
 
 ### 5.1 出してよいもの / いけないもの
 
@@ -507,22 +502,22 @@ workflow を revert しても schema は DROP せず、verified 化や削除を�
 (`errorName:"TypeError"`)。`TypeError` と D1 障害を区別してリトライ判断するには
 これで十分。メッセージ本文の**先頭1行のみ**(スタックなし・200字で打ち切り)は
 ローカル実行時に環境変数 `AUDIT_LOG_ERROR_DETAIL=1` を付けたときだけ出る
-— **workflow では絶対に設定しない**。
+— **launchd の定期実行では絶対に設定しない**。
 
 クラス名は**固定の許可リスト**(`ALLOWED_ERROR_NAMES`)と照合し、載っていない名前は
 すべて `UnknownError` にする。`Error#name` は書き換え可能なただのプロパティなので、
 「識別子の形をしている」ことは本物のクラス名である証拠にならない
-(`{name:"Secret_supersecret"}` がそのまま公開ログに出てしまう)。
+(`{name:"Secret_supersecret"}` がそのまま共有ログに出てしまう)。
 許可リストに足すのは **どこで throw されるかを確認したクラスだけ**。
 未収載のクラスは `UnknownError` になるが、それはローカル再実行1回で特定できる
-コストであり、素性不明の文字列を公開する損失とは釣り合わない。
+コストであり、素性不明の文字列を共有してしまう損失とは釣り合わない。
 
 ### 5.2 エントリポイントの構造(初期化例外の取りこぼし防止)
 
 `scripts/audit/cli.ts` は **最小の bootstrap** であり、コマンド本体は
 `./auditCommand` を **動的 import** して読み込む。静的 import にすると
 **モジュール初期化中の throw** が bootstrap の catch より前に発生し、
-vite-node が生スタック(絶対パス込み)を公開ログに出してしまうため
+vite-node が生スタック(絶対パス込み)を共有ログに出してしまうため
 (`scripts/audit/constants.ts` はトップレベル `throw` で不変条件を検査しており、
 この経路は実在する)。
 
@@ -571,8 +566,8 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
 - launchd と Keychain はログイン状態、Keychain lock、ACL の影響を受ける。
 - Free 10ms CPU 適合の最終確定(実測 `cpuTime`)は未了 — デプロイ後の
   Cloudflare preview 環境での実測に委ねる。
-- 監査までの偽スコア表示窓(通常運用で cron 間隔+実行時間、リトライ対象は最大3周期まで。
-  GitHub Actions の `schedule` は遅延・スキップされ得るため、いずれも保証値ではなく目安)
+- 監査までの偽スコア表示窓(通常運用で launchd の5分間隔+実行時間、リトライ対象は最大3周期まで。
+  Mac のスリープ・電源断で launchd 実行自体が遅延・欠落し得るため、いずれも保証値ではなく目安)
   は非同期監査方式の本質的なトレードオフであり、実装で解消できるものではない
   (同期検証を行う Paid 版にはこの窓がない)。pending は `displayEntries` に
   統合表示されるため、この窓の間、偽スコアは表示上の実際の順位を

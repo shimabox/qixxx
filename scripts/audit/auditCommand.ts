@@ -19,9 +19,10 @@ import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../..
 import { errorDetailEnabled } from './logSafety';
 import { deleteExpiredRankingRateLimits } from './rateLimitHousekeeping';
 
-// EVERYTHING THIS FILE PRINTS IS PUBLIC. The GitHub Actions run log for
-// .github/workflows/ranking-audit.yml is world-readable (public repository),
-// so this command's stdout/stderr is published output — see
+// EVERYTHING THIS FILE PRINTS IS TREATED AS SHAREABLE. The audit runs from
+// launchd (docs/ranking-audit-runbook.md §3.3) and its output is a local log
+// file, but that file gets shared for debugging, so this command's
+// stdout/stderr must stay safe to hand around — see
 // docs/ranking-audit-runbook.md §5 "ログ方針" for the field-by-field policy
 // and scripts/audit/logSafety.ts for the error-redaction helpers that
 // implement it. AuditEvent's own doc comment carries the same rule for the
@@ -82,7 +83,7 @@ export async function runAuditCommand(): Promise<void> {
       seasonId: CURRENT_SEASON_ID,
       rulesetVersion: RULESET_VERSION,
       replayFormatVersion: REPLAY_FORMAT_VERSION,
-      // Local-debugging opt-in only; the workflow never sets this variable.
+      // Local-debugging opt-in only; launchd never sets this variable.
       includeErrorDetail: errorDetailEnabled(process.env),
       onEvent: logEvent,
     });
