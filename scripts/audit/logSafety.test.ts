@@ -182,7 +182,7 @@ describe('safeErrorDetail', () => {
 });
 
 describe('errorDetailEnabled', () => {
-  it('is OFF by default — the workflow env never sets the variable', () => {
+  it('is OFF by default — a scheduled launchd run never sets the variable', () => {
     expect(errorDetailEnabled({})).toBe(false);
     expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: '' })).toBe(false);
   });

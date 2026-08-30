@@ -1,5 +1,5 @@
 // Server-side replay verification is a DOM-independent pure function.
-// The same simulation runs from request handlers and the GitHub Actions
+// The same simulation runs from request handlers and the launchd-scheduled
 // async audit without duplicating verification logic.
 //
 // Dependencies are limited to DOM-free src/core/ code and standard Web

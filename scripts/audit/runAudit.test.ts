@@ -637,11 +637,10 @@ describe.each(AUDIT_D1_BIND_MODES)('runAudit (real local D1, %s binds)', (bindMo
     });
   });
 
-  // Public-log hygiene: this repository is public, so the audit
-  // workflow's GitHub Actions run log — which is just these events, printed
-  // verbatim as JSON by scripts/audit/cli.ts — is world-readable. These tests
-  // pin down what may appear in it, against a REAL run rather than by reading
-  // the event type.
+  // Public-log hygiene: the audit's launchd run log — which is just these
+  // events, printed verbatim as JSON by scripts/audit/cli.ts — gets shared
+  // for debugging. These tests pin down what may appear in it, against a
+  // REAL run rather than by reading the event type.
   describe('public-log hygiene (events are published output)', () => {
     /**
      * The complete set of fields each event kind may carry.

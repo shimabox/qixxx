@@ -26,10 +26,10 @@ export interface RunAuditOptions {
   benchHooks?: BenchVerifyHooks;
   /**
    * Adds an unexpected exception's (first-line, truncated) message text to
-   * the retry/exhausted events. OFF by default and never enabled on the
-   * workflow: an error message can carry paths/connection details that must
-   * not reach a public log (scripts/audit/logSafety.ts). The CLI sets this
-   * from AUDIT_LOG_ERROR_DETAIL for local debugging only.
+   * the retry/exhausted events. OFF by default and never enabled on a
+   * scheduled launchd run: an error message can carry paths/connection
+   * details that must not reach a shared log (scripts/audit/logSafety.ts).
+   * The CLI sets this from AUDIT_LOG_ERROR_DETAIL for local debugging only.
    */
   includeErrorDetail?: boolean;
   /** Progress/log callback — never required for correctness, purely observational (the CLI entrypoint wires this to console.log). */
@@ -37,10 +37,10 @@ export interface RunAuditOptions {
 }
 
 /**
- * Every event below is written to a PUBLIC log (the CLI entrypoint prints
- * them verbatim as JSON, and this repository's GitHub Actions run logs are
- * world-readable) — so each field here is part of the published output, not
- * an operator-only diagnostic. Fields are restricted to event kinds,
+ * Every event below is written to a log treated as shareable (the CLI
+ * entrypoint prints them verbatim as JSON, and this repository's launchd run
+ * logs get handed around for debugging) — so each field here is part of the
+ * shareable output, not an operator-only diagnostic. Fields are restricted to event kinds,
  * aggregate counts, already-public row `id`s and rejection reason KINDS;
  * never ip_hash, never the lock's owner_token, never raw error text. Adding a
  * field means re-checking it against docs/ranking-audit-runbook.md §5's

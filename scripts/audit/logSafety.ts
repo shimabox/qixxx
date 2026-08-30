@@ -1,9 +1,8 @@
 // Log redaction helpers for the audit job (docs/ranking-audit-runbook.md
-// §"ログ方針"). This repository is PUBLIC, and so is every GitHub Actions
-// run log the audit workflow (.github/workflows/ranking-audit.yml) produces
-// — anyone can read them without signing in. Everything scripts/audit/ ever
-// prints is therefore treated as published output, not as an operator's
-// private console.
+// §"ログ方針"). The audit runs from launchd (docs/ranking-audit-runbook.md
+// §3.3) and writes to local log files, but those files get shared for
+// debugging. Everything scripts/audit/ ever prints is therefore treated as
+// shareable output, not as an operator's private console.
 //
 // What may be logged (the runbook's table is the authority; this module
 // implements the error-shaped part of it):
@@ -25,9 +24,9 @@
 // enough to tell a TypeError from a D1 failure and route a retry, with no
 // attacker-controlled or environment-derived text in it. The message's first
 // line can be opted into for LOCAL debugging via the AUDIT_LOG_ERROR_DETAIL
-// environment variable, which must never be set on the workflow.
+// environment variable, which must never be set on a scheduled launchd run.
 
-/** Environment variable that opts a LOCAL run into logging error message text. Never set in .github/workflows/ranking-audit.yml — see this module's doc comment. */
+/** Environment variable that opts a LOCAL run into logging error message text. Never set on a scheduled launchd run — see this module's doc comment. */
 export const ERROR_DETAIL_ENV_VAR = 'AUDIT_LOG_ERROR_DETAIL';
 
 /** Hard cap on an opted-in error detail, so even a local log can't be flooded by a megabyte-long message. */

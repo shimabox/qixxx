@@ -1,19 +1,20 @@
-// Manual/CI entrypoint for the async audit job. Run locally via:
+// Manual/launchd entrypoint for the async audit job. Run locally via:
 //
 // npx vite-node scripts/audit/cli.ts [--remote]
 //
 // (see docs/ranking-audit-runbook.md for the full manual-run walkthrough —
 // applying migrations first, seeding a pending row via a real POST, then
 // running this). With no argument the command uses local D1; `--remote`
-// selects the D1 HTTP REST adapter. Both scheduled runners invoke the remote
-// npm script, with no separate scheduler-specific branch in this file.
+// selects the D1 HTTP REST adapter. The launchd scheduler (docs/ranking-audit-runbook.md
+// §3.3) invokes the same remote npm script, with no separate scheduler-specific
+// branch in this file.
 //
 // ---------------------------------------------------------------------------
 // WHY THIS FILE IS A BOOTSTRAP AND NOT THE COMMAND ITSELF
 // ---------------------------------------------------------------------------
-// This entrypoint's output is PUBLIC (world-readable GitHub Actions run logs
-// on a public repository), so no thrown value may reach it unredacted —
-// docs/ranking-audit-runbook.md §5 "ログ方針". An earlier implementation imported
+// This entrypoint's output is treated as shareable (a launchd log file that
+// gets handed around for debugging), so no thrown value may reach it
+// unredacted — docs/ranking-audit-runbook.md §5 "ログ方針". An earlier implementation imported
 // the whole command statically and wrapped only `main().catch(...)`; a throw during
 // MODULE
 // INITIALIZATION of any statically-imported module happens BEFORE any of this
@@ -48,8 +49,8 @@ bootstrap().catch((err: unknown) => {
   // Deliberately NOT `console.error('...', err)`: printing the error object
   // publishes its message AND stack — absolute file paths, and for a D1/
   // network failure potentially endpoint or account details. The class name
-  // is what a public log gets; re-run locally with AUDIT_LOG_ERROR_DETAIL=1
-  // (never on the workflow) to see the message's first line too.
+  // is what the shared log gets; re-run locally with AUDIT_LOG_ERROR_DETAIL=1
+  // (never on a scheduled launchd run) to see the message's first line too.
   console.error(`[audit] fatal error: ${describeError(err)} (re-run locally with ${ERROR_DETAIL_ENV_VAR}=1 for the error message)`);
   process.exitCode = 1;
 });
