@@ -90,7 +90,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const entries: RankingEntry[] = verifiedRows.map(toEntry);
 
   // Display-pending candidates: current season/ruleset, FRESH
-  // (the shared 24h boundary — `created_at > cutoff`, see
+  // (the shared 72h boundary — `created_at > cutoff`, see
   // pendingFreshnessCutoff()), narrowed by the SAME ordering the merge below
   // uses, so a 4th same-score candidate loses to the three earliest rank_seq
   // values deterministically rather than by whatever order D1 happened to

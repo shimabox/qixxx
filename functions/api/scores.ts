@@ -71,7 +71,7 @@ interface PendingRowValues {
  * the row insertion are evaluated together — a concurrent POST cannot slip
  * past the cap the way a separate "SELECT COUNT then INSERT" round trip
  * could. `changes === 0` afterward means the WHERE clause's conditions failed
- * (cap reached), NOT a UNIQUE violation (which throws instead). Expired (>24h
+ * (cap reached), NOT a UNIQUE violation (which throws instead). Expired (>72h
  * old) pending rows are excluded from both COUNT(*)s, so a stalled audit job
  * cannot leave stale pending rows permanently blocking new submissions.
  * This keeps expired backlog entries from consuming capacity.
@@ -162,7 +162,7 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
  * `cutoff` is passed in, and the caller binds the SAME number here and in
  * buildCappedInsert(). Recomputing it per statement — or reusing the first
  * INSERT attempt's older value for one of the two — reintroduces exactly the
- * failure this design exists to remove: with two different 24h boundaries,
+ * failure this design exists to remove: with two different 72h boundaries,
  * the DELETE can be evaluating a world where the queue is full while the
  * INSERT evaluates one where it is fuller still (an older cutoff counts more
  * rows as fresh), and "DELETE = 1 / INSERT = 0" comes back. SQLite's single
@@ -460,7 +460,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const id = generateShareId();
   const createdAt = Date.now();
   const submitterHash = tokenParse.kind === 'valid' ? await computeSubmitterHash(tokenParse.token) : null;
-  // The shared 24h boundary: rows with
+  // The shared 72h boundary: rows with
   // `created_at > cutoff` are fresh and therefore counted; `<= cutoff` are
   // expired and ignored. Same helper the display query, the replay endpoint
   // and the audit sweep all use.
@@ -512,7 +512,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   // token-less client never gets here at all, so a full pending queue is
   // still an untouched-table 429 for every row this browser does not own.
   if (insertResult.meta.changes === 0 && submitterHash !== null) {
-    // The one and only evaluation of the 24h boundary for this batch — bound
+    // The one and only evaluation of the 72h boundary for this batch — bound
     // identically into BOTH statements below. Deliberately NOT `expiryCutoff`
     // (the first attempt's, now stale) and deliberately not recomputed per
     // statement: buildSelfReplaceDelete()'s doc comment explains why two
