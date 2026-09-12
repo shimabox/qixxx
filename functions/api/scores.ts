@@ -18,6 +18,7 @@
 // (`status='verified'`) or deletes the row.
 import type { Env } from '../_lib/types';
 import { jsonResponse } from '../_lib/response';
+import { readBodyWithLimit } from '../_lib/readBody';
 import { generateShareId } from '../_lib/shareId';
 import { computeReplayHash } from '../_lib/ranking/hash';
 import { validateName, validateXHandle } from '../_lib/ranking/nameValidation';
@@ -25,7 +26,7 @@ import { validateSeed } from '../_lib/ranking/seedValidation';
 import { validateScore, validateStage } from '../_lib/ranking/scoreValidation';
 import { deriveDurationTicksFromRle } from '../_lib/ranking/rleDuration';
 import { getVerifiedTenthPlaceThreshold, isWithinProvisionalRange, pendingFreshnessCutoff } from '../_lib/ranking/pendingGate';
-import { requireIpHashKey, computeIpHash, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
+import { requireIpHashKey, computeIpHash, normalizeClientIp, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
 import { parseSubmitterToken, computeSubmitterHash } from '../_lib/ranking/submitterToken';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
@@ -217,53 +218,6 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
-/** What readBodyWithLimit() decided about the request body. */
-export type BodyReadResult = { ok: true; text: string } | { ok: false; reason: 'too-large' | 'read-failed' };
-
-/**
- * Reads the request body while counting bytes, aborting the moment the cap
- * is passed.
- *
- * Deliberately NOT `await request.text()` followed by a length check: that
- * buffers the entire body first, so a client that omits or lies about
- * Content-Length can make this public endpoint materialize up to Cloudflare's
- * 100 MB request ceiling inside a Worker with a 128 MB memory limit — an
- * out-of-memory DoS reachable before a single validation runs. The
- * Content-Length pre-check in the handler is only a cheap early-out for
- * honest clients; this is the check that actually holds.
- *
- * Cancels the stream on overflow rather than draining it, so an abusive
- * upload stops costing us anything as soon as it is recognized.
- */
-export async function readBodyWithLimit(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<BodyReadResult> {
-  if (body === null) return { ok: true, text: '' };
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let received = 0;
-  let text = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      received += value.byteLength;
-      if (received > maxBytes) {
-        await reader.cancel().catch(() => {});
-        return { ok: false, reason: 'too-large' };
-      }
-      // `stream: true` so a multi-byte UTF-8 sequence split across chunk
-      // boundaries is carried over rather than turned into replacement
-      // characters.
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    return { ok: true, text };
-  } catch {
-    await reader.cancel().catch(() => {});
-    return { ok: false, reason: 'read-failed' };
-  }
-}
-
 /**
  * True only for a D1/SQLite UNIQUE-constraint failure — here, always the
  * `replay_hash` index (migrations/0001_create_scores.sql), i.e. a genuine
@@ -314,7 +268,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     throw err;
   }
 
-  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  // IPv6 is keyed per /64 (one residential allocation), not per address —
+  // see normalizeClientIp(). Otherwise a single subscriber rotating through
+  // their 2^64 addresses would defeat both the rate limit and the per-IP
+  // pending cap below.
+  const ip = normalizeClientIp(request.headers.get('CF-Connecting-IP') ?? 'unknown');
   const ipHash = await computeIpHash(ip, ipHashKey);
   let rateLimit;
   try {
