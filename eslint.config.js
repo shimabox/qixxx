@@ -81,6 +81,7 @@ export default [
         ReadableStream: 'readonly',
         TextDecoder: 'readonly',
         RequestInit: 'readonly',
+        HeadersInit: 'readonly',
         // Workers Cache API (functions/og.ts caches rendered cards at the edge).
         caches: 'readonly',
         // Ambient types from @cloudflare/workers-types (tsconfig.functions.json's
