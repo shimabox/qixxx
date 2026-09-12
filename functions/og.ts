@@ -10,6 +10,7 @@
 import { ImageResponse } from 'workers-og';
 import type { Env, ShareRecord } from './_lib/types';
 import { shareRecordKey } from './_lib/kv';
+import { isShareId } from './_lib/shareId';
 import { PRESS_START_2P_TTF_BASE64 } from './_lib/fonts/pressStart2P';
 import { COLOR_BACKGROUND, COLOR_BORDER, COLOR_CLAIMED_SLOW, HUD_TEXT_COLOR } from '../src/config';
 
@@ -104,12 +105,35 @@ function renderCardHtml(record: ShareRecord): string {
   `;
 }
 
+/**
+ * The edge-cache key for a card: the request's own origin + `/og?id=<id>`
+ * with every other query parameter dropped. A Worker-generated response is
+ * NOT cached by Cloudflare's CDN on its own (the `Cache-Control` header
+ * below only instructs browsers and crawlers), so without an explicit Cache
+ * API entry every request — including the same URL with a junk query
+ * parameter appended — would pay the full Satori + resvg render. Keying on
+ * the normalized URL makes a card render at most once per colo.
+ */
+function cacheKeyFor(request: Request, id: string): Request {
+  const origin = new URL(request.url).origin;
+  return new Request(`${origin}/og?id=${id}`, { method: 'GET' });
+}
+
 export const onRequestGet: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
   const url = new URL(request.url);
   const id = url.searchParams.get('id');
-  if (id === null || id === '') {
+  // Only a string generateShareId() could have minted ever reaches KV or
+  // the renderer; see isShareId() for why this is a 404 rather than a lookup.
+  if (!isShareId(id)) {
     return new Response('Not Found', { status: 404 });
+  }
+
+  const cache = caches.default;
+  const cacheKey = cacheKeyFor(request, id);
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    return cached;
   }
 
   const raw = await env.SHARES.get(shareRecordKey(id));
@@ -135,9 +159,12 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
   // The record (and therefore this image) is immutable once written — a
   // given id's content never changes — so this can be cached for a full
-  // year (docs/plan-cloudflare-x-share.md Phase 2).
+  // year (docs/plan-cloudflare-x-share.md Phase 2), both downstream (this
+  // header) and at the edge (the Cache API entry written below).
   const headers = new Headers(image.headers);
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
 
-  return new Response(image.body, { status: 200, headers });
+  const response = new Response(image.body, { status: 200, headers });
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
 };
