@@ -7,6 +7,7 @@
 import type { Env, ShareRecord } from './_lib/types';
 import { shareRecordKey } from './_lib/kv';
 import { isShareId } from './_lib/shareId';
+import { withSecurityHeaders } from './_lib/response';
 
 function formatWithCommas(value: number): string {
   return value.toLocaleString('en-US');
@@ -70,6 +71,6 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const html = renderHtml(record, url.origin, id);
   return new Response(html, {
     status: 200,
-    headers: { 'content-type': 'text/html; charset=utf-8' },
+    headers: withSecurityHeaders({ 'content-type': 'text/html; charset=utf-8' }),
   });
 };
