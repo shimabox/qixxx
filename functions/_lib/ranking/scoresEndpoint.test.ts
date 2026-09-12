@@ -312,6 +312,31 @@ describe('POST /api/scores D1 rate limiting', () => {
     expect(env.SHARES.get).not.toHaveBeenCalled();
     expect(env.SHARES.put).not.toHaveBeenCalled();
   });
+
+  it('keys ip_hash on the IPv6 /64 prefix, so two addresses in one allocation share a hash', async () => {
+    const statements: { sql: string; args: unknown[] }[] = [];
+    const env = makeEnv({
+      rateLimitRunImpl: (sql, args) => {
+        statements.push({ sql, args });
+        return { meta: { changes: 1 } };
+      },
+      runImpl: (sql, args) => {
+        statements.push({ sql, args });
+        return { meta: { changes: 1 } };
+      },
+    });
+    const expectedHash = await computeIpHash('2001:db8:1:2::/64', IP_HASH_KEY);
+    for (const ip of ['2001:db8:1:2:aaaa:bbbb:cccc:dddd', '2001:DB8:0001:0002::1']) {
+      statements.length = 0;
+      const { response } = await callHandler(makeRequest(validShapedBody(), { 'CF-Connecting-IP': ip }), env);
+      expect(response.status).toBe(200);
+      const rate = statements.find((statement) => /INSERT INTO ranking_rate_limits/.test(statement.sql));
+      const pending = statements.find((statement) => /INSERT INTO scores/.test(statement.sql));
+      expect(rate?.args[0]).toBe(expectedHash);
+      expect(pending?.args[13]).toBe(expectedHash);
+      expect(statements.flatMap((statement) => statement.args)).not.toContain(ip);
+    }
+  });
 });
 
 describe('POST /api/scores structural guarantee: verifyReplay() is never invoked', () => {

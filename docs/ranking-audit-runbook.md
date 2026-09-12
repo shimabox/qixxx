@@ -256,7 +256,7 @@ UI 上の見た目も変わらない — §0.1.1)。`GET /api/ranking/:id/replay
 | 列 | 型 | 意味 |
 | --- | --- | --- |
 | `status` | `TEXT NOT NULL DEFAULT 'verified'` | `'pending'` / `'verified'`。既存行は `'verified'` にバックフィル(再監査対象にしない) |
-| `ip_hash` | `TEXT`(nullable) | `HMAC-SHA-256(CF-Connecting-IP)`。既存行は `NULL`(生成当時この列がなかったため) |
+| `ip_hash` | `TEXT`(nullable) | `HMAC-SHA-256(CF-Connecting-IP)`(IPv6 は /64 に丸めてから)。既存行は `NULL`(生成当時この列がなかったため) |
 | `audit_attempts` | `INTEGER NOT NULL DEFAULT 0` | 予期しない例外によるリトライ回数 |
 | `next_attempt_at` | `INTEGER`(nullable) | unixepoch() 秒。リトライ対象行の次回取得可能時刻 |
 
