@@ -85,7 +85,7 @@ erDiagram
 | `replay_hash` | `TEXT` | 不可 | なし | UNIQUE index | シーズン・ルールセット・seed・正規化済み入力列から計算するハッシュ。RLE の分割だけを変えた同一プレイも重複として拒否する。 |
 | `created_at` | `INTEGER` | 不可 | なし | なし | 投稿時刻の Unix epoch **ミリ秒**。pending の72時間境界と先着データの保持に使う。 |
 | `status` | `TEXT` | 不可 | `'verified'` | DDL の `CHECK` なし | コード上の値は `pending` または `verified`。既存行を再監査せず確定扱いにするため、追加時の既定値を `verified` とした。新規投稿は明示的に `pending` を設定する。 |
-| `ip_hash` | `TEXT` | 可 | `NULL` | なし | `HMAC-SHA-256(RANKING_IP_HASH_KEY, CF-Connecting-IP)` の16進表現。ヘッダー欠落時の入力はリテラル `unknown`。pending のIP別上限に使う。列追加前の既存行は復元不能なので `NULL` を許す。 |
+| `ip_hash` | `TEXT` | 可 | `NULL` | なし | `HMAC-SHA-256(RANKING_IP_HASH_KEY, normalizeClientIp(CF-Connecting-IP))` の16進表現。IPv6 は /64 プレフィックス(`2001:db8:1:2::/64` 形式)に丸めてからハッシュする(1 契約 = 1 /64 とみなし、アドレスローテーションで IP 別制限を回避できないようにするため)。IPv4 はそのまま。ヘッダー欠落時の入力はリテラル `unknown`。pending のIP別上限に使う。列追加前の既存行は復元不能なので `NULL` を許す。 |
 | `audit_attempts` | `INTEGER` | 不可 | `0` | なし | 予期しない監査例外の発生回数。確認済みの不正リプレイは再試行せず削除するため増加しない。 |
 | `next_attempt_at` | `INTEGER` | 可 | `NULL` | なし | 次回監査可能時刻の Unix epoch **秒**。SQL の `unixepoch()` と直接比較するため秒単位にする。`NULL` は即時取得可能を表す。 |
 | `submitter_hash` | `TEXT` | 可 | `NULL` | なし | ブラウザ生成の128 bit tokenをデコードした16バイトに対する鍵なし SHA-256。pending 自己置換の所有証明にだけ使い、verified 化と同時に `NULL` へ戻す。 |
