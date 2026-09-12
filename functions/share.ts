@@ -8,6 +8,7 @@ import { generateShareId } from './_lib/shareId';
 import { consumeRateLimit } from './_lib/rateLimit';
 import { shareRecordKey, SHARE_RECORD_TTL_SECONDS } from './_lib/kv';
 import { jsonResponse } from './_lib/response';
+import { normalizeClientIp } from './_lib/ranking/ipHash';
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
@@ -44,7 +45,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   // 3. Rate limit (docs/plan-cloudflare-x-share.md Phase 2): 30/hour/IP.
-  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  // IPv6 is keyed per /64 (see normalizeClientIp()) so one subscriber
+  // rotating addresses can't sidestep the limit.
+  const ip = normalizeClientIp(request.headers.get('CF-Connecting-IP') ?? 'unknown');
   const allowed = await consumeRateLimit(env.SHARES, ip);
   if (!allowed) {
     return jsonResponse({ error: 'rate limit exceeded' }, 429);
