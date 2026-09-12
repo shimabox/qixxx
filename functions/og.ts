@@ -11,6 +11,7 @@ import { ImageResponse } from 'workers-og';
 import type { Env, ShareRecord } from './_lib/types';
 import { shareRecordKey } from './_lib/kv';
 import { isShareId } from './_lib/shareId';
+import { withSecurityHeaders } from './_lib/response';
 import { PRESS_START_2P_TTF_BASE64 } from './_lib/fonts/pressStart2P';
 import { COLOR_BACKGROUND, COLOR_BORDER, COLOR_CLAIMED_SLOW, HUD_TEXT_COLOR } from '../src/config';
 
@@ -161,7 +162,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   // given id's content never changes — so this can be cached for a full
   // year (docs/plan-cloudflare-x-share.md Phase 2), both downstream (this
   // header) and at the edge (the Cache API entry written below).
-  const headers = new Headers(image.headers);
+  const headers = withSecurityHeaders(image.headers);
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
 
   const response = new Response(image.body, { status: 200, headers });
