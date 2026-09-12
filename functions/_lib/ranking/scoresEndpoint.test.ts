@@ -9,7 +9,8 @@
 // Lives here (beside the other ranking unit tests) rather than in
 // functions/api/, which is a Pages Functions route directory.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { onRequestPost, readBodyWithLimit, isUniqueConstraintViolation } from '../../api/scores';
+import { onRequestPost, isUniqueConstraintViolation } from '../../api/scores';
+import { readBodyWithLimit } from '../readBody';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
 import { computeSubmitterHash } from './submitterToken';
 import { computeIpHash } from './ipHash';
