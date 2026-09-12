@@ -76,11 +76,13 @@ export default [
         Request: 'readonly',
         Headers: 'readonly',
         URL: 'readonly',
-        // Streaming request-body reading (functions/api/scores.ts's
+        // Streaming request-body reading (functions/_lib/readBody.ts's
         // readBodyWithLimit()) and its tests.
         ReadableStream: 'readonly',
         TextDecoder: 'readonly',
         RequestInit: 'readonly',
+        // Workers Cache API (functions/og.ts caches rendered cards at the edge).
+        caches: 'readonly',
         // Ambient types from @cloudflare/workers-types (tsconfig.functions.json's
         // "types"), not real JS globals — declared here purely so eslint's
         // (type-unaware) `no-undef` rule doesn't flag them; tsc itself
