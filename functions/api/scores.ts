@@ -25,7 +25,7 @@ import { validateSeed } from '../_lib/ranking/seedValidation';
 import { validateScore, validateStage } from '../_lib/ranking/scoreValidation';
 import { deriveDurationTicksFromRle } from '../_lib/ranking/rleDuration';
 import { getVerifiedTenthPlaceThreshold, isWithinProvisionalRange, pendingFreshnessCutoff } from '../_lib/ranking/pendingGate';
-import { requireIpHashKey, computeIpHash, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
+import { requireIpHashKey, computeIpHash, normalizeClientIp, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
 import { parseSubmitterToken, computeSubmitterHash } from '../_lib/ranking/submitterToken';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
@@ -314,7 +314,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     throw err;
   }
 
-  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+  // IPv6 is keyed per /64 (one residential allocation), not per address —
+  // see normalizeClientIp(). Otherwise a single subscriber rotating through
+  // their 2^64 addresses would defeat both the rate limit and the per-IP
+  // pending cap below.
+  const ip = normalizeClientIp(request.headers.get('CF-Connecting-IP') ?? 'unknown');
   const ipHash = await computeIpHash(ip, ipHashKey);
   let rateLimit;
   try {
