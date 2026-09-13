@@ -12,7 +12,7 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR } from '../config';
+import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 
 export interface RankingEntry {
@@ -85,6 +85,13 @@ export interface RunSubmissionSnapshot {
   stage: number;
   runMode: RunMode;
   tainted: boolean;
+  /**
+   * Successful area claims over the whole run. The server's audit refuses a
+   * replay past MAX_VERIFIED_CLAIMS outright (functions/_lib/ranking/
+   * verifyReplay.ts), and does so days later and silently from the player's
+   * point of view — so the count is checked here, before any offer is made.
+   */
+  claims: number;
 }
 
 /**
@@ -120,7 +127,9 @@ export type SubmissionOfferDecision =
   | 'stale-run'
   | 'run-no-longer-over'
   | 'fetch-failed'
-  | 'out-of-range';
+  | 'out-of-range'
+  /** In range, but with more area claims than the audit will verify — shown as an explanation, never as a form. */
+  | 'over-claim-cap';
 
 /** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
@@ -163,7 +172,13 @@ export function decideSubmissionOffer(args: {
   // would promise a slot that cannot exist. Below 10 entries there is a free
   // slot regardless of the score, so no comparison applies.
   const inRange = entries.length < 10 || snapshot.score > entries[entries.length - 1].score;
-  return inRange ? 'show' : 'out-of-range';
+  if (!inRange) return 'out-of-range';
+  // Checked after the range test on purpose: a run that would not be offered
+  // anyway needs no explanation, and a run that WOULD be deserves to hear
+  // why it cannot be — a pending row that the audit later deletes for this
+  // reason would otherwise read as "SUBMITTED" and then simply vanish.
+  if (snapshot.claims > MAX_VERIFIED_CLAIMS) return 'over-claim-cap';
+  return 'show';
 }
 
 export interface ReplayPayload {
@@ -996,6 +1011,19 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         currentStatus: options.getSession().getStatus(),
         entries,
       });
+      if (decision === 'over-claim-cap') {
+        // Explanation only: no name field, no SUBMIT. The snapshot is dropped
+        // right away — there is nothing a retry could change about it.
+        activeSubmission = null;
+        nameInput.style.display = 'none';
+        handleRow.style.display = 'none';
+        handleInput.style.display = 'none';
+        submitStatus.textContent = `TOO MANY AREA CLAIMS TO VERIFY (${snapshot.claims} > ${MAX_VERIFIED_CLAIMS}) — THIS RUN CANNOT BE RANKED.`;
+        postButton.style.display = 'none';
+        skipButton.textContent = 'OK';
+        submitOverlay.style.display = 'flex';
+        return;
+      }
       if (decision !== 'show') {
         // Drop the snapshot for anything except a live, still-current run
         // whose score simply didn't make the cut — in the latter case a
@@ -1011,6 +1039,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       handleInput.value = '';
       handleCheckbox.checked = false;
       handleInput.style.display = 'none';
+      handleRow.style.display = 'flex';
       nameInput.style.display = 'block';
       syncRetainedValueHint(); // both empty now -> hides itself
       submitStatus.textContent = '';
