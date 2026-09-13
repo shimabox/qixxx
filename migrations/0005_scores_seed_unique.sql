@@ -13,10 +13,16 @@
 -- existing `replay_hash` index only refuses the byte-identical input
 -- stream, so one changed input sample near the end of a copied replay
 -- used to yield a fresh hash under the same seed — a second, "new" row
--- reproducing somebody else's run. Under a different seed the copied
--- inputs diverge from the enemies within a few ticks and fail the audit,
--- so the seed is the one thing a copy cannot change; refusing a second
--- row per seed closes that path at INSERT time.
+-- reproducing somebody else's run. Refusing a second row per seed closes
+-- that path at INSERT time.
+-- - What this does NOT close: a copy under a different seed that happens
+-- to yield the same per-stage rng streams. deriveStageSeed() (src/core/
+-- rng.ts) is FNV-1a over "<seed>:<stage>", so two seeds whose hash state
+-- agrees after "<seed>:" collide on every stage (e.g. 1485211075 and
+-- 2522981067); the copied inputs then pass the audit under the new seed
+-- with a new replay_hash. Recorded as a known limitation in
+-- docs/ranking-runbook.md §6 until replay identity is derived from the
+-- effective rng streams rather than the numeric seed.
 -- - Not scoped to season_id: an old season's replay is still a copy, and a
 -- seed is never legitimately reused across seasons either.
 --

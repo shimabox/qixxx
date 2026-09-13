@@ -238,7 +238,9 @@ function base64ToBytes(b64: string): Uint8Array {
  * - `seed` (migrations/0005_scores_seed_unique.sql): a different input
  * stream under a seed that already has a row — the shape of a copied
  * replay with a few samples changed. Honest runs draw a fresh random
- * seed every time, so a second row per seed is never one of them.
+ * seed every time, so a second row per seed is never one of them. (A
+ * copy under a *different* seed that collides in deriveStageSeed() is
+ * not caught here — see migrations/0005_scores_seed_unique.sql.)
  *
  * Matched on the message because D1 surfaces SQLite errors as plain `Error`s
  * without a structured code. Kept deliberately narrow: anything unrecognized
