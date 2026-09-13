@@ -354,8 +354,8 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
 
   // A same-seed resubmission (the copied-replay shape, migrations/0005) must
   // answer 409 at the cap exactly as it does with room to spare: the own row
-  // holding that seed is not a delete candidate, so the INSERT hits the seed
-  // UNIQUE index, the batch rolls back, and nothing is lost.
+  // holding that seed is not a delete candidate, so the INSERT hits the
+  // rng_key UNIQUE index, the batch rolls back, and nothing is lost.
   it('refuses a same-seed resubmission at the cap with 409 instead of replacing the own row that holds the seed', async () => {
     const mineIp = await ipHashFor(IP_MINE);
     const sharedSeed = 9014;
@@ -364,6 +364,26 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
     const third = await seedPending({ score: 600, ip_hash: mineIp, submitter_hash: myHash });
 
     const { status, body } = await withRowConservation(testDb.db, () => post(testDb.db, { seed: sharedSeed, score: 400, ip: IP_MINE, token: MY_TOKEN }));
+
+    expect(status).toBe(409);
+    expect(body.error).toBe('duplicate replay');
+    const ids = (await allRows(testDb.db)).map((r) => r.id);
+    expect(ids).toEqual(expect.arrayContaining([holder, second, third]));
+    expect(await pendingCount(testDb.db)).toBe(3);
+  });
+
+  // The rng-equivalent twin of the above (same migration): a different seed
+  // with the same rng streams is the same duplicate, and the own row holding
+  // it must be just as untouchable.
+  it('refuses a resubmission under an rng-equivalent seed at the cap with 409 instead of replacing the own row', async () => {
+    const mineIp = await ipHashFor(IP_MINE);
+    const storedSeed = 1485211075;
+    const collidingSeed = 2522981067;
+    const holder = await seedPending({ score: 100, ip_hash: mineIp, submitter_hash: myHash, seed: storedSeed });
+    const second = await seedPending({ score: 500, ip_hash: mineIp, submitter_hash: myHash });
+    const third = await seedPending({ score: 600, ip_hash: mineIp, submitter_hash: myHash });
+
+    const { status, body } = await withRowConservation(testDb.db, () => post(testDb.db, { seed: collidingSeed, score: 400, ip: IP_MINE, token: MY_TOKEN }));
 
     expect(status).toBe(409);
     expect(body.error).toBe('duplicate replay');

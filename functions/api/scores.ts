@@ -27,6 +27,7 @@ import { validateScore, validateStage } from '../_lib/ranking/scoreValidation';
 import { deriveDurationTicksFromRle } from '../_lib/ranking/rleDuration';
 import { getVerifiedTenthPlaceThreshold, isWithinProvisionalRange, pendingFreshnessCutoff } from '../_lib/ranking/pendingGate';
 import { requireIpHashKey, computeIpHash, normalizeClientIp, MissingIpHashKeyError } from '../_lib/ranking/ipHash';
+import { computeRngKey } from '../_lib/ranking/rngKey';
 import { parseSubmitterToken, computeSubmitterHash } from '../_lib/ranking/submitterToken';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
@@ -56,6 +57,8 @@ interface PendingRowValues {
   name: string;
   xHandle: string | null;
   seed: number;
+  /** computeRngKey(seed) — the effective seed the rng_key UNIQUE index is on. */
+  rngKey: number;
   rle: Uint8Array;
   durationTicks: number;
   replayHash: string;
@@ -85,8 +88,8 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
   return db
     .prepare(
       `INSERT INTO scores
-         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending', ?14, 0, NULL, ?18
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending', ?14, 0, NULL, ?18, ?19
        WHERE (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?15) < ?16
          AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?14 AND created_at > ?15) < ?17`
     )
@@ -108,7 +111,8 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
       cutoff,
       MAX_GLOBAL_PENDING,
       MAX_PENDING_PER_IP,
-      row.submitterHash
+      row.submitterHash,
+      row.rngKey
     );
 }
 
@@ -176,10 +180,12 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
  * still fresh by the shared pendingFreshnessCutoff() definition, owned by
  * this submitter (`submitter_hash = ?` — a NULL submitter_hash never compares
  * equal to anything, which is what keeps un-owned and legacy rows out of
- * reach), not the row holding the new claim's own seed (`c.seed <> ?` — a
- * same-seed resubmission is a duplicate whether or not the queue is full,
- * and deleting the original inside the batch would let the INSERT slip past
- * the `seed` UNIQUE index that answers 409 when there is room), and STRICTLY
+ * reach), not the row holding the new claim's own effective seed
+ * (`c.rng_key <> ?` — a resubmission under the same or an rng-equivalent
+ * seed is a duplicate whether or not the queue is full, and deleting the
+ * original inside the batch would let the INSERT slip past the `rng_key`
+ * UNIQUE index that answers 409 when there is room; equal seeds have equal
+ * rng_keys, so this covers the plain same-seed case too), and STRICTLY
  * lower-scoring than the new claim, so a tie never
  * displaces the earlier submission (the same first-come-first-served rule the
  * pre-pending gate uses). Ordered `score ASC, rank_seq DESC`: the weakest row
@@ -190,7 +196,7 @@ function buildSelfReplaceDelete(
   db: D1Database,
   submitterHash: string,
   score: number,
-  seed: number,
+  rngKey: number,
   ipHash: string,
   cutoff: number
 ): D1PreparedStatement {
@@ -203,7 +209,7 @@ function buildSelfReplaceDelete(
            AND c.created_at > ?1
            AND c.submitter_hash = ?2
            AND c.score < ?3
-           AND c.seed <> ?7
+           AND c.rng_key <> ?7
            AND (
              (
                (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?4 AND created_at > ?1) = ?5
@@ -220,7 +226,7 @@ function buildSelfReplaceDelete(
          LIMIT 1
        )`
     )
-    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING, seed);
+    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING, rngKey);
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -235,12 +241,12 @@ function base64ToBytes(b64: string): Uint8Array {
  * indexes, and both mean "this run is already on file":
  * - `replay_hash` (migrations/0001_create_scores.sql): the byte-identical
  * input stream under the same seed — a plain re-submission;
- * - `seed` (migrations/0005_scores_seed_unique.sql): a different input
- * stream under a seed that already has a row — the shape of a copied
- * replay with a few samples changed. Honest runs draw a fresh random
- * seed every time, so a second row per seed is never one of them. (A
- * copy under a *different* seed that collides in deriveStageSeed() is
- * not caught here — see migrations/0005_scores_seed_unique.sql.)
+ * - `rng_key` (migrations/0005_scores_rng_key.sql): a different input
+ * stream under the same effective seed — the same numeric seed, or a
+ * different one that produces the same rng streams (see
+ * functions/_lib/ranking/rngKey.ts) — the shape of a copied replay with a
+ * few samples changed. Honest runs draw a fresh random seed every time, so
+ * a second row per effective seed is never one of them.
  *
  * Matched on the message because D1 surfaces SQLite errors as plain `Error`s
  * without a structured code. Kept deliberately narrow: anything unrecognized
@@ -252,7 +258,8 @@ export function isUniqueConstraintViolation(err: unknown): boolean {
 }
 
 /**
- * Whether a row already holds this run's seed or replay_hash. Consulted only
+ * Whether a row already holds this run's effective seed (rng_key — which
+ * equal seeds share, so this covers the same-seed case) or replay_hash. Consulted only
  * when the capped INSERT reported `changes === 0`: an INSERT...SELECT whose
  * WHERE fails never reaches the UNIQUE indexes, so without this a
  * re-submission arriving while a queue is full would be told "limit reached,
@@ -260,8 +267,8 @@ export function isUniqueConstraintViolation(err: unknown): boolean {
  * 409 it gets whenever there is room. A plain read: it decides the status
  * code, not whether anything is written.
  */
-async function isAlreadyOnFile(db: D1Database, seed: number, replayHash: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS found FROM scores WHERE seed = ?1 OR replay_hash = ?2 LIMIT 1`).bind(seed, replayHash).first<{ found: number }>();
+async function isAlreadyOnFile(db: D1Database, rngKey: number, replayHash: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS found FROM scores WHERE rng_key = ?1 OR replay_hash = ?2 LIMIT 1`).bind(rngKey, replayHash).first<{ found: number }>();
   return row !== null;
 }
 
@@ -449,6 +456,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   });
 
   const id = generateShareId();
+  const rngKey = computeRngKey(seed);
   const createdAt = Date.now();
   const submitterHash = tokenParse.kind === 'valid' ? await computeSubmitterHash(tokenParse.token) : null;
   // The shared 72h boundary: rows with
@@ -464,6 +472,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     name: nameResult.value,
     xHandle: xHandleResult.value,
     seed,
+    rngKey,
     rle,
     durationTicks,
     replayHash,
@@ -519,7 +528,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       // duplicate answer below is a plain 409 and not a 409 with a hole in
       // the table behind it.
       batchResults = await env.DB.batch([
-        buildSelfReplaceDelete(env.DB, submitterHash, score, seed, ipHash, replaceCutoff),
+        buildSelfReplaceDelete(env.DB, submitterHash, score, rngKey, ipHash, replaceCutoff),
         buildCappedInsert(env.DB, pendingRow, replaceCutoff),
       ]);
     } catch (err) {
@@ -535,7 +544,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     // matched nothing too, by construction, so this is an ordinary 429 with
     // the table untouched.
     if (batchResults[1]?.meta.changes === 0) {
-      if (await isAlreadyOnFile(env.DB, seed, replayHash)) {
+      if (await isAlreadyOnFile(env.DB, rngKey, replayHash)) {
         return jsonResponse({ error: 'duplicate replay', accepted: false }, 409);
       }
       return jsonResponse({ error: 'pending submission limit reached, try again later', accepted: false }, 429);
@@ -544,7 +553,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     // Cap reached (global 200 or this IP's 3) and no ownership token:
     // reaching either cap without one returns 429 and retains every
     // existing pending row — nothing is ever deleted to make room.
-    if (await isAlreadyOnFile(env.DB, seed, replayHash)) {
+    if (await isAlreadyOnFile(env.DB, rngKey, replayHash)) {
       return jsonResponse({ error: 'duplicate replay', accepted: false }, 409);
     }
     return jsonResponse({ error: 'pending submission limit reached, try again later', accepted: false }, 429);

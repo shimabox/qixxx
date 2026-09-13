@@ -316,20 +316,36 @@ npx wrangler d1 execute qixxx-scores --remote --command \
 追加テーブルは即時 DROP しない。旧コードの動作確認後、不要と確定した場合のみ別作業で削除する。
 旧コードへ戻る間、ランキング投稿の制限も KV の1時間10回へ戻ることを運用者へ明示する。
 
-## 2.2 migration 0005(seed UNIQUE)のデプロイ
+## 2.2 migration 0005(rng_key UNIQUE)のデプロイ
 
-0005 は `scores.seed` に UNIQUE インデックスを張る。既に同じ seed の行が複数あると
-migration 自体が失敗するので、適用前に対象 D1 で重複を確認し、あれば手動で整理する
-(テスト投稿の残骸が典型。どちらを残すかは運用者判断、通常は `rank_seq` の小さい方)。
+0005 は `scores.rng_key`(実効 seed = `deriveStageSeed(seed, 1)`)を追加し、既存行を
+SQL 内の FNV-1a でバックフィルしてから UNIQUE インデックスを張る。3 文が 1 バッチなので、
+既存行に同じ `rng_key` の組(同じ seed の重複、または同じ乱数系列になる別 seed)があると
+インデックス作成で失敗し、**列追加も含めて全体がロールバック**される(D1 は何も変わらない)。
+適用前に対象 D1 で衝突を確認し、あれば手動で整理する(テスト投稿の残骸が典型。どちらを残すかは
+運用者判断、通常は `rank_seq` の小さい方)。
 
 ```bash
-wrangler d1 execute qixxx-scores --remote --command \
-  "SELECT seed, COUNT(*) AS n, GROUP_CONCAT(id) AS ids FROM scores GROUP BY seed HAVING n > 1"
+wrangler d1 execute qixxx-scores --remote --command "
+WITH RECURSIVE fnv(rank_seq, s, i, h) AS (
+  SELECT rank_seq, CAST(seed AS TEXT) || ':1', 1, 2166136261 FROM scores
+  UNION ALL
+  SELECT rank_seq, s, i + 1,
+         (((h | unicode(substr(s, i, 1))) - (h & unicode(substr(s, i, 1)))) * 16777619) & 4294967295
+  FROM fnv WHERE i <= length(s)
+)
+SELECT fnv.h AS rng_key, COUNT(*) AS n, GROUP_CONCAT(scores.id) AS ids, GROUP_CONCAT(scores.seed) AS seeds
+FROM scores JOIN fnv ON fnv.rank_seq = scores.rank_seq AND fnv.i = length(fnv.s) + 1
+GROUP BY fnv.h HAVING n > 1"
 ```
 
-適用順は 0004 と同じ(migration → インデックス存在確認 → Pages Functions デプロイ)。
-コードは 0005 の有無に依存しない(UNIQUE 違反は既存の 409 経路に乗るだけ)ので、
-インデックスなしでも旧来どおり動作し、ロールバック時も DROP は不要。
+0 行なら適用できる。
+
+**コードは 0005 に依存する**: 投稿 API の INSERT は `rng_key` 列を名指しするので、列がないと
+全投稿が 500 になる。順序は必ず migration → `idx_scores_rng_key` の存在確認 → Pages Functions
+デプロイ。ロールバックで旧コードへ戻しても列・インデックスは残してよい(旧コードは列を無視し、
+新規行の `rng_key` は `NULL` になる。UNIQUE は `NULL` を区別しないので旧コードの動作を妨げないが、
+その間に入った行はあとで 0005 のバックフィル文を手で流して埋める)。
 
 Paid 同期検証へ切り替える際の必須チェック:
 
