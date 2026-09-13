@@ -316,6 +316,21 @@ npx wrangler d1 execute qixxx-scores --remote --command \
 追加テーブルは即時 DROP しない。旧コードの動作確認後、不要と確定した場合のみ別作業で削除する。
 旧コードへ戻る間、ランキング投稿の制限も KV の1時間10回へ戻ることを運用者へ明示する。
 
+## 2.2 migration 0005(seed UNIQUE)のデプロイ
+
+0005 は `scores.seed` に UNIQUE インデックスを張る。既に同じ seed の行が複数あると
+migration 自体が失敗するので、適用前に対象 D1 で重複を確認し、あれば手動で整理する
+(テスト投稿の残骸が典型。どちらを残すかは運用者判断、通常は `rank_seq` の小さい方)。
+
+```bash
+wrangler d1 execute qixxx-scores --remote --command \
+  "SELECT seed, COUNT(*) AS n, GROUP_CONCAT(id) AS ids FROM scores GROUP BY seed HAVING n > 1"
+```
+
+適用順は 0004 と同じ(migration → インデックス存在確認 → Pages Functions デプロイ)。
+コードは 0005 の有無に依存しない(UNIQUE 違反は既存の 409 経路に乗るだけ)ので、
+インデックスなしでも旧来どおり動作し、ロールバック時も DROP は不要。
+
 Paid 同期検証へ切り替える際の必須チェック:
 
 1. `verifyReplay()` を投稿内で同期実行する。

@@ -77,7 +77,9 @@ function makeEnv(opts: {
     DB: {
       prepare: (sql: string) => ({
         bind: (...args: unknown[]) => ({
-          first: async () => ({ threshold: thresholdScore }),
+          // The pre-gate's threshold SELECT, or the "already on file?" probe
+          // behind a zero-change INSERT (nothing on file, by default).
+          first: async () => (/SELECT 1 AS found/.test(sql) ? null : { threshold: thresholdScore }),
           run: async () => {
             if (/INSERT INTO ranking_rate_limits/.test(sql)) {
               if (rateLimitRunImpl) return rateLimitRunImpl(sql, args);
@@ -599,7 +601,7 @@ function makeRecordingEnv(opts: {
         bind: (...args: unknown[]) => ({
           sql,
           args,
-          first: async () => ({ threshold: -1 }),
+          first: async () => (/SELECT 1 AS found/.test(sql) ? null : { threshold: -1 }),
           run: async () => {
             if (/INSERT INTO ranking_rate_limits/.test(sql)) {
               rateLimits.push({ sql, args });
