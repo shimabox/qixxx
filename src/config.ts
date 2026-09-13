@@ -415,13 +415,23 @@ export const REPLAY_FORMAT_VERSION = 1;
 // limit" — read as self-documenting on their own.
 export const MAX_INPUT_SAMPLES = TIME_LIMIT_TICKS;
 
-// Score ranking protocol cap: the server's replay verification rejects
-// a replay the
-// instant it detects a 101st successful area-claim. The 10800-tick budget's
-// theoretical max claim count is well past 100,
-// so an unbounded claim count would make the CPU-cost worst case
-// unbounded too — this is a protocol/DoS parameter, not a gameplay rule
-// (core/claim.ts itself is untouched), which is why it lives here in
-// config.ts rather than being folded into RULESET_VERSION's scope. Changing
-// it is documented (docs/ranking-runbook.md §4.3) as a season/verification-rule change.
-export const MAX_VERIFIED_CLAIMS = 100;
+// Score ranking protocol cap: the server's replay verification rejects a
+// replay the instant it detects one area-claim past this limit. It is a
+// protocol/DoS parameter bounding audit CPU per row, NOT a gameplay rule
+// (core/claim.ts is untouched), which is why it lives here rather than under
+// RULESET_VERSION's scope. Changing it is documented (docs/ranking-runbook.md
+// §4.3) as a season/verification-rule change.
+//
+// Sized from measurement (docs/ranking-cpu-measurement.md §7, harness
+// docs/measurements/measure-claim-cap.ts): a deliberately small-notch bot
+// already makes ~52 area-claims in a single failed stage-1 attempt, and a
+// careful multi-stage run accumulates more, so the earlier value of 100 sat
+// close enough to legitimate play to wrongly reject it. 300 clears that with
+// margin while keeping the audit bounded — worst-case ~3.8s per row at
+// ~12.5ms/claim, a full 200-row pending queue draining in ~3 audit cycles.
+// It also sits above the practical per-replay claim ceiling reachable within
+// the run-wide 10800-tick budget (reliable notch constructions plateau around
+// 230), so within a valid replay it behaves as a backstop rather than a limit
+// real play approaches. Raised from 100 before launch, while scores was empty
+// (no season bump needed); see the runbook for the post-launch procedure.
+export const MAX_VERIFIED_CLAIMS = 300;
