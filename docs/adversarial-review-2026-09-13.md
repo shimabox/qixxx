@@ -65,17 +65,21 @@ ulp 差が `Math.round` の境界(.5)を跨ぐ確率は 1 回あたり 2^-52 程
 TOP10 のリプレイ(seed + 入力列)は公開されている。`replay_hash` は入力列の同一性しか見ないので、
 末尾 1 サンプルを変えるだけで別ハッシュになり、他人のプレイが別名で 2 行目になれた。
 
-修正: migration `0005_scores_seed_unique.sql` で `scores.seed` を UNIQUE にし、INSERT 時に既存の
+修正: migration `0005_scores_rng_key.sql` で実効 seed `rng_key` を UNIQUE にし、INSERT 時に既存の
 409「duplicate replay」経路で弾く。正当な衝突確率は組ごとに 2^-32。自己置換の DELETE 候補からは
 同 seed の自行を除外し、満杯時も同じ 409 になるようにした。本番適用前の重複確認手順は
 `docs/ranking-audit-runbook.md` §2.2。
 
-残る穴: seed を変えた複製がすべて監査で落ちるわけではない。`deriveStageSeed()` は
+残っていた穴(修正済み): seed を変えた複製がすべて監査で落ちるわけではない。`deriveStageSeed()` は
 `"<seed>:<stage>"` の FNV-1a なので、`"<seed>:"` までのハッシュ状態が一致する seed の組
 (例: `1485211075` と `2522981067`)は全ステージで同じ乱数系列になり、同一入力列を両 seed で
-投稿すると両方 200・監査も両方成功する(ローカル D1 で確認: score 4602、stage 1、4772 tick)。
-seed も `replay_hash` も異なるため一意制約では拒否できない。`docs/ranking-runbook.md` §6 の
-既知の限界に残し、対策(リプレイ同一性を実効乱数系列から導く)は別途。
+投稿すると両方 200・監査も両方成功した(ローカル D1 で確認: score 4602、stage 1、4772 tick)。
+seed も `replay_hash` も異なるため、数値 seed の UNIQUE(当初の 0005 案)では拒否できない。
+FNV-1a の更新は全単射なので「stage 1 だけ衝突」は存在せず、`deriveStageSeed(seed, 1)` が
+同値類の代表になる。0005 はこの値を `rng_key` 列として持ち UNIQUE にする形に改め(数値 seed の
+一意性はこれに含まれるので `seed` 列には張らない)、既存行は SQL 内の同じ FNV-1a でバックフィルする。
+投稿 API の満杯時 409 判定と自己置換の除外条件も `rng_key` 基準に揃えた
+(`docs/ranking-runbook.md` §6、`docs/ranking-audit-runbook.md` §2.2)。
 
 ### B-2. 満杯時の重複が 429 になる — **修正**(サブエージェント指摘)
 
@@ -116,10 +120,16 @@ INFO: チャンク単位の壁時間は上限がなく、D1 遅延が 6 秒/リ�
 30 回/時/IP、1 リクエストで書き込み 1〜3。IPv4 を大量に持つ攻撃者なら D1 無料枠を削れるが、
 既存のレート制限の範囲内。`ranking_rate_limits` の肥大は housekeeping が吸収する。
 
-### D-2. `/api/ranking` の無制限 GET — 判断待ち
+### D-2. `/api/ranking` の無制限 GET — 受容(判断済み)
 
-毎回 2 クエリ、`Cache-Control: no-store`。読み取り枠(500 万/日)に届くには相応の攻撃が要るが、
-`caches.default` で 5〜10 秒の共有キャッシュを入れる余地はある。
+毎回 2 クエリ、`Cache-Control: no-store`。`caches.default` で 5〜10 秒の共有キャッシュを入れる
+余地はあるが、**リアルタイム性を優先してキャッシュは入れない**。ランキングは投稿直後・監査直後の
+反映が体験の核であり、数秒の遅延を許容しない。
+
+受容するリスク: D1 Free の読み取り枠は **500 万読み取り行/日**(リクエスト数ではない)。
+必要なリクエスト数は `rows_read` の実測なしには決まらない。枠に到達すると D1 クエリ自体が
+エラーになるので、影響はランキング表示だけでなく**スコア投稿・監査・リプレイ取得**にも及ぶ
+(ゲーム本体のプレイは継続できる)。
 
 ### D-3. housekeeping のホスト時計依存 — **修正**
 
@@ -146,7 +156,7 @@ INFO: チャンク単位の壁時間は上限がなく、D1 遅延が 6 秒/リ�
 ## 修正ファイル
 
 - `src/main.ts`, `src/ui/ranking.ts`, `src/ui/ranking.test.ts` — claim 上限の事前判定
-- `migrations/0005_scores_seed_unique.sql`(+ test)、`functions/api/scores.ts`、
+- `migrations/0005_scores_rng_key.sql`(+ test)、`functions/_lib/ranking/rngKey.ts`(+ test)、`functions/api/scores.ts`、
   `functions/_lib/ranking/seedUniqueness.test.ts`、`pendingSelfReplace.test.ts`、
   `scoresConcurrency.test.ts`、`scoresEndpoint.test.ts`、`scripts/audit/testSupport/localD1.ts`
 - `scripts/audit/rateLimitHousekeeping.ts`(+ test)
