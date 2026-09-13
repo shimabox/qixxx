@@ -176,13 +176,24 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
  * still fresh by the shared pendingFreshnessCutoff() definition, owned by
  * this submitter (`submitter_hash = ?` — a NULL submitter_hash never compares
  * equal to anything, which is what keeps un-owned and legacy rows out of
- * reach), and STRICTLY lower-scoring than the new claim, so a tie never
+ * reach), not the row holding the new claim's own seed (`c.seed <> ?` — a
+ * same-seed resubmission is a duplicate whether or not the queue is full,
+ * and deleting the original inside the batch would let the INSERT slip past
+ * the `seed` UNIQUE index that answers 409 when there is room), and STRICTLY
+ * lower-scoring than the new claim, so a tie never
  * displaces the earlier submission (the same first-come-first-served rule the
  * pre-pending gate uses). Ordered `score ASC, rank_seq DESC`: the weakest row
  * goes first, and among equally weak ones the NEWEST, so the oldest of a set
  * of tied rows survives.
  */
-function buildSelfReplaceDelete(db: D1Database, submitterHash: string, score: number, ipHash: string, cutoff: number): D1PreparedStatement {
+function buildSelfReplaceDelete(
+  db: D1Database,
+  submitterHash: string,
+  score: number,
+  seed: number,
+  ipHash: string,
+  cutoff: number
+): D1PreparedStatement {
   return db
     .prepare(
       `DELETE FROM scores
@@ -192,6 +203,7 @@ function buildSelfReplaceDelete(db: D1Database, submitterHash: string, score: nu
            AND c.created_at > ?1
            AND c.submitter_hash = ?2
            AND c.score < ?3
+           AND c.seed <> ?7
            AND (
              (
                (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?4 AND created_at > ?1) = ?5
@@ -208,7 +220,7 @@ function buildSelfReplaceDelete(db: D1Database, submitterHash: string, score: nu
          LIMIT 1
        )`
     )
-    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING);
+    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING, seed);
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -219,9 +231,14 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * True only for a D1/SQLite UNIQUE-constraint failure — here, always the
- * `replay_hash` index (migrations/0001_create_scores.sql), i.e. a genuine
- * re-submission of an already-ranked (or already-pending) replay.
+ * True only for a D1/SQLite UNIQUE-constraint failure — here, one of two
+ * indexes, and both mean "this run is already on file":
+ * - `replay_hash` (migrations/0001_create_scores.sql): the byte-identical
+ * input stream under the same seed — a plain re-submission;
+ * - `seed` (migrations/0005_scores_seed_unique.sql): a different input
+ * stream under a seed that already has a row — the shape of a copied
+ * replay with a few samples changed. Honest runs draw a fresh random
+ * seed every time, so a second row per seed is never one of them.
  *
  * Matched on the message because D1 surfaces SQLite errors as plain `Error`s
  * without a structured code. Kept deliberately narrow: anything unrecognized
@@ -230,6 +247,20 @@ function base64ToBytes(b64: string): Uint8Array {
 export function isUniqueConstraintViolation(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /UNIQUE constraint failed/i.test(message);
+}
+
+/**
+ * Whether a row already holds this run's seed or replay_hash. Consulted only
+ * when the capped INSERT reported `changes === 0`: an INSERT...SELECT whose
+ * WHERE fails never reaches the UNIQUE indexes, so without this a
+ * re-submission arriving while a queue is full would be told "limit reached,
+ * try again later" (429) — a retry that can never succeed — instead of the
+ * 409 it gets whenever there is room. A plain read: it decides the status
+ * code, not whether anything is written.
+ */
+async function isAlreadyOnFile(db: D1Database, seed: number, replayHash: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS found FROM scores WHERE seed = ?1 OR replay_hash = ?2 LIMIT 1`).bind(seed, replayHash).first<{ found: number }>();
+  return row !== null;
 }
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
@@ -446,8 +477,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
     insertResult = await buildCappedInsert(env.DB, pendingRow, expiryCutoff).run();
   } catch (err) {
-    // Only a UNIQUE violation means "this exact replay was already
-    // submitted (pending or verified)". Everything else — an unapplied
+    // Only a UNIQUE violation means "this run was already submitted
+    // (pending or verified)" — see isUniqueConstraintViolation() for the
+    // two indexes that can raise it. Everything else — an unapplied
     // migration, a missing/misconfigured DB binding, a D1 outage — is a
     // server fault, and reporting it as 409 "duplicate replay" both lies to
     // the client and hides a real operational problem behind a
@@ -485,7 +517,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       // duplicate answer below is a plain 409 and not a 409 with a hole in
       // the table behind it.
       batchResults = await env.DB.batch([
-        buildSelfReplaceDelete(env.DB, submitterHash, score, ipHash, replaceCutoff),
+        buildSelfReplaceDelete(env.DB, submitterHash, score, seed, ipHash, replaceCutoff),
         buildCappedInsert(env.DB, pendingRow, replaceCutoff),
       ]);
     } catch (err) {
@@ -501,12 +533,18 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     // matched nothing too, by construction, so this is an ordinary 429 with
     // the table untouched.
     if (batchResults[1]?.meta.changes === 0) {
+      if (await isAlreadyOnFile(env.DB, seed, replayHash)) {
+        return jsonResponse({ error: 'duplicate replay', accepted: false }, 409);
+      }
       return jsonResponse({ error: 'pending submission limit reached, try again later', accepted: false }, 429);
     }
   } else if (insertResult.meta.changes === 0) {
     // Cap reached (global 200 or this IP's 3) and no ownership token:
     // reaching either cap without one returns 429 and retains every
     // existing pending row — nothing is ever deleted to make room.
+    if (await isAlreadyOnFile(env.DB, seed, replayHash)) {
+      return jsonResponse({ error: 'duplicate replay', accepted: false }, 409);
+    }
     return jsonResponse({ error: 'pending submission limit reached, try again later', accepted: false }, 429);
   }
 
