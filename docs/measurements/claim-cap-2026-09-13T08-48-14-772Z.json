@@ -1,0 +1,307 @@
+{
+  "summary": {
+    "measuredAt": "2026-09-13T08:49:10.724Z",
+    "machine": {
+      "cpu": "Apple M1",
+      "cores": 8,
+      "node": "v20.19.5",
+      "platform": "darwin 25.5.0"
+    },
+    "constants": {
+      "MAX_VERIFIED_CLAIMS": 300,
+      "TIME_LIMIT_TICKS": 10800,
+      "MAX_GLOBAL_PENDING": 200,
+      "AUDIT_CHUNK_SIZE": 50,
+      "AUDIT_MAX_RUNTIME_MS": 300000
+    },
+    "realReplays": {
+      "count": 2,
+      "maxClaims": 1,
+      "rows": [
+        {
+          "db": "9ba2b04b",
+          "id": "70cc2def27816ae57652246a824c5e36",
+          "status": "pending",
+          "createdAt": "2026-08-22T08:31:17.082Z",
+          "submittedScore": 9628,
+          "submittedStage": 2,
+          "simScore": 9628,
+          "simStage": 2,
+          "durationTicks": 783,
+          "claims": 1,
+          "reachedGameOver": true,
+          "verify": "ok",
+          "verifyMs": 13.287417000000005
+        },
+        {
+          "db": "9ba2b04b",
+          "id": "79354e82197b0cbf562da6ee31b4d3e7",
+          "status": "pending",
+          "createdAt": "2026-08-22T12:17:37.760Z",
+          "submittedScore": 9007199254740991,
+          "submittedStage": 1,
+          "simScore": 0,
+          "simStage": 1,
+          "durationTicks": 2,
+          "claims": 0,
+          "reachedGameOver": false,
+          "verify": "did-not-reach-gameover",
+          "verifyMs": 0.14712499999995998
+        }
+      ]
+    },
+    "fixtureA": {
+      "ticks": 10800,
+      "p50Ms": 48.268208999999956,
+      "maxMs": 49.15308300000004
+    },
+    "fixtureAB": [
+      {
+        "label": "AB0",
+        "claims": 0,
+        "p50Ms": 56.802875000000085,
+        "maxMs": 57.17825000000016
+      },
+      {
+        "label": "AB50",
+        "claims": 50,
+        "p50Ms": 232.047959,
+        "maxMs": 236.96350000000007
+      },
+      {
+        "label": "AB100",
+        "claims": 100,
+        "p50Ms": 1199.620167,
+        "maxMs": 1233.2542090000006
+      },
+      {
+        "label": "AB150",
+        "claims": 104,
+        "p50Ms": 1244.1583329999994,
+        "maxMs": 1307.9090829999986
+      },
+      {
+        "label": "AB200",
+        "claims": 104,
+        "p50Ms": 1237.354124999998,
+        "maxMs": 1242.482333
+      },
+      {
+        "label": "AB250",
+        "claims": 104,
+        "p50Ms": 1238.5715419999979,
+        "maxMs": 1241.7298750000045
+      }
+    ],
+    "fixtureBFrozen": [
+      {
+        "label": "B0",
+        "claims": 0,
+        "p50Ms": 24.259916000002704,
+        "maxMs": 24.383666999994603
+      },
+      {
+        "label": "B300",
+        "claims": 156,
+        "p50Ms": 1817.240208000003,
+        "maxMs": 1873.0641250000044
+      }
+    ],
+    "perClaimMs": 12.523406824514602,
+    "perClaimFrozenMs": 11.493463410256412,
+    "conservativePerClaimMs": 12.523406824514602,
+    "fitIntercomparison": {
+      "abIntercept": -96.20982532095843,
+      "aMeasured": 48.268208999999956
+    },
+    "theoreticalMaxClaims": 2700,
+    "projections": [
+      {
+        "cap": 100,
+        "worstRowMs": 1300.6088914514603,
+        "worstRowMaxMs": 1301.4937654514601,
+        "chunkMs": 65030.44457257302,
+        "fullQueueMs": 260121.77829029207,
+        "fullQueueWithinBudget": true,
+        "auditRunsToDrainFullQueue": 1
+      },
+      {
+        "cap": 150,
+        "worstRowMs": 1926.77923267719,
+        "worstRowMaxMs": 1927.6641066771904,
+        "chunkMs": 96338.96163385951,
+        "fullQueueMs": 385355.84653543803,
+        "fullQueueWithinBudget": false,
+        "auditRunsToDrainFullQueue": 2
+      },
+      {
+        "cap": 200,
+        "worstRowMs": 2552.9495739029203,
+        "worstRowMaxMs": 2553.8344479029206,
+        "chunkMs": 127647.47869514601,
+        "fullQueueMs": 510589.91478058405,
+        "fullQueueWithinBudget": false,
+        "auditRunsToDrainFullQueue": 2
+      },
+      {
+        "cap": 300,
+        "worstRowMs": 3805.2902563543803,
+        "worstRowMaxMs": 3806.1751303543806,
+        "chunkMs": 190264.51281771902,
+        "fullQueueMs": 761058.0512708761,
+        "fullQueueWithinBudget": false,
+        "auditRunsToDrainFullQueue": 3
+      },
+      {
+        "cap": 500,
+        "worstRowMs": 6309.971621257301,
+        "worstRowMaxMs": 6310.8564952573015,
+        "chunkMs": 315498.58106286504,
+        "fullQueueMs": 1261994.3242514601,
+        "fullQueueWithinBudget": false,
+        "auditRunsToDrainFullQueue": 5
+      },
+      {
+        "cap": 1000,
+        "worstRowMs": 12571.675033514603,
+        "worstRowMaxMs": 12572.559907514602,
+        "chunkMs": 628583.7516757301,
+        "fullQueueMs": 2514335.0067029204,
+        "fullQueueWithinBudget": false,
+        "auditRunsToDrainFullQueue": 9
+      }
+    ]
+  },
+  "raw": {
+    "a": {
+      "label": "A",
+      "claims": 0,
+      "ticks": 10800,
+      "samplesMs": [
+        48.52954199999999,
+        49.15308300000004,
+        47.83766700000001,
+        48.268208999999956,
+        47.32395800000006
+      ],
+      "p50Ms": 48.268208999999956,
+      "maxMs": 49.15308300000004
+    },
+    "b": [
+      {
+        "label": "B0",
+        "claims": 0,
+        "ticks": 10800,
+        "samplesMs": [
+          23.86491599999863,
+          24.383666999994603,
+          24.369165999996767,
+          23.750208999997994,
+          24.259916000002704
+        ],
+        "p50Ms": 24.259916000002704,
+        "maxMs": 24.383666999994603
+      },
+      {
+        "label": "B300",
+        "claims": 156,
+        "ticks": 10800,
+        "samplesMs": [
+          1817.045917000003,
+          1873.0641250000044,
+          1823.5768329999992,
+          1817.240208000003,
+          1811.951208999999
+        ],
+        "p50Ms": 1817.240208000003,
+        "maxMs": 1873.0641250000044
+      }
+    ],
+    "ab": [
+      {
+        "label": "AB0",
+        "claims": 0,
+        "ticks": 10800,
+        "samplesMs": [
+          56.802875000000085,
+          55.67199999999991,
+          57.17825000000016,
+          56.99549999999999,
+          56.63124999999991
+        ],
+        "p50Ms": 56.802875000000085,
+        "maxMs": 57.17825000000016
+      },
+      {
+        "label": "AB50",
+        "claims": 50,
+        "ticks": 10800,
+        "samplesMs": [
+          236.96350000000007,
+          232.047959,
+          230.590459,
+          234.98845900000015,
+          229.2835
+        ],
+        "p50Ms": 232.047959,
+        "maxMs": 236.96350000000007
+      },
+      {
+        "label": "AB100",
+        "claims": 100,
+        "ticks": 10800,
+        "samplesMs": [
+          1199.620167,
+          1192.633667,
+          1200.6517909999993,
+          1191.232250000001,
+          1233.2542090000006
+        ],
+        "p50Ms": 1199.620167,
+        "maxMs": 1233.2542090000006
+      },
+      {
+        "label": "AB150",
+        "claims": 104,
+        "ticks": 10800,
+        "samplesMs": [
+          1234.1942499999986,
+          1244.1583329999994,
+          1237.8211669999982,
+          1307.9090829999986,
+          1251.3227079999997
+        ],
+        "p50Ms": 1244.1583329999994,
+        "maxMs": 1307.9090829999986
+      },
+      {
+        "label": "AB200",
+        "claims": 104,
+        "ticks": 10800,
+        "samplesMs": [
+          1234.05775,
+          1242.482333,
+          1237.354124999998,
+          1239.3375840000008,
+          1236.0407080000004
+        ],
+        "p50Ms": 1237.354124999998,
+        "maxMs": 1242.482333
+      },
+      {
+        "label": "AB250",
+        "claims": 104,
+        "ticks": 10800,
+        "samplesMs": [
+          1238.1446660000001,
+          1238.5715419999979,
+          1241.7298750000045,
+          1241.1932920000036,
+          1237.544541999996
+        ],
+        "p50Ms": 1238.5715419999979,
+        "maxMs": 1241.7298750000045
+      }
+    ]
+  }
+}
