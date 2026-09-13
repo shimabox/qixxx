@@ -18,6 +18,7 @@
 | 2 | `0002_ranking_free_async.sql` | `scores` に非同期監査用の4列と4インデックスを追加し、単一行ロック `audit_lock` を作成する。既存スコアは既定値により `verified` になる。 |
 | 3 | `0003_submitter_hash.sql` | pending 自己置換用の `submitter_hash` と候補検索用インデックスを追加する。 |
 | 4 | `0004_ranking_rate_limits.sql` | D1 による固定窓レート制限テーブルと、窓・housekeeping 用インデックスを追加する。 |
+| 5 | `0005_scores_seed_unique.sql` | `scores.seed` に UNIQUE インデックスを追加し、同じ seed の 2 行目(公開リプレイの複製投稿)を INSERT 時に拒否する。 |
 
 ## 2. ER 図
 
@@ -79,7 +80,7 @@ erDiagram
 | `stage` | `INTEGER` | 不可 | なし | なし | 投稿時の申告到達ステージ。監査成功時に再シミュレーション結果で上書きする。 |
 | `name` | `TEXT` | 不可 | なし | なし | 表示名。形式制約は投稿 API の検証で担保する。 |
 | `x_handle` | `TEXT` | 可 | なし | なし | 任意の X ハンドル。先頭の `@` を除いた形式で保存する。 |
-| `seed` | `INTEGER` | 不可 | なし | なし | 決定論的な再シミュレーションに使うゲーム seed。 |
+| `seed` | `INTEGER` | 不可 | なし | UNIQUE index | 決定論的な再シミュレーションに使うゲーム seed。通常プレイの seed は 1 回ごとに `crypto.getRandomValues` で引く 32 bit 乱数なので、同じ seed の行が 2 つあることは正当なプレイでは起きない(衝突確率は組ごとに 2^-32)。公開リプレイを取得して入力列だけ変えた複製は seed を変えられない(変えると敵の動きが合わず監査で落ちる)ため、seed の一意性で INSERT 時に弾く。 |
 | `inputs` | `BLOB` | 不可 | なし | なし | PLAYING tick の入力列を RLE 符号化したバイト列。テキスト変換の膨張を避け、監査・リプレイ配信で元のバイト列を使う。 |
 | `duration_ticks` | `INTEGER` | 不可 | なし | なし | RLE の decode-only 処理でサーバーが導出した tick 数。監査時に再シミュレーション結果と照合し、成功時に上書きする。 |
 | `replay_hash` | `TEXT` | 不可 | なし | UNIQUE index | シーズン・ルールセット・seed・正規化済み入力列から計算するハッシュ。RLE の分割だけを変えた同一プレイも重複として拒否する。 |
@@ -99,6 +100,7 @@ DDL が直接保証する値域は少なく、`status`、スコア、ステー�
 | `INTEGER PRIMARY KEY` (rowid alias) | `rank_seq` | 監査チャンクの `ORDER BY rank_seq`、行単位の更新・削除、順位の同点先着順に使う。 |
 | `idx_scores_id` (UNIQUE) | `id` | `GET /api/ranking/:id/replay` の公開 ID 単独検索と ID 一意性を支える。 |
 | `idx_scores_replay_hash` (UNIQUE) | `replay_hash` | 投稿 INSERT 時に同一論理リプレイを一意制約違反として拒否する。 |
+| `idx_scores_seed` (UNIQUE) | `seed` | 同じ seed の 2 行目(入力列を変えた複製リプレイ)を一意制約違反として拒否する。season で絞らないのは、過去シーズンのリプレイ複製も同じく複製であり、seed がシーズンをまたいで正当に再利用されることもないため。 |
 | `idx_scores_season_ruleset_rank` | `season_id, ruleset_version, score DESC, rank_seq ASC` | 0001 時点の同期ランキング取得・上位外削除用。非同期化後の現行クエリは `status` も絞るため、次の複合インデックスが対応する。 |
 | `idx_scores_status_season_ruleset_rank` | `status, season_id, ruleset_version, score DESC, rank_seq ASC` | verified TOP10、10位閾値、pending 表示候補、監査後の verified TOP10 cleanup を同じ順位順で処理する。 |
 | `idx_scores_pending_created` | `status, created_at` | 新規投稿の全体 pending 件数と、監査冒頭の72時間経過行削除を支える。 |

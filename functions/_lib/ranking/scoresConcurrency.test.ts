@@ -97,7 +97,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
       await testDb.db
         .prepare(
           `INSERT INTO scores (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
-           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, 1, X'0001', 1, ?2, ?3, 'pending', 'filler-ip-hash', 0, NULL)`
+           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, ${700_000 + i}, X'0001', 1, ?2, ?3, 'pending', 'filler-ip-hash', 0, NULL)`
         )
         .bind(`filler-${i}`, `filler-hash-${i}`, Date.now())
         .run();
@@ -125,7 +125,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
       await testDb.db
         .prepare(
           `INSERT INTO scores (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
-           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, 1, X'0001', 1, ?2, ?3, 'pending', ?4, 0, NULL)`
+           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, ${710_000 + i}, X'0001', 1, ?2, ?3, 'pending', ?4, 0, NULL)`
         )
         .bind(`expired-own-ip-${i}`, `expired-own-ip-hash-${i}`, seventyThreeHoursAgo, 'some-ip-hash-value')
         .run();
@@ -134,7 +134,7 @@ describe('POST /api/scores pending-cap concurrency (real local D1)', () => {
       await testDb.db
         .prepare(
           `INSERT INTO scores (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at)
-           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, 1, X'0001', 1, ?2, ?3, 'pending', 'other-filler-ip-hash', 0, NULL)`
+           VALUES (?1, 1, 1, 1, 1, 1, 'X', NULL, ${720_000 + i}, X'0001', 1, ?2, ?3, 'pending', 'other-filler-ip-hash', 0, NULL)`
         )
         .bind(`expired-filler-${i}`, `expired-filler-hash-${i}`, seventyThreeHoursAgo)
         .run();
