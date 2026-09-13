@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPlatformProxy } from 'wrangler';
 import type { AuditD1BindValue, AuditD1Database, AuditD1PreparedStatement } from '../d1Adapter';
+import { computeRngKey } from '../../../functions/_lib/ranking/rngKey';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -87,8 +88,9 @@ export async function createTestD1(): Promise<TestD1> {
 
 let idCounter = 0;
 let hashCounter = 0;
-// migrations/0005 makes `seed` UNIQUE, so every seeded row gets its own by
-// default; tests that care pass an explicit `seed`.
+// migrations/0005 makes `rng_key` (derived from `seed`) UNIQUE, so every
+// seeded row gets its own seed by default; tests that care pass an explicit
+// `seed`. `rng_key` follows `seed` unless overridden.
 let seedCounter = 0;
 
 /**
@@ -121,6 +123,7 @@ export async function seedScoreRow(
     audit_attempts: number;
     next_attempt_at: number | null;
     submitter_hash: string | null;
+    rng_key: number;
   }> = {}
 ): Promise<string> {
   const id = overrides.id ?? `test-id-${++idCounter}`;
@@ -145,11 +148,12 @@ export async function seedScoreRow(
     submitter_hash: null as string | null,
     ...overrides,
   };
+  const rngKey = overrides.rng_key ?? computeRngKey(row.seed);
   await db
     .prepare(
       `INSERT INTO scores
-         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)`
     )
     .bind(
       row.id,
@@ -169,7 +173,8 @@ export async function seedScoreRow(
       row.ip_hash,
       row.audit_attempts,
       row.next_attempt_at,
-      row.submitter_hash
+      row.submitter_hash,
+      rngKey
     )
     .run();
   return id;
