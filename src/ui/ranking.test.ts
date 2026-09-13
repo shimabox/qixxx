@@ -16,6 +16,7 @@ import {
   type RankingEntry,
   type RunSubmissionSnapshot,
 } from './ranking';
+import { MAX_VERIFIED_CLAIMS } from '../config';
 
 describe('limitRankingName', () => {
   it('allows 24 emoji code points and removes the 25th', () => {
@@ -65,6 +66,7 @@ function snapshot(overrides: Partial<RunSubmissionSnapshot> = {}): RunSubmission
     stage: 2,
     runMode: 'normal',
     tainted: false,
+    claims: 3,
     ...overrides,
   };
 }
@@ -137,6 +139,26 @@ describe('decideSubmissionOffer: provisional in-range boundary', () => {
 
   it('does not guess when the ranking fetch failed', () => {
     expect(decide({ entries: null })).toBe('fetch-failed');
+  });
+});
+
+describe('decideSubmissionOffer: verification claim cap', () => {
+  it('explains instead of offering when an in-range run exceeds MAX_VERIFIED_CLAIMS', () => {
+    expect(decide({ snapshot: snapshot({ claims: MAX_VERIFIED_CLAIMS + 1 }), entries: [] })).toBe('over-claim-cap');
+    expect(decide({ snapshot: snapshot({ score: 500, claims: MAX_VERIFIED_CLAIMS + 1 }), entries: fullBoard(499) })).toBe('over-claim-cap');
+  });
+
+  it('offers a run exactly at the cap — the audit rejects only the claim past it', () => {
+    expect(decide({ snapshot: snapshot({ claims: MAX_VERIFIED_CLAIMS }), entries: [] })).toBe('show');
+  });
+
+  it('stays silent for an out-of-range run whatever its claim count', () => {
+    expect(decide({ snapshot: snapshot({ score: 499, claims: MAX_VERIFIED_CLAIMS + 1 }), entries: fullBoard(500) })).toBe('out-of-range');
+  });
+
+  it('never explains a run that was ineligible or stale to begin with', () => {
+    expect(decide({ snapshot: snapshot({ tainted: true, claims: MAX_VERIFIED_CLAIMS + 1 }), entries: [] })).toBe('ineligible-run');
+    expect(decide({ snapshot: snapshot({ claims: MAX_VERIFIED_CLAIMS + 1 }), currentStatus: 'playing', entries: [] })).toBe('run-no-longer-over');
   });
 });
 
