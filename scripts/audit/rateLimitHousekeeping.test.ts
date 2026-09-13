@@ -53,4 +53,20 @@ describe.each(AUDIT_D1_BIND_MODES)('rate-limit housekeeping (real local D1, %s b
     const score = await testD1.db.prepare("SELECT id, replay_hash FROM scores WHERE id = 'score-preserved'").first();
     expect(score).toEqual({ id: 'score-preserved', replay_hash: 'score-preserved-hash' });
   });
+
+  it('measures age on the database clock when no reference time is given', async () => {
+    await testD1.db
+      .prepare(
+        `INSERT INTO ranking_rate_limits (ip_hash, window_index, request_count, updated_at)
+         VALUES ('stale', 1, 3, unixepoch() - ?1 - 1),
+                ('fresh', 2, 6, unixepoch())`
+      )
+      .bind(RANKING_RATE_LIMIT_RETENTION_SECONDS)
+      .run();
+
+    await expect(deleteExpiredRankingRateLimits(auditDb)).resolves.toBe(1);
+
+    const remaining = await testD1.db.prepare('SELECT ip_hash FROM ranking_rate_limits').all<{ ip_hash: string }>();
+    expect(remaining.results).toEqual([{ ip_hash: 'fresh' }]);
+  });
 });
