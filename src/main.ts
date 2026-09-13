@@ -410,6 +410,12 @@ let seededRunSeed: number | undefined;
 // seed-requeuing/recorder-reset comments below.
 const inputRecorder = new InputRecorder();
 
+// Successful area claims in the live run so far. Reset together with the
+// recorder; frozen into the gameover snapshot so src/ui/ranking.ts can tell a
+// run that exceeds MAX_VERIFIED_CLAIMS (which the server's audit would only
+// reject days later, silently) before ever offering to submit it.
+let runClaims = 0;
+
 // Monotonic per-run identifier. Bumped at the one boundary
 // where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
 // resetToFreshRun()), so an /api/ranking response that arrives after the
@@ -908,12 +914,15 @@ function update(): void {
   // (title/stageclear/gameover ticks, or this same reset tick).
   if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
     inputRecorder.reset();
+    runClaims = 0;
     // A brand-new run starts here — see `runId`'s own comment.
     runId++;
   }
   inputRecorder.observe(session, input);
 
-  sfx.handleEvents(session.drainEvents());
+  const events = session.drainEvents();
+  for (const ev of events) if (ev === 'area-claimed') runClaims++;
+  sfx.handleEvents(events);
   // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
   // tick granularity, same as the events above, so an effect is queued for
   // every despawn even if several ticks elapse before the next rendered
@@ -1040,6 +1049,7 @@ function renderFrame(): void {
         stage: session.getStage(),
         runMode,
         tainted: session.isRunTainted(),
+        claims: runClaims,
       });
     }
   } else if (gameOverModalShown) {

@@ -87,6 +87,9 @@ export async function createTestD1(): Promise<TestD1> {
 
 let idCounter = 0;
 let hashCounter = 0;
+// migrations/0005 makes `seed` UNIQUE, so every seeded row gets its own by
+// default; tests that care pass an explicit `seed`.
+let seedCounter = 0;
 
 /**
  * Inserts one `scores` row directly (bypassing POST /api/scores entirely) —
@@ -130,7 +133,7 @@ export async function seedScoreRow(
     stage: 1,
     name: 'TESTER',
     x_handle: null as string | null,
-    seed: 1,
+    seed: 1_000_000 + ++seedCounter,
     inputs: new Uint8Array([0, 1]),
     duration_ticks: 1,
     replay_hash: `test-hash-${++hashCounter}`,
