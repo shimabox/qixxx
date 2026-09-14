@@ -1,7 +1,8 @@
-// Virtual touch controls (docs/plan.md §5.2/§12.1): a d-pad pinned to the
-// screen's left edge plus FAST/SLOW buttons pinned to the right edge, built
-// as plain DOM elements. DOM-dependent by design, exactly like
-// input/keyboard.ts.
+// Virtual touch controls (docs/plan.md §5.2/§12.1/§12.8): a d-pad on the
+// left plus FAST/SLOW buttons on the right, built as plain DOM elements.
+// Portrait uses a bottom row; sufficiently wide touch landscapes use side
+// columns so the field can consume the viewport height. DOM-dependent by
+// design, exactly like input/keyboard.ts.
 //
 // GB-style left/right split (docs/plan.md §12.1 "タッチパッドのGB風左右
 // 分離"): the d-pad and the FAST/SLOW cluster are two independent groups
@@ -34,7 +35,12 @@
 // diagonal FAST/SLOW placement keep the two groups from ever overlapping,
 // so that still holds true here.
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS } from './keys';
-import { TOUCH_BUTTON_SIZE, TOUCH_DPAD_GAP } from '../config';
+import {
+  TOUCH_BUTTON_SIZE,
+  TOUCH_DPAD_GAP,
+  TOUCH_SIDE_COLUMN_PADDING,
+  TOUCH_SIDE_MIN_FIELD_WIDTH,
+} from '../config';
 
 interface ButtonSpec {
   code: string;
@@ -59,6 +65,29 @@ const ACTION_BUTTONS: ButtonSpec[] = [
 // gap between them along the diagonal, with no overlap so a finger on one
 // can never accidentally capture the other's pointer events.
 const ACTION_CLUSTER_SIZE = TOUCH_BUTTON_SIZE * 2 + TOUCH_DPAD_GAP * 2;
+const SIDE_COLUMN_WIDTH =
+  TOUCH_BUTTON_SIZE * 3 + TOUCH_DPAD_GAP * 2 + TOUCH_SIDE_COLUMN_PADDING * 2;
+
+export type TouchLayout = 'bottom' | 'side';
+
+export interface TouchLayoutInput {
+  touchCapable: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/** Resolve touch layout solely from the current device and viewport geometry. */
+export function resolveTouchLayout({
+  touchCapable,
+  viewportWidth,
+  viewportHeight,
+}: TouchLayoutInput): TouchLayout {
+  return touchCapable &&
+    viewportWidth > viewportHeight &&
+    viewportWidth - 2 * SIDE_COLUMN_WIDTH >= TOUCH_SIDE_MIN_FIELD_WIDTH
+    ? 'side'
+    : 'bottom';
+}
 
 /** True on devices where a touch-style pointer is the primary input (docs/plan.md §5.2). */
 export function isTouchCapableDevice(): boolean {
@@ -83,12 +112,10 @@ export class TouchControls {
   constructor(dispatchTarget: EventTarget = window, parent: HTMLElement = document.body) {
     this.dispatchTarget = dispatchTarget;
     this.container = this.buildContainer();
-    // Two independent groups (docs/plan.md §12.1): the d-pad hugs the left
-    // edge, the FAST/SLOW cluster hugs the right edge, with the container's
-    // `justify-content: space-between` opening up the space between them.
     this.container.appendChild(this.buildDpad());
-    this.container.appendChild(this.buildActionCluster());
+    this.container.appendChild(this.buildActions());
     parent.appendChild(this.container);
+    document.documentElement.style.setProperty('--touch-side-w', `${SIDE_COLUMN_WIDTH}px`);
   }
 
   getElement(): HTMLDivElement {
@@ -104,26 +131,15 @@ export class TouchControls {
   private buildContainer(): HTMLDivElement {
     const el = document.createElement('div');
     el.id = 'touch-controls';
-    // A plain flex row with `space-between` is what pushes the d-pad group
-    // and the FAST/SLOW cluster to the screen's left/right edges
-    // (docs/plan.md §12.1) — each group lays itself out independently (see
-    // buildDpad/buildActionCluster), so this container only needs to place
-    // the two groups apart from each other.
-    el.style.display = 'flex';
-    el.style.justifyContent = 'space-between';
-    el.style.alignItems = 'center';
-    el.style.padding = '10px 8px';
     el.style.touchAction = 'none';
     el.style.userSelect = 'none';
-    el.style.width = '100%';
-    el.style.boxSizing = 'border-box';
     // Shown only on touch-capable devices (docs/plan.md §5.2); harmless if
     // shown on desktop too, but we default to hiding it there to avoid
     // cluttering a mouse+keyboard session, per the media-query check below.
     // JS re-check backs up the CSS media query for environments (like some
     // automated test harnesses) where `(pointer: coarse)` isn't reported but
     // touch is still emulated.
-    el.style.display = isTouchCapableDevice() ? 'flex' : 'none';
+    if (!isTouchCapableDevice()) el.style.display = 'none';
     return el;
   }
 
@@ -131,6 +147,7 @@ export class TouchControls {
   // "+"-shaped cluster pinned to the container's left edge.
   private buildDpad(): HTMLDivElement {
     const el = document.createElement('div');
+    el.id = 'touch-dpad';
     el.style.display = 'grid';
     el.style.gridTemplateAreas = "'. up .' 'left . right' '. down .'";
     el.style.gridTemplateColumns = `repeat(3, ${TOUCH_BUTTON_SIZE}px)`;
@@ -144,6 +161,17 @@ export class TouchControls {
       el.appendChild(button);
     }
     return el;
+  }
+
+  private buildActions(): HTMLDivElement {
+    const actions = document.createElement('div');
+    actions.id = 'touch-actions';
+    actions.appendChild(this.buildActionCluster());
+
+    const extra = document.createElement('div');
+    extra.id = 'touch-actions-extra';
+    actions.appendChild(extra);
+    return actions;
   }
 
   // The FAST/SLOW cluster: a small relative box, pinned to the container's

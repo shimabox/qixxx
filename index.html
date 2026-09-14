@@ -36,15 +36,69 @@
         overflow: hidden;
       }
 
-      /* #game-root (created by main.ts) is the flex child that fills
-         whatever space is left above #touch-controls (docs/plan.md §5.3:
-         "縦持ちレイアウト: フィールド上部・コントロール下部"). It stacks
-         #hud-row directly above #canvas-wrap (docs/plan.md §12.1: "HUDを
-         フィールド直上に"), and the canvas itself is letterboxed inside
-         #canvas-wrap by main.ts's fitCanvasToViewport(), which also keeps
-         #hud-row's width in sync with the canvas's on-screen width. The
-         Title/StageClear/GameOver overlay (#screen) is centered over the
-         canvas by being absolutely positioned inside #canvas-wrap. */
+      /* #game-root (created by main.ts) fills the space above the controls
+         in bottom mode or the center column in side mode. It stacks #hud-row
+         directly above #canvas-wrap, and main.ts letterboxes the canvas while
+         keeping the HUD row at the same width. The screen overlay is centered
+         over the canvas by its positioning inside #canvas-wrap. */
+      #touch-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 8px;
+        width: 100%;
+      }
+
+      #touch-actions {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        flex: 0 0 auto;
+      }
+
+      #touch-actions-extra {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+      }
+
+      #touch-actions-extra:empty {
+        display: none;
+      }
+
+      body[data-touch-layout='side'] {
+        display: grid;
+        grid-template-columns: var(--touch-side-w) minmax(0, 1fr) var(--touch-side-w);
+        grid-template-rows: minmax(0, 1fr);
+        grid-template-areas: 'dpad game actions';
+        align-items: center;
+      }
+
+      body[data-touch-layout='side'] #touch-controls {
+        display: contents;
+      }
+
+      body[data-touch-layout='side'] #touch-dpad {
+        grid-area: dpad;
+        justify-self: start;
+        margin-left: 8px;
+      }
+
+      body[data-touch-layout='side'] #touch-actions {
+        grid-area: actions;
+        justify-self: end;
+        margin-right: 8px;
+      }
+
+      body[data-touch-layout='side'] #game-root {
+        grid-area: game;
+        align-self: stretch;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+      }
+
       #game-canvas {
         display: block;
         border: 2px solid #00ff41;

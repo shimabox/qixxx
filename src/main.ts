@@ -1,7 +1,12 @@
 import { GameSession, SessionInput } from './core/session';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
-import { TouchControls, attachTapToConfirm } from './input/touch';
+import {
+  TouchControls,
+  attachTapToConfirm,
+  isTouchCapableDevice,
+  resolveTouchLayout,
+} from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
@@ -295,6 +300,7 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
+let creditLink: HTMLAnchorElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -438,7 +444,7 @@ function init(): void {
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
-  getCreditLinkElement(hudRow);
+  creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
@@ -486,6 +492,26 @@ function toggleMute(): void {
 
 function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+}
+
+function updateTouchLayout(): void {
+  const layout = resolveTouchLayout({
+    touchCapable: isTouchCapableDevice(),
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  });
+  if (document.body.dataset.touchLayout === layout) return;
+
+  document.body.dataset.touchLayout = layout;
+  if (layout === 'side') {
+    const extra = document.getElementById('touch-actions-extra');
+    if (!extra) return;
+    extra.appendChild(creditLink);
+    extra.appendChild(muteButton);
+  } else {
+    hudRow.appendChild(creditLink);
+    hudRow.appendChild(muteButton);
+  }
 }
 
 // The scale factor fitCanvasToViewport() would apply to CANVAS_WIDTH x
@@ -704,10 +730,9 @@ function updateHud(): void {
 // CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
 // once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
 // canvas's internal resolution never changes here, only its on-screen size.
-// Re-run on resize/orientation change; #game-root's own flex-computed size
-// already accounts for the touch controls' height (docs/plan.md's "縦持ち
-// レイアウト: フィールド上部・コントロール下部") without this function
-// needing to know whether they're visible.
+// Re-run on resize/orientation change; #game-root's flex/grid-computed size
+// already accounts for the touch controls in either bottom or side mode,
+// without this function needing to know whether they're visible.
 //
 // The HUD row's height is measured directly (rather than assumed as a
 // constant) so it stays correct if its font-size clamp() resolves
@@ -719,6 +744,7 @@ function updateHud(): void {
 // for why updateHudMode()'s own mode *decision*, called first below, can't
 // oscillate either, despite now itself depending on a *predicted* width).
 function fitCanvasToViewport(): void {
+  updateTouchLayout();
   // Resolve the HUD's line mode (and, if it just changed, its DOM content)
   // before measuring hudRow's real height below, so a mode flip's new line
   // count is already reflected in that measurement rather than lagging a
