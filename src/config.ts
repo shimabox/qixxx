@@ -382,6 +382,10 @@ export const EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS = 3.0; // ring radius at the 
 export const TOUCH_CONTROLS_HEIGHT = 168;
 export const TOUCH_BUTTON_SIZE = 64;
 export const TOUCH_DPAD_GAP = 4;
+// Extend the d-pad hit target without changing its visible 3x3 grid.
+export const TOUCH_DPAD_HIT_MARGIN = 16;
+// Ignore touches near the d-pad center so an ambiguous press does not move.
+export const TOUCH_DPAD_DEAD_ZONE_RADIUS = 16;
 export const TOUCH_SIDE_COLUMN_PADDING = 8;
 export const TOUCH_SIDE_MIN_FIELD_WIDTH = 240;
 export const TOUCH_CONTROLS_OPACITY = 0.55;
