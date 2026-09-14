@@ -26,19 +26,16 @@
 // "tapping any control also confirms Title/StageClear/GameOver screens"
 // come for free.
 //
-// Multi-touch (docs/plan.md §5.2 "移動 + ボタン同時押しが必須要件"): each
-// button is its own DOM element with its own pointerdown/up/cancel/leave
-// listeners and calls setPointerCapture on press. Two fingers pressing two
-// different buttons fire on two different elements/pointerIds entirely
-// independently — there is no shared "currently touched" state to race on,
-// so simultaneous cross-key + FAST/SLOW presses work without any pointerId
-// bookkeeping in this module. The left/right split (this file) and the
-// diagonal FAST/SLOW placement keep the two groups from ever overlapping,
-// so that still holds true here.
+// Multi-touch (docs/plan.md §5.2 "移動 + ボタン同時押しが必須要件"): the
+// d-pad has one owning pointer while FAST/SLOW remain independent button
+// targets. This prevents a second movement finger from changing direction
+// without interfering with simultaneous movement + action input.
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS } from './keys';
 import {
   TOUCH_BUTTON_SIZE,
+  TOUCH_DPAD_DEAD_ZONE_RADIUS,
   TOUCH_DPAD_GAP,
+  TOUCH_DPAD_HIT_MARGIN,
   TOUCH_SIDE_COLUMN_PADDING,
   TOUCH_SIDE_MIN_FIELD_WIDTH,
 } from '../config';
@@ -66,8 +63,59 @@ const ACTION_BUTTONS: ButtonSpec[] = [
 // gap between them along the diagonal, with no overlap so a finger on one
 // can never accidentally capture the other's pointer events.
 const ACTION_CLUSTER_SIZE = TOUCH_BUTTON_SIZE * 2 + TOUCH_DPAD_GAP * 2;
+const SIDE_PADDING = Math.max(TOUCH_SIDE_COLUMN_PADDING, TOUCH_DPAD_HIT_MARGIN);
 const SIDE_COLUMN_WIDTH =
-  TOUCH_BUTTON_SIZE * 3 + TOUCH_DPAD_GAP * 2 + TOUCH_SIDE_COLUMN_PADDING * 2;
+  TOUCH_BUTTON_SIZE * 3 + TOUCH_DPAD_GAP * 2 + SIDE_PADDING * 2;
+
+export type DpadDirection = 'up' | 'down' | 'left' | 'right';
+
+export interface DpadTransition {
+  keyup: DpadDirection | null;
+  keydown: DpadDirection | null;
+}
+
+/** Resolve a point relative to the d-pad centre into one cardinal direction. */
+export function resolveDpadDirection(
+  dx: number,
+  dy: number,
+  deadZoneRadius: number,
+): DpadDirection | null {
+  if (Math.hypot(dx, dy) <= deadZoneRadius) return null;
+  if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? 'left' : 'right';
+  return dy < 0 ? 'up' : 'down';
+}
+
+/** Tracks the single pointer allowed to own and steer the d-pad. */
+export class DpadPointerState {
+  private ownerId: number | null = null;
+  private direction: DpadDirection | null = null;
+
+  isOwner(pointerId: number): boolean {
+    return pointerId === this.ownerId;
+  }
+
+  down(pointerId: number, direction: DpadDirection | null): DpadTransition | null {
+    if (this.ownerId !== null) return null;
+    this.ownerId = pointerId;
+    this.direction = direction;
+    return direction === null ? null : { keyup: null, keydown: direction };
+  }
+
+  move(pointerId: number, direction: DpadDirection | null): DpadTransition | null {
+    if (pointerId !== this.ownerId || direction === this.direction) return null;
+    const transition = { keyup: this.direction, keydown: direction };
+    this.direction = direction;
+    return transition;
+  }
+
+  up(pointerId: number): DpadTransition | null {
+    if (pointerId !== this.ownerId) return null;
+    const direction = this.direction;
+    this.ownerId = null;
+    this.direction = null;
+    return direction === null ? null : { keyup: direction, keydown: null };
+  }
+}
 
 export type TouchLayout = 'bottom' | 'side';
 
@@ -119,7 +167,11 @@ export class TouchControls {
     document.documentElement.style.setProperty('--touch-side-w', `${SIDE_COLUMN_WIDTH}px`);
     document.documentElement.style.setProperty(
       '--touch-side-pad',
-      `${TOUCH_SIDE_COLUMN_PADDING}px`,
+      `${SIDE_PADDING}px`,
+    );
+    document.documentElement.style.setProperty(
+      '--touch-dpad-hit-margin',
+      `${TOUCH_DPAD_HIT_MARGIN}px`,
     );
   }
 
@@ -160,11 +212,70 @@ export class TouchControls {
     el.style.columnGap = `${TOUCH_DPAD_GAP}px`;
     el.style.rowGap = `${TOUCH_DPAD_GAP}px`;
     el.style.flex = '0 0 auto';
+    const buttons = new Map<DpadDirection, HTMLButtonElement>();
     for (const spec of DPAD_BUTTONS) {
-      const button = this.buildButton(spec);
+      const button = this.buildButtonElement(spec);
       button.style.gridArea = spec.gridArea;
       el.appendChild(button);
+      buttons.set(spec.gridArea as DpadDirection, button);
     }
+
+    const state = new DpadPointerState();
+    const directionAt = (event: PointerEvent): DpadDirection | null => {
+      const rect = el.getBoundingClientRect();
+      return resolveDpadDirection(
+        event.clientX - (rect.left + rect.width / 2),
+        event.clientY - (rect.top + rect.height / 2),
+        TOUCH_DPAD_DEAD_ZONE_RADIUS,
+      );
+    };
+    const isInsideHitArea = (event: PointerEvent): boolean => {
+      const rect = el.getBoundingClientRect();
+      return (
+        event.clientX >= rect.left - TOUCH_DPAD_HIT_MARGIN &&
+        event.clientX <= rect.right + TOUCH_DPAD_HIT_MARGIN &&
+        event.clientY >= rect.top - TOUCH_DPAD_HIT_MARGIN &&
+        event.clientY <= rect.bottom + TOUCH_DPAD_HIT_MARGIN
+      );
+    };
+    const applyTransition = (transition: DpadTransition | null): void => {
+      if (!transition) return;
+      if (transition.keyup) {
+        buttons.get(transition.keyup)!.style.background = 'rgba(10, 14, 39, 0.7)';
+        this.dispatch('keyup', MOVE_KEYS[transition.keyup][0]);
+      }
+      if (transition.keydown) {
+        buttons.get(transition.keydown)!.style.background = 'rgba(0, 255, 65, 0.35)';
+        this.dispatch('keydown', MOVE_KEYS[transition.keydown][0]);
+      }
+    };
+    const onDown = (event: PointerEvent): void => {
+      event.preventDefault();
+      const transition = state.down(event.pointerId, directionAt(event));
+      // A dead-zone press owns the d-pad even though it has no transition.
+      if (state.isOwner(event.pointerId)) el.setPointerCapture(event.pointerId);
+      applyTransition(transition);
+    };
+    const onMove = (event: PointerEvent): void => {
+      event.preventDefault();
+      if (!isInsideHitArea(event)) return;
+      applyTransition(state.move(event.pointerId, directionAt(event)));
+    };
+    const onUp = (event: PointerEvent): void => {
+      event.preventDefault();
+      applyTransition(state.up(event.pointerId));
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+    el.addEventListener('contextmenu', (event) => event.preventDefault());
+    this.disposers.push(() => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+    });
     return el;
   }
 
@@ -190,7 +301,7 @@ export class TouchControls {
     el.style.height = `${ACTION_CLUSTER_SIZE}px`;
     el.style.flex = '0 0 auto';
     for (const spec of ACTION_BUTTONS) {
-      const button = this.buildButton(spec);
+      const button = this.buildActionButton(spec);
       button.style.position = 'absolute';
       if (spec.gridArea === 'fast') {
         button.style.top = '0';
@@ -204,7 +315,7 @@ export class TouchControls {
     return el;
   }
 
-  private buildButton(spec: ButtonSpec): HTMLButtonElement {
+  private buildButtonElement(spec: ButtonSpec): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.code = spec.code;
@@ -220,6 +331,11 @@ export class TouchControls {
     button.style.userSelect = 'none';
     button.style.webkitUserSelect = 'none';
 
+    return button;
+  }
+
+  private buildActionButton(spec: ButtonSpec): HTMLButtonElement {
+    const button = this.buildButtonElement(spec);
     const onDown = (event: PointerEvent): void => {
       event.preventDefault();
       button.setPointerCapture(event.pointerId);
@@ -245,7 +361,6 @@ export class TouchControls {
       button.removeEventListener('pointercancel', onUp);
       button.removeEventListener('pointerleave', onUp);
     });
-
     return button;
   }
 

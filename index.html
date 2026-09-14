@@ -67,6 +67,20 @@
         display: none;
       }
 
+      #touch-dpad {
+        position: relative;
+      }
+
+      #touch-dpad::before {
+        content: '';
+        position: absolute;
+        inset: calc(-1 * var(--touch-dpad-hit-margin));
+      }
+
+      #touch-dpad button {
+        pointer-events: none;
+      }
+
       body[data-touch-layout='side'] {
         display: grid;
         grid-template-columns: var(--touch-side-w) minmax(0, 1fr) var(--touch-side-w);
