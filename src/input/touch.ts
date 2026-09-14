@@ -116,6 +116,10 @@ export class TouchControls {
     this.container.appendChild(this.buildActions());
     parent.appendChild(this.container);
     document.documentElement.style.setProperty('--touch-side-w', `${SIDE_COLUMN_WIDTH}px`);
+    document.documentElement.style.setProperty(
+      '--touch-side-pad',
+      `${TOUCH_SIDE_COLUMN_PADDING}px`,
+    );
   }
 
   getElement(): HTMLDivElement {
