@@ -6,10 +6,10 @@
 //
 // GB-style left/right split (docs/plan.md §12.1 "タッチパッドのGB風左右
 // 分離"): the d-pad and the FAST/SLOW cluster are two independent groups
-// inside a single flex row with `justify-content: space-between`, so they
-// hug the screen's left/right edges with open space between them (rather
-// than sitting side-by-side near the center, which is what invited
-// mis-taps). Within the action cluster, FAST/SLOW are placed on the
+// placed at opposite ends of a flex row in bottom mode and in the body
+// grid's left/right columns in side mode. Both layouts leave the field clear
+// between the groups, avoiding the mis-taps caused by placing them together
+// near the center. Within the action cluster, FAST/SLOW are placed on the
 // diagonal (FAST upper-right, SLOW lower-left) like a Game Boy's A/B, via
 // absolute positioning inside a small relative box — see buildActionCluster.
 //

@@ -7,7 +7,30 @@ async function expectLayout(page: Page, layout: 'bottom' | 'side'): Promise<void
   await expect(page.locator('body')).toHaveAttribute('data-touch-layout', layout);
 }
 
+async function expectVisibleButtonsWithPositiveGeometry(
+  page: Page,
+  selector: string,
+  count: number,
+): Promise<void> {
+  const buttons = page.locator(selector);
+  await expect(buttons).toHaveCount(count);
+  for (let index = 0; index < count; index += 1) {
+    const button = buttons.nth(index);
+    await expect(button).toBeVisible();
+    const box = await button.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThan(0);
+    expect(box!.height).toBeGreaterThan(0);
+  }
+}
+
 async function expectSideGeometry(page: Page): Promise<void> {
+  await expectVisibleButtonsWithPositiveGeometry(page, '#touch-dpad button', 4);
+  await expectVisibleButtonsWithPositiveGeometry(
+    page,
+    '#touch-actions > div:first-child button',
+    2,
+  );
   await expect(page.locator('#hud-line1')).toBeVisible();
   await expect(page.locator('#hud-line2')).toBeVisible();
   await expect(page.locator('#hud-line3')).toBeVisible();
