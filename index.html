@@ -87,8 +87,34 @@
 
       body[data-touch-layout='side'] #touch-actions {
         grid-area: actions;
-        justify-self: end;
-        margin-right: var(--touch-side-pad);
+        justify-self: start;
+        margin-left: var(--touch-side-pad);
+      }
+
+      /* In side mode the HUD extras stay fixed in the viewport's top-right
+         corner, separate from the FAST/SLOW cluster beside the field. */
+      body[data-touch-layout='side'] #touch-actions-extra {
+        position: fixed;
+        top: 6px;
+        right: 8px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+      }
+
+      body[data-touch-layout='side'] #touch-actions-extra:empty {
+        display: none;
+      }
+
+      body[data-touch-layout='side'] #mute-button {
+        font-size: 11px !important;
+        padding: 2px 8px !important;
+        line-height: 1.4;
+      }
+
+      body[data-touch-layout='side'] #credit-link {
+        font-size: 10px !important;
       }
 
       body[data-touch-layout='side'] #game-root {

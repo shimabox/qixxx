@@ -9,7 +9,8 @@
 // placed at opposite ends of a flex row in bottom mode and in the body
 // grid's left/right columns in side mode. Both layouts leave the field clear
 // between the groups, avoiding the mis-taps caused by placing them together
-// near the center. Within the action cluster, FAST/SLOW are placed on the
+// near the center; side mode fixes the credit and MUTE extras in the viewport's
+// top-right corner. Within the action cluster, FAST/SLOW are placed on the
 // diagonal (FAST upper-right, SLOW lower-left) like a Game Boy's A/B, via
 // absolute positioning inside a small relative box — see buildActionCluster.
 //

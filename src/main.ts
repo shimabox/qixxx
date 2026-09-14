@@ -80,10 +80,11 @@ function getGameRootElement(): HTMLDivElement {
 
 // Get or create the HUD row (docs/plan.md §12.1 "HUDをフィールド直上に"):
 // a flex row that always holds the HUD text and, in bottom mode, also holds
-// the credit link and MUTE button. Side mode moves those extras into
-// #touch-actions-extra. Its width is kept exactly in sync with the canvas's
-// on-screen (CSS) width by fitCanvasToViewport(), so it always reads as "the
-// same width as, and directly above, the field" regardless of viewport shape.
+// the credit link and MUTE button. Side mode fixes those extras in the
+// viewport's top-right corner via #touch-actions-extra. Its width is kept
+// exactly in sync with the canvas's on-screen (CSS) width by
+// fitCanvasToViewport(), so it always reads as "the same width as, and directly
+// above, the field" regardless of viewport shape.
 function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
   let row = document.getElementById('hud-row') as HTMLDivElement | null;
   if (!row) {
@@ -206,7 +207,8 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
 
 // Get or create the credit link (author attribution). It sits between #hud and
 // #mute-button in the HUD row in bottom mode, then moves with the mute button
-// into #touch-actions-extra in side mode. It must keep pointer-events enabled
+// into the viewport's fixed top-right corner via #touch-actions-extra in side
+// mode. It must keep pointer-events enabled
 // because the HUD row itself disables them. Uses a smaller font than the mute
 // button for a modest appearance.
 function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
@@ -235,7 +237,8 @@ function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
 
 // Get or create the mute toggle button (docs/plan.md §3.8: "ミュートボタン
 // をHUDに置く"). It lives at the HUD row's right edge in bottom mode and moves
-// into #touch-actions-extra in side mode. It remains outside #hud itself (which
+// into the viewport's fixed top-right corner via #touch-actions-extra in side
+// mode. It remains outside #hud itself (which
 // has pointer-events: none), so it stays clickable/tappable in both locations.
 function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
@@ -429,8 +432,9 @@ function init(): void {
   attachTapToConfirm(canvas);
 
   // Initially appended to #hud-row in this order (hud, creditLink, then
-  // muteButton). Bottom mode retains that visual order; side mode moves the
-  // two extras into #touch-actions-extra while preserving their relative order.
+  // muteButton). Bottom mode retains that visual order; side mode fixes the
+  // two extras in the viewport's top-right corner via #touch-actions-extra,
+  // preserving their relative order.
   hud = getHudElement(hudRow);
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');

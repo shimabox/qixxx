@@ -39,9 +39,18 @@ async function expectSideGeometry(page: Page): Promise<void> {
 
   const geometry = await page.evaluate(() => {
     const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+    const overlaps = (a: DOMRect, b: DOMRect) =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     const dpad = rect('#touch-dpad');
     const canvas = rect('#game-canvas');
     const actions = rect('#touch-actions');
+    const actionCluster = rect('#touch-actions > div:first-child');
+    const hudRow = rect('#hud-row');
+    const fast = rect('#touch-actions > div:first-child button:nth-child(2)');
+    const slow = rect('#touch-actions > div:first-child button:nth-child(1)');
+    const credit = rect('#credit-link');
+    const mute = rect('#mute-button');
+    const obstacles = [canvas, hudRow, fast, slow];
     const lines = [...document.querySelectorAll<HTMLElement>('#hud-line1, #hud-line2, #hud-line3')];
     return {
       dpadRight: dpad.right,
@@ -52,9 +61,13 @@ async function expectSideGeometry(page: Page): Promise<void> {
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
       actionsLeft: actions.left,
-      actionClusterBottom: document.querySelector('#touch-actions > div')!.getBoundingClientRect()
-        .bottom,
-      actionsExtraTop: document.querySelector('#touch-actions-extra')!.getBoundingClientRect().top,
+      sideGapDifference: Math.abs(
+        actionCluster.left - canvas.right - (canvas.left - dpad.right),
+      ),
+      extrasTop: Math.min(credit.top, mute.top),
+      extrasRight: Math.max(credit.right, mute.right),
+      creditClear: obstacles.every((obstacle) => !overlaps(credit, obstacle)),
+      muteClear: obstacles.every((obstacle) => !overlaps(mute, obstacle)),
       canvasCenterX: canvas.left + canvas.width / 2,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
@@ -70,7 +83,11 @@ async function expectSideGeometry(page: Page): Promise<void> {
 
   expect(geometry.dpadRight).toBeLessThan(geometry.canvasLeft);
   expect(geometry.canvasRight).toBeLessThan(geometry.actionsLeft);
-  expect(geometry.actionsExtraTop).toBeGreaterThanOrEqual(geometry.actionClusterBottom);
+  expect(geometry.extrasTop).toBeLessThanOrEqual(10);
+  expect(geometry.extrasRight).toBeGreaterThanOrEqual(geometry.viewportWidth - 12);
+  expect(geometry.creditClear).toBe(true);
+  expect(geometry.muteClear).toBe(true);
+  expect(geometry.sideGapDifference).toBeLessThanOrEqual(2);
   expect(Math.abs(geometry.canvasCenterX - geometry.viewportWidth / 2)).toBeLessThanOrEqual(2);
   expect(geometry.canvasWidth).toBeGreaterThan(0);
   expect(geometry.canvasHeight).toBeGreaterThan(0);
