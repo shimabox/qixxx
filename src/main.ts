@@ -1,7 +1,12 @@
 import { GameSession, SessionInput } from './core/session';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
-import { TouchControls, attachTapToConfirm } from './input/touch';
+import {
+  TouchControls,
+  attachTapToConfirm,
+  isTouchCapableDevice,
+  resolveTouchLayout,
+} from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
@@ -49,10 +54,11 @@ const HUD_ROW_GAP_PX = 8;
 
 // Get or create the responsive root that hosts the HUD row + canvas
 // (docs/plan.md §5.3/§12.1): a flex child that grows/shrinks to fill
-// whatever space is left above the touch controls. Stacked as a column so
-// the HUD row sits directly above the canvas; both are centered as a group
-// and the canvas is letterboxed inside its wrapper at a fixed 4:3 aspect
-// ratio via fitCanvasToViewport() below.
+// the space above the touch controls in bottom mode or the body grid's
+// center column in side mode. Stacked as a column so the HUD row sits
+// directly above the canvas; both are centered as a group and the canvas is
+// letterboxed inside its wrapper at a fixed 4:3 aspect ratio via
+// fitCanvasToViewport() below.
 function getGameRootElement(): HTMLDivElement {
   let root = document.getElementById('game-root') as HTMLDivElement | null;
   if (!root) {
@@ -73,10 +79,12 @@ function getGameRootElement(): HTMLDivElement {
 }
 
 // Get or create the HUD row (docs/plan.md §12.1 "HUDをフィールド直上に"):
-// a flex row holding the HUD text (left, grows) and the MUTE button (right,
-// fixed size). Its width is kept exactly in sync with the canvas's on-screen
-// (CSS) width by fitCanvasToViewport(), so it always reads as "the same
-// width as, and directly above, the field" regardless of viewport shape.
+// a flex row that always holds the HUD text and, in bottom mode, also holds
+// the credit link and MUTE button. Side mode fixes those extras in the
+// viewport's top-right corner via #touch-actions-extra. Its width is kept
+// exactly in sync with the canvas's on-screen (CSS) width by
+// fitCanvasToViewport(), so it always reads as "the same width as, and directly
+// above, the field" regardless of viewport shape.
 function getHudRowElement(root: HTMLDivElement): HTMLDivElement {
   let row = document.getElementById('hud-row') as HTMLDivElement | null;
   if (!row) {
@@ -197,10 +205,12 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
   return screen;
 }
 
-// Get or create the credit link (author attribution). Lives inside the HUD row,
-// positioned between #hud and #mute-button (left of the mute button). Similar to
-// the mute button, it must have pointer-events: auto since the HUD row itself has
-// pointer-events: none. Uses a smaller font than the mute button for a modest appearance.
+// Get or create the credit link (author attribution). It sits between #hud and
+// #mute-button in the HUD row in bottom mode, then moves with the mute button
+// into the viewport's fixed top-right corner via #touch-actions-extra in side
+// mode. It must keep pointer-events enabled
+// because the HUD row itself disables them. Uses a smaller font than the mute
+// button for a modest appearance.
 function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
   let link = document.getElementById('credit-link') as HTMLAnchorElement | null;
   if (!link) {
@@ -226,9 +236,10 @@ function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
 }
 
 // Get or create the mute toggle button (docs/plan.md §3.8: "ミュートボタン
-// をHUDに置く"). Lives inside the HUD row (docs/plan.md §12.1: "MUTEボタン
-// はHUD行の右端に統合") rather than #hud itself (which is pointer-events:
-// none), so it stays clickable/tappable while sitting flush with the HUD text.
+// をHUDに置く"). It lives at the HUD row's right edge in bottom mode and moves
+// into the viewport's fixed top-right corner via #touch-actions-extra in side
+// mode. It remains outside #hud itself (which
+// has pointer-events: none), so it stays clickable/tappable in both locations.
 function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
   if (!button) {
@@ -295,6 +306,7 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let muteButton: HTMLButtonElement;
+let creditLink: HTMLAnchorElement;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -419,10 +431,10 @@ function init(): void {
   new TouchControls(window, document.body);
   attachTapToConfirm(canvas);
 
-  // Appended to #hud-row in this order (hud, creditLink, then muteButton) so the mute
-  // button lands at the row's right end (docs/plan.md §12.1: "MUTEボタンは
-  // HUD行の右端に統合") and the credit link sits between the HUD text and the mute button.
-  // Plain flex layout keeps DOM order as visual order here, with no `order` CSS needed.
+  // Initially appended to #hud-row in this order (hud, creditLink, then
+  // muteButton). Bottom mode retains that visual order; side mode fixes the
+  // two extras in the viewport's top-right corner via #touch-actions-extra,
+  // preserving their relative order.
   hud = getHudElement(hudRow);
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
@@ -438,7 +450,7 @@ function init(): void {
   gameOverModal = initGameOverModal(canvasWrap);
 
   sfx = new SfxEngine(loadMuted());
-  getCreditLinkElement(hudRow);
+  creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
@@ -486,6 +498,26 @@ function toggleMute(): void {
 
 function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+}
+
+function updateTouchLayout(): void {
+  const layout = resolveTouchLayout({
+    touchCapable: isTouchCapableDevice(),
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  });
+  if (document.body.dataset.touchLayout === layout) return;
+
+  document.body.dataset.touchLayout = layout;
+  if (layout === 'side') {
+    const extra = document.getElementById('touch-actions-extra');
+    if (!extra) return;
+    extra.appendChild(creditLink);
+    extra.appendChild(muteButton);
+  } else {
+    hudRow.appendChild(creditLink);
+    hudRow.appendChild(muteButton);
+  }
 }
 
 // The scale factor fitCanvasToViewport() would apply to CANVAS_WIDTH x
@@ -704,10 +736,9 @@ function updateHud(): void {
 // CANVAS_HEIGHT) aspect ratio inside whatever space is left in #game-root
 // once the HUD row above it is accounted for (docs/plan.md §5.3/§12.1) — the
 // canvas's internal resolution never changes here, only its on-screen size.
-// Re-run on resize/orientation change; #game-root's own flex-computed size
-// already accounts for the touch controls' height (docs/plan.md's "縦持ち
-// レイアウト: フィールド上部・コントロール下部") without this function
-// needing to know whether they're visible.
+// Re-run on resize/orientation change; #game-root's flex/grid-computed size
+// already accounts for the touch controls in either bottom or side mode,
+// without this function needing to know whether they're visible.
 //
 // The HUD row's height is measured directly (rather than assumed as a
 // constant) so it stays correct if its font-size clamp() resolves
@@ -719,6 +750,7 @@ function updateHud(): void {
 // for why updateHudMode()'s own mode *decision*, called first below, can't
 // oscillate either, despite now itself depending on a *predicted* width).
 function fitCanvasToViewport(): void {
+  updateTouchLayout();
   // Resolve the HUD's line mode (and, if it just changed, its DOM content)
   // before measuring hudRow's real height below, so a mode flip's new line
   // count is already reflected in that measurement rather than lagging a

@@ -376,9 +376,12 @@ export const IGNITER_BLINK_MIN_ALPHA = 0.4;
 export const EMBER_DESPAWN_EFFECT_DURATION_FRAMES = 24; // ~0.4s at a ~60fps render rate
 export const EMBER_DESPAWN_EFFECT_MAX_RADIUS_CELLS = 3.0; // ring radius at the end of its life
 
-// Touch controls (docs/plan.md §5.2): screen-bottom virtual d-pad (left) +
-// FAST/SLOW buttons (right). Pure layout tuning — sizes in CSS pixels.
+// Touch controls (docs/plan.md §5.2): virtual d-pad (left) + FAST/SLOW
+// buttons (right), placed below the field in bottom mode or beside it in
+// side mode. Pure layout tuning — sizes in CSS pixels.
 export const TOUCH_CONTROLS_HEIGHT = 168;
 export const TOUCH_BUTTON_SIZE = 64;
 export const TOUCH_DPAD_GAP = 4;
+export const TOUCH_SIDE_COLUMN_PADDING = 8;
+export const TOUCH_SIDE_MIN_FIELD_WIDTH = 240;
 export const TOUCH_CONTROLS_OPACITY = 0.55;
