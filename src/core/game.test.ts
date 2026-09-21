@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Field, CLAIMED_FAST, CLAIMED_SLOW, BORDER, LINE, UNCLAIMED } from './field';
 import { parseField, renderField } from './fieldFixture';
 import { Game, GameInput } from './game';
+import { claimArea } from './claim';
 import { Wisp } from './enemy';
 import { Ember } from './patrol';
 import {
@@ -1196,5 +1197,87 @@ describe('Game — Ember Blaze: climbs the marker line, misses, and despawns on 
     expect(game.getEmbers()).not.toContain(blaze);
     expect(game.drainEvents()).toContain('ember-despawned');
     expect(game.drainDespawnedEmberPositions()).toContainEqual({ x: 5, y: 2 });
+  });
+});
+
+describe('Game — marker stranded by dead-border pruning', () => {
+  // Builds the L-shaped claimed region that triggers the case: a left strip
+  // (inner border at x=6) plus a top-left pocket (borders along y=6 and
+  // x=11). Closing a line from (6,12) back onto (6,7) seals off the last
+  // UNCLAIMED cells around (6,7), so pruneDeadBorders absorbs it.
+  function lShapedField(): Field {
+    const field = new Field(20, 20);
+    const wisp = { x: 15, y: 15 };
+    const column = Array.from({ length: 18 }, (_, i) => ({ x: 6, y: 1 + i }));
+    for (const p of column) field.set(p, LINE);
+    expect(claimArea(field, column, wisp, 'fast').accepted).toBe(true);
+    const pocket = [...[7, 8, 9, 10, 11].map((x) => ({ x, y: 6 })), ...[5, 4, 3, 2, 1].map((y) => ({ x: 11, y }))];
+    for (const p of pocket) field.set(p, LINE);
+    expect(claimArea(field, pocket, wisp, 'fast').accepted).toBe(true);
+    return field;
+  }
+
+  function drive(game: Game, dx: GameInput['dx'], dy: GameInput['dy'], cells: number): void {
+    for (let i = 0; i < cells; i++) game.update({ dx, dy, drawHeld: true });
+  }
+
+  it('moves the marker onto the nearest surviving border cell instead of leaving it inside claimed territory', () => {
+    const field = lShapedField();
+    const wisp = new Wisp({ x: 15, y: 15 }, () => 0.5, 0);
+    const game = new Game(field, { x: 6, y: 12 }, wisp, undefined, { requiredOccupancy: 0.99 });
+
+    drive(game, 1, 0, 4); // right to (10,12)
+    drive(game, 0, -1, 5); // up to (10,7)
+    drive(game, -1, 0, 4); // left: (9,7), (8,7), (7,7), then (6,7) closes the line
+
+    expect(game.getStatus()).toBe('playing');
+    expect(game.drainEvents()).toContain('area-claimed');
+    expect(field.get({ x: 6, y: 7 })).toBe(CLAIMED_FAST); // the closing cell itself was pruned
+    const pos = game.getMarker().getPosition();
+    expect(field.get(pos)).toBe(BORDER);
+    expect(game.getMarker().isDrawing()).toBe(false);
+
+    // And the marker is playable again: some direction moves it.
+    const moved = ([[0, -1], [0, 1], [-1, 0], [1, 0]] as const).some(([dx, dy]) => game.update({ dx, dy, drawHeld: false })?.moved);
+    expect(moved).toBe(true);
+  });
+
+  it('never relocates onto a cell an Ember occupies, so the teleport cannot cost a life', () => {
+    const field = lShapedField();
+    const wisp = new Wisp({ x: 15, y: 15 }, () => 0.5, 0);
+    // A Blaze trailing the marker up its own line: it chases the marker at
+    // every fork (rng 0, chase probability 1) and steps once per tick, so by
+    // the tick the line closes it stands on (10,7) — the surviving line cell
+    // nearest to the pruned closing cell, i.e. exactly where the marker
+    // would otherwise be dropped.
+    const blaze = new Ember({ x: 6, y: 16 }, { dx: 0, dy: -1 }, () => 0, 1, 1, true);
+    const game = new Game(field, { x: 6, y: 12 }, wisp, undefined, { requiredOccupancy: 0.99, embers: [blaze] });
+
+    drive(game, 1, 0, 4);
+    drive(game, 0, -1, 5);
+    drive(game, -1, 0, 4);
+
+    expect(blaze.getPosition()).toEqual({ x: 10, y: 7 });
+    expect(field.get({ x: 10, y: 7 })).toBe(BORDER);
+    const events = game.drainEvents();
+    expect(events).toContain('area-claimed');
+    expect(events).not.toContain('miss');
+    expect(game.getLives()).toBe(3);
+    const pos = game.getMarker().getPosition();
+    expect(field.get(pos)).toBe(BORDER);
+    expect(pos).not.toEqual({ x: 10, y: 7 });
+  });
+
+  it('leaves the marker alone when the closing cell survives pruning', () => {
+    const field = lShapedField();
+    const wisp = new Wisp({ x: 15, y: 15 }, () => 0.5, 0);
+    const game = new Game(field, { x: 6, y: 12 }, wisp, undefined, { requiredOccupancy: 0.99 });
+
+    drive(game, 1, 0, 4); // right to (10,12)
+    drive(game, 0, -1, 4); // up to (10,8)
+    drive(game, -1, 0, 4); // left to (6,8), which keeps (7,7) as an unclaimed neighbour
+
+    expect(game.getMarker().getPosition()).toEqual({ x: 6, y: 8 });
+    expect(field.get({ x: 6, y: 8 })).toBe(BORDER);
   });
 });

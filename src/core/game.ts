@@ -583,6 +583,7 @@ export class Game {
           this.occupancy = claimResult.occupancy;
           this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
           this.despawnStrandedEmbers();
+          this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
           this.lastClearWasSplit = claimResult.split;
           if (claimResult.split) {
@@ -750,6 +751,48 @@ export class Game {
     if (state === BORDER) return false;
     if (ember.isBlaze() && state === LINE) return false;
     return true;
+  }
+
+  /**
+   * A closed line ends on a BORDER cell, but claimArea's dead-border pruning
+   * can absorb that very cell into the new claim when the line sealed off
+   * the last UNCLAIMED cells around it (closing into the inner corner of an
+   * L-shaped claimed region does this). The marker would then stand inside
+   * claimed territory where every move is refused, so it is put back onto a
+   * surviving BORDER cell instead. Candidates are ranked so the move stays
+   * both natural and safe:
+   *   1. cells of the line just closed (now BORDER) — the marker slides back
+   *      along its own line rather than jumping to an unrelated edge;
+   *   2. any other BORDER cell;
+   * always skipping cells an Ember stands on: the post-move contact check
+   * below runs against the relocated position, so landing on an Ember would
+   * cost a life for a teleport the player never asked for. Within a tier the
+   * nearest cell (Manhattan) wins. Runs after despawnStrandedEmbers() so an
+   * Ember the same claim just pruned off the border no longer counts as an
+   * occupant.
+   */
+  private relocateStrandedMarker(closedLine: readonly Point[]): void {
+    const pos = this.marker.getPosition();
+    if (this.field.get(pos) === BORDER) return;
+    const survivingLine = closedLine.filter((cell) => this.field.get(cell) === BORDER);
+    const target =
+      this.nearestFreeCell(pos, survivingLine) ?? this.nearestFreeCell(pos, this.field.getCellsOfState(BORDER));
+    if (target) this.marker.relocate(target);
+  }
+
+  /** Nearest of `cells` to `from` that no Ember currently occupies, or null when every cell is taken. */
+  private nearestFreeCell(from: Point, cells: readonly Point[]): Point | null {
+    let nearest: Point | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const cell of cells) {
+      if (this.embers.some((ember) => pointsEqual(ember.getPositionRef(), cell))) continue;
+      const distance = Math.abs(cell.x - from.x) + Math.abs(cell.y - from.y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = cell;
+      }
+    }
+    return nearest;
   }
 
   /**
