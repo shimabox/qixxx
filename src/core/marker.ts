@@ -73,6 +73,16 @@ export class Marker {
     return { ...this.position };
   }
 
+  /**
+   * Moves the marker to `p` outright, outside the normal tryMove() rules.
+   * Only meaningful while not drawing; the Game uses it to put the marker
+   * back onto a live BORDER cell when the cell it closed a line on has just
+   * been absorbed into claimed territory (see Game.relocateStrandedMarker).
+   */
+  relocate(p: Point): void {
+    this.position = { ...p };
+  }
+
   /** Interior line cells drawn so far during the current line (empty when not drawing). */
   getLine(): Point[] {
     return this.line.map((p) => ({ ...p }));
