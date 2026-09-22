@@ -64,11 +64,17 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
   });
 
   // Fake the page clock (timers, Date, performance.now and — what matters
-  // here — requestAnimationFrame) so the game only advances through
-  // page.clock.runFor(). Every wait below is then a fixed amount of game
-  // time rather than a wall-clock timeout that a slow CI runner can miss.
-  await page.clock.install();
+  // here — requestAnimationFrame) and then *pause* it: install() alone keeps
+  // the fake clock ticking with real time, so rAF frames would still slip
+  // in between our explicit advances. Once paused, the game only advances
+  // through page.clock.runFor(), and every wait below is a fixed amount of
+  // game time rather than a wall-clock timeout that a slow CI runner can
+  // miss. The clock keeps running during page load (the title screen just
+  // animates in real time until then) and is frozen before the first input.
+  const CLOCK_START = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: CLOCK_START });
   await page.goto(APP_URL);
+  await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
   await page.keyboard.press('Space'); // Title -> Playing
   await page.clock.runFor(100);
 
