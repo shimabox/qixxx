@@ -57,3 +57,16 @@ jobs:
 
       - name: E2E tests
         run: npm run e2e
+
+      # playwright.config.ts keeps a trace for every failed test
+      # (trace: 'retain-on-failure'); without this step it is discarded with
+      # the runner, leaving a CI-only failure impossible to diagnose. Open one
+      # with `npx playwright show-trace <trace.zip>`.
+      - name: Upload Playwright traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

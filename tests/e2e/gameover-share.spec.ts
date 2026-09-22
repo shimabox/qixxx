@@ -4,7 +4,7 @@
 // Function doesn't exist yet, so the POST is stubbed via route interception
 // — this test only exercises Phase 1's DOM layer (modal, button wiring,
 // intent-URL construction), not the real share backend.
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes
 // (docs/plan.md §7.2), extended with the session getters/debug-override
@@ -31,6 +31,27 @@ declare global {
 // only, never shipped, exactly like the debug panel's own gating.
 const APP_URL = 'http://localhost:4173/?debug';
 
+// Advances the page's (faked) clock in `stepMs` slices until `predicate`
+// holds, giving up after `maxMs` of *game* time. Under `page.clock.install()`
+// requestAnimationFrame only fires while the clock is advanced, so the game
+// loop (main.ts's fixed-timestep accumulator) runs exactly as many ticks as
+// the advanced time dictates — independent of how fast the machine running
+// the test happens to be. Budgets below are therefore game-time budgets,
+// not wall-clock timeouts.
+async function advanceUntil(
+  page: Page,
+  predicate: () => Promise<boolean>,
+  maxMs: number,
+  stepMs = 50,
+): Promise<void> {
+  for (let elapsed = 0; elapsed < maxMs; elapsed += stepMs) {
+    if (await predicate()) return;
+    await page.clock.runFor(stepMs);
+  }
+  if (await predicate()) return;
+  throw new Error(`condition not met within ${maxMs}ms of game time`);
+}
+
 test('GAME OVER modal shows score/stage, shares to X, and returns to Title', async ({ page, context }) => {
   // Stand in for Phase 2's not-yet-implemented `/share` Function.
   await page.route('**/share', async (route) => {
@@ -42,14 +63,26 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     });
   });
 
+  // Fake the page clock (timers, Date, performance.now and — what matters
+  // here — requestAnimationFrame) and then *pause* it: install() alone keeps
+  // the fake clock ticking with real time, so rAF frames would still slip
+  // in between our explicit advances. Once paused, the game only advances
+  // through page.clock.runFor(), and every wait below is a fixed amount of
+  // game time rather than a wall-clock timeout that a slow CI runner can
+  // miss. The clock keeps running during page load (the title screen just
+  // animates in real time until then) and is frozen before the first input.
+  const CLOCK_START = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: CLOCK_START });
   await page.goto(APP_URL);
+  await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
   await page.keyboard.press('Space'); // Title -> Playing
+  await page.clock.runFor(100);
 
   const getStatus = () => page.evaluate(() => window.__game__?.session.getStatus());
   const getLives = () => page.evaluate(() => window.__game__!.session.getLives());
   const getMarkerY = () => page.evaluate(() => window.__game__!.session.getGame().getMarker().getPosition().y);
 
-  await expect.poll(getStatus).toBe('playing');
+  expect(await getStatus()).toBe('playing');
 
   // Reproducing GAME OVER via Wisp/Ember contact would depend on RNG timing
   // (Wisps use Math.random() in the real app, no seeded rng). Worse, trying
@@ -75,9 +108,9 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     await page.keyboard.down('ArrowDown');
     // On iterations after the first, this also has to wait out the previous
     // miss's ~2s grace period before the marker can start moving at all (see
-    // the comment on the expect.poll below) — default 5s isn't always enough
-    // headroom on top of that, so this one's timeout is bumped too.
-    await expect.poll(getMarkerY, { timeout: 8_000 }).toBeGreaterThanOrEqual(5);
+    // the comment on the advanceUntil below) — 6s of game time covers grace
+    // plus the short move with room to spare.
+    await advanceUntil(page, async () => (await getMarkerY()) >= 5, 6_000);
     await page.keyboard.up('ArrowDown');
     await page.keyboard.up('Space');
 
@@ -90,11 +123,12 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     // blocked for that whole window (docs/plan.md §3.5 grace-period exploit
     // fix, "案B") — only BORDER movement stays free during grace — so the
     // marker sits at the border until grace elapses before it can even begin
-    // moving down. 8s comfortably covers grace + move + spawn + catch-up.
-    await expect.poll(getLives, { timeout: 8_000 }).toBeLessThan(livesBefore);
+    // moving down. 6s of game time comfortably covers spawn + catch-up.
+    await advanceUntil(page, async () => (await getLives()) < livesBefore, 6_000);
   }
 
-  await expect.poll(getStatus).toBe('gameover');
+  await page.clock.runFor(100);
+  expect(await getStatus()).toBe('gameover');
 
   const [stage, score, hi] = await page.evaluate(() => {
     const s = window.__game__!.session;
@@ -133,6 +167,7 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
 
   // "BACK TO TITLE": returns to Title (same confirm path as any key/tap) and hides the modal.
   await page.locator('#gameover-back-button').click();
-  await expect.poll(getStatus).toBe('title');
+  await page.clock.runFor(100);
+  expect(await getStatus()).toBe('title');
   await expect(modal).toBeHidden();
 });
