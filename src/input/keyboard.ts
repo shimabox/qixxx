@@ -3,6 +3,13 @@
 import { SessionInput } from '../core/session';
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS, isTrackedKey } from './keys';
 
+const INTERACTIVE_SELECTOR = 'button, a[href], input, select, textarea, [contenteditable], summary';
+
+function isFromInteractiveElement(event: Event): boolean {
+  const target = event.target as Element | null;
+  return typeof target?.closest === 'function' && target.closest(INTERACTIVE_SELECTOR) !== null;
+}
+
 export class KeyboardInput {
   private pressed = new Set<string>();
   private pressOrder: string[] = [];
@@ -17,10 +24,26 @@ export class KeyboardInput {
     this.target = target;
     target.addEventListener('keydown', this.onKeyDown);
     target.addEventListener('keyup', this.onKeyUp);
+    target.addEventListener('blur', this.onBlur);
   }
 
+  // A keyup fired while the window is unfocused never reaches us, so a key
+  // physically released during a focus switch (Cmd+Tab mid-hold) would stay
+  // "held" here forever — steering the marker on its own and, worse, keeping
+  // the GameOver release gate (core/session.ts) permanently closed. Losing
+  // focus means no key can still be meaningfully held, so drop them all; a
+  // pending confirm edge is dropped with them rather than firing on whatever
+  // screen is showing when focus returns.
+  private onBlur = (): void => {
+    this.pressed.clear();
+    this.pressOrder = [];
+    this.confirmPending = false;
+  };
+
   private onKeyDown = (event: Event): void => {
+    if (isFromInteractiveElement(event)) return;
     const code = (event as KeyboardEvent).code;
+    if (code === 'Tab') return;
     if (!this.pressed.has(code)) {
       this.pressed.add(code);
       this.pressOrder.push(code);
@@ -83,5 +106,6 @@ export class KeyboardInput {
   dispose(): void {
     this.target.removeEventListener('keydown', this.onKeyDown);
     this.target.removeEventListener('keyup', this.onKeyUp);
+    this.target.removeEventListener('blur', this.onBlur);
   }
 }

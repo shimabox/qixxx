@@ -486,3 +486,87 @@ describe('GameSession — debug overrides persist across stage transitions (docs
     expect(session.hasActiveDebugOverrides()).toBe(false); // back to eligible once every override is cleared
   });
 });
+
+describe('GameSession — GameOver release gate', () => {
+  function freshGameOver(): GameSession {
+    const session = new GameSession({ gameFactory: missGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    driveToGameOver(session);
+    expect(session.getStatus()).toBe('gameover');
+    return session;
+  }
+
+  it('discards a confirm that arrives while the player is still steering (a re-pressed arrow)', () => {
+    const session = freshGameOver();
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('gameover');
+  });
+
+  it('discards a confirm that arrives while a draw key is engaged, for as long as it stays engaged', () => {
+    const session = freshGameOver();
+    for (let tick = 0; tick < 30; tick++) {
+      session.update({ dx: 0, dy: 0, drawHeld: true, confirm: tick % 5 === 0 });
+      expect(session.getStatus()).toBe('gameover');
+    }
+  });
+
+  it('accepts an operation-key press made AFTER a hands-off tick has been seen', () => {
+    const session = freshGameOver();
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true }); // still steering — discarded
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false }); // hands off — gate opens
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true }); // fresh press
+    expect(session.getStatus()).toBe('title');
+  });
+
+  it('accepts a confirm on an operation-neutral tick immediately (a player whose hands were already off)', () => {
+    const session = freshGameOver();
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('title');
+  });
+
+  it('returns to Title on the very first arrow press when the run ended with the hands already off (TIME UP while idle)', () => {
+    const session = new GameSession({ gameFactory: missGame, timeLimitTicks: 3 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    let guard = 0;
+    while (session.getStatus() === 'playing' && guard++ < 10) {
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false }); // idle until time runs out
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('time');
+
+    // PRESS ANY KEY: an arrow must work as the first press, exactly like Enter would.
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('title');
+  });
+
+  it('returns to Title on the very first arrow press when the final life was lost with the hands already off', () => {
+    // Step one cell onto the field and stop mid-line: the Igniter spawns on a
+    // stationary marker and burns the line down, so every miss — including
+    // the last one — lands on an idle tick.
+    const session = new GameSession({ gameFactory: missGame });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    let guard = 0;
+    while (session.getStatus() === 'playing' && guard++ < 20_000) {
+      const livesBefore = session.getLives();
+      session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+      while (session.getStatus() === 'playing' && session.getLives() === livesBefore && guard++ < 20_000) {
+        session.update({ dx: 0, dy: 0, drawHeld: false, confirm: false });
+      }
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getGameOverReason()).toBe('life');
+
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true });
+    expect(session.getStatus()).toBe('title');
+  });
+
+  it('closes the gate again on every new gameover', () => {
+    const session = freshGameOver();
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Title
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> Playing
+    driveToGameOver(session);
+    expect(session.getStatus()).toBe('gameover');
+    session.update({ dx: 1, dy: 0, drawHeld: false, confirm: true }); // steering again — discarded again
+    expect(session.getStatus()).toBe('gameover');
+  });
+});

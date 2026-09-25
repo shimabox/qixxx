@@ -1,0 +1,21 @@
+[2026-08-19T16:11:52.498Z] [pid 54616] START single-process serial pending-POST measurement (node v20.19.5)
+[2026-08-19T16:11:52.499Z] [pid 54616] building fixtures...
+[2026-08-19T16:11:52.575Z] [pid 54616] fixtures: worst sampleCount=10800 rleBytes=21600 | realistic sampleCount=3581 rleBytes=3
+[2026-08-19T16:11:52.577Z] [pid 54616] [Worst] warmup (10 requests, serial)...
+[2026-08-19T16:11:52.680Z] [pid 54616] [Worst] measuring (100 requests, serial)...
+[2026-08-19T16:11:52.764Z] [pid 54616] [Worst] 20/100 done (last=3.45ms)
+[2026-08-19T16:11:52.889Z] [pid 54616] [Worst] 40/100 done (last=3.70ms)
+[2026-08-19T16:11:52.978Z] [pid 54616] [Worst] 60/100 done (last=3.72ms)
+[2026-08-19T16:11:53.116Z] [pid 54616] [Worst] 80/100 done (last=3.69ms)
+[2026-08-19T16:11:53.225Z] [pid 54616] [Worst] 100/100 done (last=4.88ms)
+[2026-08-19T16:11:53.226Z] [pid 54616] [Worst] p99=36.26ms mean=5.18ms min=2.72ms max=54.45ms
+[2026-08-19T16:11:53.227Z] [pid 54616] [Realistic] warmup (10 requests, serial)...
+[2026-08-19T16:11:53.236Z] [pid 54616] [Realistic] measuring (100 requests, serial)...
+[2026-08-19T16:11:53.253Z] [pid 54616] [Realistic] 20/100 done (last=0.49ms)
+[2026-08-19T16:11:53.268Z] [pid 54616] [Realistic] 40/100 done (last=0.53ms)
+[2026-08-19T16:11:53.311Z] [pid 54616] [Realistic] 60/100 done (last=0.48ms)
+[2026-08-19T16:11:53.327Z] [pid 54616] [Realistic] 80/100 done (last=0.51ms)
+[2026-08-19T16:11:53.345Z] [pid 54616] [Realistic] 100/100 done (last=0.49ms)
+[2026-08-19T16:11:53.345Z] [pid 54616] [Realistic] p99=6.24ms mean=0.94ms min=0.46ms max=21.21ms
+[2026-08-19T16:11:53.346Z] [pid 54616] DONE p99 Worst=36.26ms Realistic=6.24ms vs 5ms reference target -> ABOVE 5ms REFERENCE TARGET (reference only)
+[2026-08-19T16:11:53.347Z] [pid 54616] wrote pending-post-cpu-2026-08-19T16-11-52-496Z.json and pending-post-cpu-2026-08-19T16-11-52-496Z-summary.json

@@ -1,0 +1,43 @@
+[2026-08-18T00:39:03.233Z] [pid 36814] START single-process serial full-path measurement (node v20.19.5)
+[2026-08-18T00:39:03.234Z] [pid 36814] building fixtures...
+[2026-08-18T00:39:06.327Z] [pid 36814] fixtures: A ticks=10800 reason=time | Bsuccess ticks=10800 claims=100 | Brejected claims=101 | Realistic ticks=3581
+[2026-08-18T00:39:06.328Z] [pid 36814] fixture A enemy params (all cross-checked against StageConfig(10)): {"wispCount":10,"wispSpeedMultiplier":5,"emberCount":10,"emberMoveTicks":1,"emberBranchChaseProbability":1,"emberSpawnIntervalTicks":300,"maxConcurrentEmbers":10,"requiredOccupancy":0.9}
+[2026-08-18T00:39:06.328Z] [pid 36814] [A] warmup (10 requests, serial)...
+[2026-08-18T00:39:09.136Z] [pid 36814] [A] measuring (100 requests, serial)...
+[2026-08-18T00:39:14.452Z] [pid 36814] [A] 20/100 done (last=297.1ms, status=200, ticks=10800)
+[2026-08-18T00:39:20.065Z] [pid 36814] [A] 40/100 done (last=294.0ms, status=200, ticks=10800)
+[2026-08-18T00:39:25.596Z] [pid 36814] [A] 60/100 done (last=301.3ms, status=200, ticks=10800)
+[2026-08-18T00:39:31.033Z] [pid 36814] [A] 80/100 done (last=272.3ms, status=200, ticks=10800)
+[2026-08-18T00:39:36.444Z] [pid 36814] [A] 100/100 done (last=263.7ms, status=200, ticks=10800)
+[2026-08-18T00:39:36.446Z] [pid 36814] [A] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":10800}
+[2026-08-18T00:39:36.446Z] [pid 36814] [A] p99=330.59ms mean=272.83ms min=229.17ms max=338.86ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-18T00:39:36.447Z] [pid 36814] [Bsuccess] warmup (10 requests, serial)...
+[2026-08-18T00:39:48.831Z] [pid 36814] [Bsuccess] measuring (100 requests, serial)...
+[2026-08-18T00:40:14.245Z] [pid 36814] [Bsuccess] 20/100 done (last=1219.0ms, status=200, ticks=10800)
+[2026-08-18T00:40:39.374Z] [pid 36814] [Bsuccess] 40/100 done (last=1342.8ms, status=200, ticks=10800)
+[2026-08-18T00:41:04.793Z] [pid 36814] [Bsuccess] 60/100 done (last=1288.9ms, status=200, ticks=10800)
+[2026-08-18T00:41:30.084Z] [pid 36814] [Bsuccess] 80/100 done (last=1248.8ms, status=200, ticks=10800)
+[2026-08-18T00:41:55.677Z] [pid 36814] [Bsuccess] 100/100 done (last=1246.7ms, status=200, ticks=10800)
+[2026-08-18T00:41:55.678Z] [pid 36814] [Bsuccess] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":10800}
+[2026-08-18T00:41:55.678Z] [pid 36814] [Bsuccess] p99=1477.62ms mean=1268.09ms min=1186.38ms max=1534.25ms outcomes=status=200 accepted=true ticks=10800
+[2026-08-18T00:41:55.679Z] [pid 36814] [Brejected] warmup (10 requests, serial)...
+[2026-08-18T00:42:07.288Z] [pid 36814] [Brejected] measuring (100 requests, serial)...
+[2026-08-18T00:42:31.058Z] [pid 36814] [Brejected] 20/100 done (last=1368.0ms, status=422, ticks=-1)
+[2026-08-18T00:42:54.858Z] [pid 36814] [Brejected] 40/100 done (last=1124.5ms, status=422, ticks=-1)
+[2026-08-18T00:43:18.129Z] [pid 36814] [Brejected] 60/100 done (last=1128.8ms, status=422, ticks=-1)
+[2026-08-18T00:43:42.847Z] [pid 36814] [Brejected] 80/100 done (last=1167.2ms, status=422, ticks=-1)
+[2026-08-18T00:44:06.006Z] [pid 36814] [Brejected] 100/100 done (last=1205.3ms, status=422, ticks=-1)
+[2026-08-18T00:44:06.007Z] [pid 36814] [Brejected] all 110 responses matched the series expectation {"status":422,"accepted":false,"error":"max-verified-claims-exceeded"}
+[2026-08-18T00:44:06.007Z] [pid 36814] [Brejected] p99=1368.02ms mean=1186.62ms min=1094.44ms max=1515.18ms outcomes=status=422 accepted=false ticks=-1 error=max-verified-claims-exceeded
+[2026-08-18T00:44:06.007Z] [pid 36814] [Realistic] warmup (10 requests, serial)...
+[2026-08-18T00:44:06.361Z] [pid 36814] [Realistic] measuring (100 requests, serial)...
+[2026-08-18T00:44:06.716Z] [pid 36814] [Realistic] 20/100 done (last=24.8ms, status=200, ticks=3581)
+[2026-08-18T00:44:07.078Z] [pid 36814] [Realistic] 40/100 done (last=21.9ms, status=200, ticks=3581)
+[2026-08-18T00:44:07.503Z] [pid 36814] [Realistic] 60/100 done (last=95.1ms, status=200, ticks=3581)
+[2026-08-18T00:44:07.894Z] [pid 36814] [Realistic] 80/100 done (last=13.1ms, status=200, ticks=3581)
+[2026-08-18T00:44:08.252Z] [pid 36814] [Realistic] 100/100 done (last=11.0ms, status=200, ticks=3581)
+[2026-08-18T00:44:08.253Z] [pid 36814] [Realistic] all 110 responses matched the series expectation {"status":200,"accepted":true,"durationTicks":3581}
+[2026-08-18T00:44:08.253Z] [pid 36814] [Realistic] p99=60.40ms mean=18.74ms min=8.63ms max=95.13ms outcomes=status=200 accepted=true ticks=3581
+[2026-08-18T00:44:08.254Z] [pid 36814] DONE combined p99 = 330.59 + max(1477.62, 1368.02) = 1808.21ms vs 1000ms -> FAIL
+[2026-08-18T00:44:08.255Z] [pid 36814] suggested cpu_ms = 4000
+[2026-08-18T00:44:08.255Z] [pid 36814] wrote post-cpu-2026-08-18T00-39-03-231Z.json and post-cpu-2026-08-18T00-39-03-231Z-summary.json

@@ -1,0 +1,45 @@
+{
+  "generatedAt": "2026-08-18T00:44:08.254Z",
+  "node": "v20.19.5",
+  "measures": "POST /api/scores onRequestPost() end to end, in-process, single-threaded, serial (D1/KV stubbed)",
+  "warmupCount": 10,
+  "measuredCount": 100,
+  "fixtureAcceptance": {
+    "aDurationTicks": 10800,
+    "aGameOverReason": "time",
+    "aEnemyParams": {
+      "wispCount": 10,
+      "wispSpeedMultiplier": 5,
+      "emberCount": 10,
+      "emberMoveTicks": 1,
+      "emberBranchChaseProbability": 1,
+      "emberSpawnIntervalTicks": 300,
+      "maxConcurrentEmbers": 10,
+      "requiredOccupancy": 0.9
+    },
+    "aEnemyParamsSource": "getStageConfig(10)",
+    "stageConfigAtBenchStage": {
+      "stage": 10,
+      "wispCount": 10,
+      "wispSpeedMultiplier": 5,
+      "emberSpawnIntervalTicks": 300,
+      "emberMoveTicks": 1,
+      "emberBranchChaseProbability": 1,
+      "maxConcurrentEmbers": 10,
+      "requiredOccupancy": 0.9
+    },
+    "bSuccessDurationTicks": 10800,
+    "bSuccessClaims": 100,
+    "bRejectedClaims": 101
+  },
+  "p99Ms": {
+    "A": 330.59,
+    "Bsuccess": 1477.62,
+    "Brejected": 1368.02,
+    "Realistic": 60.4
+  },
+  "combinedP99Ms": 1808.21,
+  "thresholdMs": 1000,
+  "verdict": "FAIL",
+  "suggestedCpuMsLimit": 4000
+}
