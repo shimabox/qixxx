@@ -146,6 +146,13 @@ export function isTouchCapableDevice(): boolean {
   return false;
 }
 
+// iOS starts its long-press text selection / loupe from touchstart, which a
+// preventDefault() on pointerdown doesn't cancel. Pointer events still fire
+// after this, so the controls keep working.
+function preventTouchGesture(event: TouchEvent): void {
+  event.preventDefault();
+}
+
 export class TouchControls {
   private container: HTMLDivElement;
   private dispatchTarget: EventTarget;
@@ -270,7 +277,9 @@ export class TouchControls {
     el.addEventListener('pointerup', onUp);
     el.addEventListener('pointercancel', onUp);
     el.addEventListener('contextmenu', (event) => event.preventDefault());
+    el.addEventListener('touchstart', preventTouchGesture, { passive: false });
     this.disposers.push(() => {
+      el.removeEventListener('touchstart', preventTouchGesture);
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
@@ -312,6 +321,8 @@ export class TouchControls {
       }
       el.appendChild(button);
     }
+    el.addEventListener('touchstart', preventTouchGesture, { passive: false });
+    this.disposers.push(() => el.removeEventListener('touchstart', preventTouchGesture));
     return el;
   }
 
