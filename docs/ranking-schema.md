@@ -66,7 +66,9 @@ erDiagram
 
 #### 目的
 
-投稿されたゲーム結果と RLE リプレイを保存する。投稿直後は `pending` とし、別プロセスの監査で再シミュレーションした結果だけを `verified` に昇格させる。確定ランキングはシーズン・ルールセットごとの上位10件である。
+投稿されたゲーム結果と RLE リプレイを保存する。既定の監査ありモードでは、投稿直後は `pending` とし、別プロセスの監査で再シミュレーションした結果だけを `verified` に昇格させる。確定ランキングはシーズン・ルールセットごとの上位10件である。
+
+環境変数 `RANKING_AUDIT_MODE=disabled` の監査なしモードでは、投稿を最初から `verified` で保存し、監査しない(`docs/ranking-audit-runbook.md` §0.0・§7)。このため `verified` は「監査済み」ではなく「ランキング対象」を意味する。どの行が監査なしで入ったかを示す列はない。
 
 #### カラム
 
@@ -87,11 +89,11 @@ erDiagram
 | `duration_ticks` | `INTEGER` | 不可 | なし | なし | RLE の decode-only 処理でサーバーが導出した tick 数。監査時に再シミュレーション結果と照合し、成功時に上書きする。 |
 | `replay_hash` | `TEXT` | 不可 | なし | UNIQUE index | シーズン・ルールセット・seed・正規化済み入力列から計算するハッシュ。RLE の分割だけを変えた同一プレイも重複として拒否する。 |
 | `created_at` | `INTEGER` | 不可 | なし | なし | 投稿時刻の Unix epoch **ミリ秒**。pending の72時間境界と先着データの保持に使う。 |
-| `status` | `TEXT` | 不可 | `'verified'` | DDL の `CHECK` なし | コード上の値は `pending` または `verified`。既存行を再監査せず確定扱いにするため、追加時の既定値を `verified` とした。新規投稿は明示的に `pending` を設定する。 |
+| `status` | `TEXT` | 不可 | `'verified'` | DDL の `CHECK` なし | コード上の値は `pending` または `verified`。既存行を再監査せず確定扱いにするため、追加時の既定値を `verified` とした。新規投稿は明示的に、監査ありでは `pending`、監査なしでは `verified` を設定する。`verified` は「ランキング対象」の意味で、監査済みとは限らない。 |
 | `ip_hash` | `TEXT` | 可 | `NULL` | なし | `HMAC-SHA-256(RANKING_IP_HASH_KEY, normalizeClientIp(CF-Connecting-IP))` の16進表現。IPv6 は /64 プレフィックス(`2001:db8:1:2::/64` 形式)に丸めてからハッシュする(1 契約 = 1 /64 とみなし、アドレスローテーションで IP 別制限を回避できないようにするため)。IPv4 はそのまま。ヘッダー欠落時の入力はリテラル `unknown`。pending のIP別上限に使う。列追加前の既存行は復元不能なので `NULL` を許す。 |
 | `audit_attempts` | `INTEGER` | 不可 | `0` | なし | 予期しない監査例外の発生回数。確認済みの不正リプレイは再試行せず削除するため増加しない。 |
 | `next_attempt_at` | `INTEGER` | 可 | `NULL` | なし | 次回監査可能時刻の Unix epoch **秒**。SQL の `unixepoch()` と直接比較するため秒単位にする。`NULL` は即時取得可能を表す。 |
-| `submitter_hash` | `TEXT` | 可 | `NULL` | なし | ブラウザ生成の128 bit tokenをデコードした16バイトに対する鍵なし SHA-256。pending 自己置換の所有証明にだけ使い、verified 化と同時に `NULL` へ戻す。 |
+| `submitter_hash` | `TEXT` | 可 | `NULL` | なし | ブラウザ生成の128 bit tokenをデコードした16バイトに対する鍵なし SHA-256。自己置換の所有証明にだけ使う。監査ありでは verified 化と同時に `NULL` へ戻す。監査なしでは自己置換のために verified 行にも保存する(消去 SQL は `docs/ranking-audit-runbook.md` §7.4)。 |
 
 DDL が直接保証する値域は少なく、`status`、スコア、ステージ、seed、名前などの妥当性は API と監査コードが担う。したがって、運用 SQL で行を直接追加・更新するときも同じ不変条件を崩してはならない。
 
@@ -105,10 +107,10 @@ DDL が直接保証する値域は少なく、`status`、スコア、ステー�
 | `idx_scores_rng_key` (UNIQUE) | `rng_key` | 複製リプレイ(同じ数値 seed、または数値 seed が違っても同じ乱数系列になる seed の 2 行目)を一意制約違反として拒否する。season で絞らないのは、過去シーズンのリプレイ複製も同じく複製であり、seed がシーズンをまたいで正当に再利用されることもないため。投稿 API は満杯時(`changes = 0`)にもこの列と `replay_hash` を読んで 409 に振り分け、自己置換の DELETE 候補から同じ `rng_key` の自行を除外する。 |
 | `idx_scores_season_ruleset_rank` | `season_id, ruleset_version, score DESC, rank_seq ASC` | 0001 時点の同期ランキング取得・上位外削除用。非同期化後の現行クエリは `status` も絞るため、次の複合インデックスが対応する。 |
 | `idx_scores_status_season_ruleset_rank` | `status, season_id, ruleset_version, score DESC, rank_seq ASC` | verified TOP10、10位閾値、pending 表示候補、監査後の verified TOP10 cleanup を同じ順位順で処理する。 |
-| `idx_scores_pending_created` | `status, created_at` | 新規投稿の全体 pending 件数と、監査冒頭の72時間経過行削除を支える。 |
-| `idx_scores_pending_ip_created` | `status, ip_hash, created_at` | 新規投稿と自己置換で、同一 IP ハッシュの fresh pending 件数を数える。 |
+| `idx_scores_pending_created` | `status, created_at` | 新規投稿の全体 pending 件数と、監査冒頭の72時間経過行削除を支える。監査なしの全体件数(status で絞らない)は、このインデックスの全体走査になる(カバリングなので BLOB は読まない)。 |
+| `idx_scores_pending_ip_created` | `status, ip_hash, created_at` | 新規投稿と自己置換で、同一 IP ハッシュの fresh pending 件数を数える。監査なしの IP 別件数は、このインデックスの全体走査になる。 |
 | `idx_scores_pending_rank_seq` | `status, rank_seq` | 監査が retry 可能な pending を先着順にチャンク取得する。`next_attempt_at IS NULL OR <=` はこの走査上で絞る。 |
-| `idx_scores_pending_submitter` | `status, submitter_hash, score` | 所有する fresh pending から新スコア未満の最弱行を探す自己置換を支える。`created_at` は追加の範囲条件として絞る。 |
+| `idx_scores_pending_submitter` | `status, submitter_hash, score` | 所有する fresh pending から新スコア未満の最弱行を探す自己置換を支える。`created_at` は追加の範囲条件として絞る。監査なしの置換候補探索は status で絞らないためこれを使えず、`scores` の走査になる(上限到達かつトークン付きの投稿のときだけ実行される)。 |
 
 #### 状態遷移と不変条件
 
@@ -121,13 +123,21 @@ DDL が直接保証する値域は少なく、`status`、スコア、ステー�
        ├─ 予期しない例外(3回目) ─→ 削除
        ├─ created_atが72時間境界以前 → 削除
        └─ より高い自己投稿で置換 ─→ 削除し、新しいpendingを同一batchで追加
+
+投稿受理(監査なし: RANKING_AUDIT_MODE=disabled)
+  └─ verified (audit_attempts=0, next_attempt_at=NULL, submitter_hash=トークンのhash)
+       ├─ より高い自己投稿で置換 ─→ 削除し、新しいverifiedを同一batchで追加
+       └─ 監査は来ない(誤って動けば TOP10 整理で11位以下が削除される)
 ```
+
+- 監査なしの上限は、監査ありと同じ72時間の窓・全体200件・同一 `ip_hash` 3件を、status を問わない件数で数える。自己置換も同じ場合分けで、候補と4つの COUNT から status 条件を外した形になる。
+- 監査なしでは監査が来ないので、11位以下の verified 行・期限切れ pending 行・レート制限行は自動では削除されない(手での運用は `docs/ranking-audit-runbook.md` §7.5)。
 
 - fresh は `created_at > now_ms - 72h`、expired は `created_at <= now_ms - 72h`。境界ちょうどは expired である。
 - 投稿時の fresh pending 上限は全体200件、同一 `ip_hash` 3件。`INSERT ... SELECT ... WHERE` 内で件数を確認して挿入までを1文にする。
 - 自己置換は `submitter_hash` が一致し、新スコアより**厳密に低い**所有行だけが対象。同点は先着行を残す。最弱スコアが同点なら新しい `rank_seq` から置換する。
 - 自己置換の `DELETE` と `INSERT` は同じ cutoff を使う同一 D1 batch で実行する。削除後も両上限を満たす場合だけ候補を削除し、挿入失敗時は batch 全体をロールバックする。
-- verified ランキングの順序は `score DESC, rank_seq ASC`。監査の最後に現行シーズン・ルールセットの上位10件以外を削除する。
+- verified ランキングの順序は `score DESC, rank_seq ASC`。監査の最後に現行シーズン・ルールセットの上位10件以外を削除する(監査なしモードでは監査が来ないので削除されない)。
 - 監査はシーズン・ルールセットで pending 取得を絞らない。古い版の残存 pending も取得し、版不一致として削除する。
 - `audit_attempts` の最大回数3、retry delay 300秒はコード上の不変条件であり DDL の `CHECK` ではない。
 
@@ -195,6 +205,8 @@ DDL が直接保証する値域は少なく、`status`、スコア、ステー�
 
 整合性境界は pending INSERT 自身である。単一の `INSERT ... SELECT ... WHERE` が、同じ72時間 cutoff に対する全体200件・同一IP 3件の `COUNT(*)` と挿入をまとめる。上限到達時だけ、所有 token のある投稿は「自分のより低い fresh pending」1件を選び、削除と再挿入を同一 batch で試す。これにより、他人の行の削除、同点の後発優先、削除だけが確定する状態を避ける。
 
+監査なしモードでは、同じ形の INSERT と置換 DELETE を、監査なし用の固定 SQL で実行する。保存する status を `verified` にし、COUNT と置換候補から status 条件を外す以外は同一で、bind 値の並びも同じ。モードは1リクエストにつき1回、D1 操作の前に決め、最初の INSERT と置換 batch で同じ値を使う。
+
 ### 表示とリプレイ取得
 
 確定境界用の `entries` は verified 上位10件だけを返す。画面用の `displayEntries` は verified 上位10件と fresh pending 上位3件を同じ `score DESC, rank_seq ASC` でmergeして10件に絞る。pending は表示だけに影響し、投稿可否の10位閾値を引き上げない。リプレイは `id` 単独で検索し、expired pending を最初に404、版不一致を次に410と判定する。
@@ -244,7 +256,7 @@ npx wrangler d1 migrations apply qixxx-scores --remote
 
 - `ip_hash` は `RANKING_IP_HASH_KEY` を鍵とする HMAC-SHA-256 であり、生 IP を保存・ログ出力しない。鍵が未設定または空なら投稿 API と監査コマンドは D1 操作前に fail-closed で停止する。
 - `RANKING_IP_HASH_KEY` はsecretとして管理し、ログ、文書、設定ファイルへ値を書かない。鍵を変えると同じIPでも別hashになり、既存のIP別pending件数やレート制限行と連続しなくなる。
-- `submitter_hash` は高エントロピーな128 bit tokenのhashだが、ブラウザ間の突合に使えるためログへ出さない。生tokenは保存もログ出力もせず、verified 化時にhashを消す。
+- `submitter_hash` は高エントロピーな128 bit tokenのhashだが、ブラウザ間の突合に使えるためログへ出さない。生tokenは保存もログ出力もせず、verified 化時にhashを消す。ただし監査なしモードでは verified 行にもhashが残る(消去 SQL は `docs/ranking-audit-runbook.md` §7.4)。
 - `owner_token` も write fence の所有証明なのでログへ出さない。
 
 ### 関連文書

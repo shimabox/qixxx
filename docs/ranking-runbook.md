@@ -11,6 +11,7 @@
 - シーズン定数: [`functions/_lib/ranking/season.ts`](../functions/_lib/ranking/season.ts)
 - ルール定数: [`src/config.ts`](../src/config.ts)(`RULESET_VERSION` / `REPLAY_FORMAT_VERSION` / `MAX_VERIFIED_CLAIMS`)
 - CPU 計測と投稿頻度見積り: [`docs/ranking-cpu-measurement.md`](./ranking-cpu-measurement.md)
+- 非同期監査と監査なしモード(`RANKING_AUDIT_MODE`): [`docs/ranking-audit-runbook.md`](./ranking-audit-runbook.md)
 
 ---
 
@@ -135,9 +136,12 @@ npx wrangler d1 execute qixxx-scores --remote --command \
 
 注意点:
 
-- **削除すると11位以下が繰り上がらない**。`scores` は各 `(season_id, ruleset_version)` に
-  つき上位10件しか保持しない仕様(POST の batch 内で11位以下を削除している)ので、
-  繰り上げ候補はそもそも残っていない。削除後は単に9件になる。
+- **削除後に11位以下が繰り上がるかは、監査のモードと直近の監査で決まる**。現行の Free 版
+  (非同期監査)では、POST は11位以下を削除しない。11位以下の verified 行を消すのは監査の
+  TOP10 整理だけで(`docs/ranking-audit-runbook.md` §0)、監査ありの運用では監査のたびに
+  上位10件まで削られるので、繰り上げ候補はほぼ残っていない。削除後は次の確定まで9件になる。
+  監査なしモード(同 §7)では11位以下も残っているので、削除すると次の行が繰り上がる
+  (手動トリム済みならその範囲まで)。
 - 名前だけを消したい(記録は残したい)場合は `UPDATE` を使う:
 
   ```sh
@@ -225,10 +229,18 @@ D1 の制約(正確に記載すること):
 - **1行・文字列・BLOB の上限: 2MB**
 - **Free プラン: 1データベースあたり 500MB、アカウント合計 5GB**
 
-`scores` は `(season_id, ruleset_version)` の組ごとに**上位10件のみ**保持する。
-BLOB(`inputs`)が上限いっぱいの 2MB でも
-**1組あたり最大 10行 × 2MB = 20MB**。実際の入力列は 10800 サンプルの RLE で
-数十 KB 程度なので、現実的にはこの試算よりはるかに小さい。
+`scores` が保持する行数は監査のモードで変わる(`docs/ranking-audit-runbook.md` §0.0)。
+
+- **監査あり**: verified は監査の TOP10 整理で `(season_id, ruleset_version)` の組ごとに
+  上位10件まで削られる。pending は新鮮なものが全体で最大200件(72時間で期限切れになり、
+  監査が削除する)。
+- **監査なし**: 自動では削らない。上限付き INSERT により、追加は72時間あたり最大200行。
+  容量確認と手動トリムは `docs/ranking-audit-runbook.md` §7.5。
+
+POST の本文上限は 256KiB なので、1行の `inputs` は D1 の上限 2MB よりはるかに小さい
+(実際の入力列は 10800 サンプルの RLE で数十 KB 程度)。監査ありなら、仮に1行 256KiB でも
+verified 10行 + pending 200行で約 52.5MiB に収まる。監査なしでは行数に上限がないので、
+§7.5 の容量確認 SQL で定期的に確かめる。
 
 圏外リプレイの別途保管は v1 では行わない。
 

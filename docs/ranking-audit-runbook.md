@@ -8,6 +8,7 @@ Paid 版(同期検証)の運用は [`docs/ranking-runbook.md`](./ranking-runbook
 
 - 追加スキーマ: [`migrations/0002_ranking_free_async.sql`](../migrations/0002_ranking_free_async.sql)、[`migrations/0004_ranking_rate_limits.sql`](../migrations/0004_ranking_rate_limits.sql)
 - POST ハンドラ: [`functions/api/scores.ts`](../functions/api/scores.ts)
+- 監査モードの解釈(`RANKING_AUDIT_MODE`、§7): [`functions/_lib/ranking/auditMode.ts`](../functions/_lib/ranking/auditMode.ts)
 - GET ハンドラ: [`functions/api/ranking.ts`](../functions/api/ranking.ts)
 - 監査ロジック: [`scripts/audit/runAudit.ts`](../scripts/audit/runAudit.ts)
 - 監査ロック: [`scripts/audit/lock.ts`](../scripts/audit/lock.ts)
@@ -41,6 +42,27 @@ POST /api/scores ─→ ヘッダー検査 + D1 レート制限 ─→ 基本検
                      ▼
         status='verified' に更新 → TOP10 整理(圏外 verified 行のみ削除)
 ```
+
+### 0.0 監査あり/なしの2モード(`RANKING_AUDIT_MODE`)
+
+上図は既定の**監査あり**モード。環境変数 `RANKING_AUDIT_MODE=disabled` を設定すると
+**監査なし**モードになり、監査の運用(Mac の常時稼働・D1 API トークン・Keychain)なしで
+ランキングを動かせる。切替にコード変更は要らない(手順は §7)。
+
+| モード | `RANKING_AUDIT_MODE` | POST の保存 | その後 |
+| --- | --- | --- | --- |
+| 監査あり(既定) | 未設定・空・`enabled`・それ以外の未知の値 | `status='pending'` | 上図の監査が `verified` へ昇格するか削除する |
+| 監査なし | `disabled`(前後の空白と大文字小文字は無視) | `status='verified'` | 監査しない。申告スコアがそのまま確定順位になる |
+
+モードが影響するのは POST の書き込み時点だけ。`GET /api/ranking`・リプレイ取得・監査
+スクリプトはモードを知らず、行に保存された `status` だけで動く。このため、切替時に
+既存行を自動で変換する仕組みはない(必要な変換は §7 の手順で SQL を流す)。
+
+> **監査なしの間はクライアント申告のスコアを信じる。偽スコアを送れる。偽 10 件で投稿が
+> 締め出される**(偽の verified 行が10位閾値を押し上げ、正規の投稿が事前ゲートで
+> 「圏外」として保存されなくなる)。**リプレイがスコアと一致する保証がない**
+> (POST は `verifyReplay()` を呼ばないので、RLE として復号できる任意の入力列に任意の
+> スコアを付けて確定順位に載せられる。再生ボタンはスコアと無関係なリプレイを再生し得る)。
 
 ### 0.1 表示契約・72時間境界・リプレイ判定順
 
@@ -94,8 +116,8 @@ verified 10位を上回る正当な投稿は事前ゲートを通過して受理
 
 | 相手 | 伝え方 |
 | --- | --- |
-| 公開ランキングの閲覧者 | 順位表の静的注意書き「Scores are verified after posting; entries that fail verification are removed.」で、後から削除され得る運用を常時開示 |
-| 投稿者本人 | 投稿完了時の「SUBMITTED — PENDING VERIFICATION」で監査待ちを伝える |
+| 公開ランキングの閲覧者 | 順位表の静的注意書き「Scores may be checked after posting, and entries found invalid may be removed.」で、後から削除され得る運用を常時開示。監査あり/なしのどちらでも正しい中立的な文にしてある(`GET /api/ranking` はモードを返さないので、UI はモードを知らない) |
+| 投稿者本人 | 投稿完了時の文言を POST 応答の `status` で出し分ける。`pending` なら「SUBMITTED — PENDING VERIFICATION.」で監査待ちを伝え、`verified`(監査なし)なら「SUBMITTED.」 |
 | サーバー・運用 | `displayEntries` / リプレイ応答の `status` は**維持**(監査・削除・デバッグ用。UI は描画に使わない) |
 
 「検証を隠す」のではなく、「各行を疑わしそうに見せず、ランキング全体の運用ルール
@@ -118,6 +140,7 @@ verified 基準・監査による削除)は、この表示方針とは独立に�
   従来動作(置換なし・上限時 429)、添付だが形式不一致=**400**。
 - **所有権の寿命は pending 期間だけ**: 監査の verified 化 UPDATE が
   `submitter_hash = NULL` に消す(永続的なブラウザ追跡 ID にしない)。
+  **例外: 監査なしモード**では verified 行に `submitter_hash` を保存する(§7.4)。
 
 **置換規則**: 通常の条件付き INSERT が `meta.changes=0`(上限到達)を返し、かつ
 トークン添付がある場合のみ、**単一 `batch`(=単一トランザクション)** で
@@ -146,9 +169,20 @@ verified 基準・監査による削除)は、この表示方針とは独立に�
 置換候補が無ければ従来どおり 429(UI は SUBMIT を残しリトライ可能にする)。
 3層分離(事前ゲート・`displayEntries`・監査)には一切影響しない。
 
+**監査なしモードの置換**: 上限付き INSERT と置換 DELETE に、監査なし用の固定 SQL が
+それぞれ1本ある(実行時に断片を連結しない)。DELETE は、候補条件 `c.status = 'pending'` と
+4つの COUNT の `status = 'pending' AND` の**6箇所をそろえて外した**だけで、他は同一
+(cutoff を batch 内で共有する規則もそのまま)。場合分けの正しさは「削除候補が必ず両 COUNT の
+数える集合に入っている」ことだけに依存し、述語を一様に外してもこれは保たれる。逆に、
+DELETE と INSERT のモードがずれるとこの前提が崩れるため、モードは1リクエストにつき1回、
+D1 操作の前に解決して batch の両文に同じ値を使う。監査なしでは自分の新鮮な verified 行
+(監査ありの時期に残った pending 行も含む)が置換候補になる。
+
 検証は `functions/_lib/ranking/pendingSelfReplace.test.ts`(実 D1。全ケースで
-「消えた行があるなら必ず1行増えている」不変条件を機械的に検査)と
-`functions/_lib/ranking/scoresEndpoint.test.ts`(bind 値のアサート)。
+「消えた行があるなら必ず1行増えている」不変条件を機械的に検査。監査あり/なしの両モードで
+同じケースを回す)、`functions/_lib/ranking/auditDisabledCaps.test.ts`(監査なしの上限境界・
+置換の実 D1 検査)と `functions/_lib/ranking/scoresEndpoint.test.ts`(SQL 文字列と bind 値の
+アサート。監査ありの SQL はモード導入前の文字列そのものに固定)。
 
 ## 1. ローカルでの手動実行手順
 
@@ -413,6 +447,10 @@ npm run ranking:remote:audit
 3. reviewed commit を main へマージする。
 4. §3.3 の launchd を導入し、通常周期とスリープ復帰を確認する。
 
+**監査なしモード(§7)で運用していた D1 に監査を導入するときは、この順序ではなく
+§7.8 に従う。** 特に手順 2 の「手動で1回実行」を差し戻し SQL より前に行わないこと
+(未監査の verified 行の11位以下が削除され、取り消せない。§7.6)。
+
 ### 3.3 launchd の導入
 
 1. 自動更新を行わない専用の main checkout を用意する。運用者が reviewed commit を
@@ -607,3 +645,254 @@ AUDIT_LOG_ERROR_DETAIL=1 RANKING_IP_HASH_KEY=... npx vite-node scripts/audit/cli
   統合表示されるため、この窓の間、偽スコアは表示上の実際の順位を
   一時的に占有し得る(占有は最大3行。投稿の受理可否は `entries` 基準の事前ゲートのみに
   依存するため、正当な投稿が妨害されることはない)。
+- **監査なしモード(§7)の間は、上の保護がどれも働かない。** 監査なしの間はクライアント
+  申告のスコアを信じる。偽スコアを送れる。偽 10 件で投稿が締め出される(偽スコアの
+  verified 行が10位閾値になり、それを超えない正規の投稿は事前ゲートで保存されない)。
+  リプレイがスコアと一致する保証がない。表示 pending 上限3件という偽スコア対策も、
+  全行が verified なので効かない。不正が問題になったら §7.8 で監査ありへ切り替える。
+
+---
+
+## 7. 監査なしモード(`RANKING_AUDIT_MODE`)
+
+全体像とリスクは §0.0 を参照。この節は設定・確認・日常運用・切替の手順をまとめる。
+SQL の `<CURRENT_SEASON_ID>` / `<RULESET_VERSION>` / `<REPLAY_FORMAT_VERSION>` は、
+[`docs/ranking-runbook.md`](./ranking-runbook.md) §2 手順0 と同じく毎回ソースを見て
+置き換える(`REPLAY_FORMAT_VERSION` も `src/config.ts`)。この節の SQL は
+`scripts/audit/auditModeInteraction.test.ts` が実 D1 で検証しており、同テストは
+この文書に同じ文字列が載っていることも検査する(SQL を変えるときは両方を直す)。
+コマンドは本番向けに `--remote` 付きで書いてある(`docs/ranking-runbook.md` 冒頭の警告を参照)。
+
+### 7.1 環境変数
+
+| 項目 | 内容 |
+| --- | --- |
+| 名前 | `RANKING_AUDIT_MODE` |
+| 値 | `disabled` = 監査なし、`enabled` = 監査あり |
+| 解釈 | `trim()` と小文字化のあと `disabled` に一致したときだけ監査なし。**未設定・空・未知の値はすべて監査あり**。未知の値では、値そのものを含まない警告を `console.warn` に出す |
+| 既定値 | 監査あり(未設定と同じ) |
+| 置き場 | Cloudflare Pages の **Production 環境**の変数。`npx wrangler pages secret put RANKING_AUDIT_MODE`(`RANKING_IP_HASH_KEY` と同じ経路。プロンプトに値を入力する)か、Pages ダッシュボードの Settings → Variables and Secrets(Production)。secret でも平文の変数でもよいが、このリポジトリは `wrangler.toml` を Pages の設定の正本にしているため、ダッシュボードで平文の変数を編集できない場合がある。その場合は secret として設定する |
+| ローカル | `.dev.vars`(`.dev.vars.example` を参照) |
+| 反映 | Pages の変数の変更は**新しいデプロイから**反映される。変更後に、同じコミットを再デプロイする(ダッシュボードの最新 Production デプロイで Retry deployment 等)。**コード変更は不要** |
+
+**`wrangler.toml` の `[vars]` には置かない。** 置くと切替のたびに main へのコミット
+(=本番デプロイ)が必要になり、コード変更なしに切り替えるという目的に反する。
+
+既定を監査ありにしているのは、設定漏れや打ち間違いの被害を小さくするため(未検証スコアは
+pending のまま残り、72時間以内なら後から監査できる。逆の既定だと、未検証スコアが黙って
+確定順位になり、事前ゲートの閾値まで動かす)。代償として、**監査なしで公開するときは
+`disabled` の明示設定が必須**で、忘れると投稿は誰も監査しない pending になり、表示は
+最大3件、72時間で表示から消える。§7.3 の確認を公開チェックに入れる。
+
+### 7.2 production と preview は同じ D1 を使う
+
+`wrangler.toml` の D1 バインディングは `DB` の1つだけで、production と preview の
+デプロイが同じ D1(`qixxx-scores`)に書き込む。**preview 環境に `RANKING_AUDIT_MODE` を
+設定しなければ、preview からの投稿は監査ありで(pending として)保存される。** 共有 D1 に
+未監査の verified 行を書かないよう、preview には設定しないこと。監査なし運用中に preview から
+入った pending 行は誰も監査しないので、72時間後に表示から消え、§7.5 の掃除 SQL で削除される。
+
+### 7.3 公開チェックと現在のモードの確認
+
+secret として設定した値は読み戻せない。現在のモードは、**最新行の `status` を D1 で見て**
+確認する。切替後と公開直後は、実際に1件投稿してから次を実行する。
+
+```sh
+npx wrangler d1 execute qixxx-scores --remote --command \
+  "SELECT id, status, datetime(created_at/1000,'unixepoch') AS created FROM scores ORDER BY rank_seq DESC LIMIT 1"
+```
+
+監査なしのつもりで `pending` なら設定が効いていない(Production 環境に設定したか、
+変更後に再デプロイしたかを確認する)。POST 応答の `status` も同じ値を返す
+(`verified` なら UI は「SUBMITTED.」と表示する)。
+
+### 7.4 `'verified'` の意味と `submitter_hash`
+
+- 監査なしモードの間に入った行は、**未監査のまま `verified`** になる。`'verified'` は
+  「監査済み」ではなく「ランキング対象」を意味する。どの行が監査済みかを示す列や記録はない。
+- 監査なしでは、自己置換(§0.2)を有効にするために **`submitter_hash` を verified 行に
+  保存する**。「verified 化で `NULL` に消す」という監査ありの不変条件からの逸脱である
+  (ブラウザ間の突合に使える値なので、ログに出さない方針は §5 のとおり変わらない)。
+  消すときは次の SQL を流す。消した行は以後だれにも置換されないので、その IP からの
+  4件目は、72時間の窓が空くまで 429 になり得る。
+
+```sql
+UPDATE scores SET submitter_hash = NULL
+WHERE status = 'verified' AND submitter_hash IS NOT NULL;
+```
+
+### 7.5 監査なしで止まるものと、手での運用
+
+監査なし・launchd 未導入(想定運用)では、監査コマンドが担っていた次の3つが止まる。
+
+| 止まるもの | 影響 | 手での運用 |
+| --- | --- | --- |
+| 期限切れ pending の掃除 | 切替前・preview から入った pending 行が残り続ける(表示・リプレイには出ない) | 下の掃除 SQL を定期的に流す |
+| TOP10 整理 | `scores` に11位以下の verified 行も残り続ける(上限は72時間あたり最大200行の追加) | 容量確認 SQL で見て、必要なら手動トリム SQL |
+| `ranking_rate_limits` の housekeeping | IP ハッシュ1つにつき1行が増え続ける | §2 の手動 cleanup SQL(`DELETE FROM ranking_rate_limits WHERE updated_at < unixepoch() - 86400`)を定期的に流す |
+
+期限切れ pending の掃除(監査冒頭の削除と同じ境界 `created_at <= now - 72h`):
+
+```sql
+DELETE FROM scores
+WHERE status = 'pending' AND created_at <= (unixepoch() - 259200) * 1000;
+```
+
+容量確認(状態別の行数・入力列の合計バイト数・最古の行)。DB 全体のサイズは
+`npx wrangler d1 info qixxx-scores` で見られる(Free は1DBあたり500MB)。
+
+```sh
+npx wrangler d1 execute qixxx-scores --remote --command \
+  "SELECT status, COUNT(*) AS rows, SUM(length(inputs)) AS input_bytes, datetime(MIN(created_at)/1000,'unixepoch') AS oldest FROM scores GROUP BY status"
+```
+
+手動トリム(現行シーズン・ルールセットの verified を上位 `<KEEP_ROWS>` 件だけ残す。
+`10` にすると監査の TOP10 整理と同じ)。**トリムすると繰り上げ候補が消える**:
+上位の偽スコアを後で消しても、トリム済みの正規行は戻らない。余裕を持たせた件数
+(例: `100`)で残すことを勧める。削除は取り消せないので、先に容量確認と
+`docs/ranking-runbook.md` §2 手順1の SELECT で対象を確かめる。
+
+```sql
+DELETE FROM scores
+WHERE status = 'verified'
+  AND season_id = <CURRENT_SEASON_ID>
+  AND ruleset_version = <RULESET_VERSION>
+  AND rank_seq NOT IN (
+    SELECT rank_seq FROM scores
+    WHERE status = 'verified'
+      AND season_id = <CURRENT_SEASON_ID>
+      AND ruleset_version = <RULESET_VERSION>
+    ORDER BY score DESC, rank_seq ASC
+    LIMIT <KEEP_ROWS>
+  );
+```
+
+上限付き INSERT の COUNT は監査なしでは `status` で絞らないため、`status` 先頭の
+複合インデックスで範囲検索できず、`idx_scores_pending_created` /
+`idx_scores_pending_ip_created` の全体を走査する(どちらも `inputs` を含まない
+カバリングインデックスなので BLOB は読まない)。自己置換の候補探索は、上限到達かつ
+トークン付きの投稿のときだけ `scores` を走査する。行数が増えて重くなったら手動トリムで減らす
+(インデックス追加は migration が必要なので別作業)。
+
+### 7.6 監査なし中に監査が誤って動いた場合
+
+監査は Mac 側で動き、Pages の変数を読めないので、モードを見て止まる仕組みはない。
+監査なし中に `npm run ranking:remote:audit` や launchd が動くと次のようになる
+(`scripts/audit/auditModeInteraction.test.ts` で挙動を固定している)。
+
+- pending が無いので、検証は0件(housekeeping は動くが無害)。
+- **TOP10 整理が、現行シーズン・ルールセットの verified 11位以下を削除する。** 未監査の行で、
+  **取り消せない**。上位に偽スコアがいた場合、それを消したあとに繰り上がるはずの正規行が
+  失われる。
+
+監査準備(トークン設定)の前なら `RemoteD1ConfigurationError` で止まるので起きにくい。
+危ないのは監査ありへの切替の途中で、§7.8 の順序を守る。
+
+### 7.7 監査あり → 監査なしへの切替
+
+順序は次のとおりで、**入れ替えない**。
+
+1. 監査を手動で1回実行して pending を減らす(`npm run ranking:remote:audit`)。
+2. launchd を `bootout` して監査を止める(`launchctl bootout gui/$(id -u)/com.qixxx.ranking-audit`)。
+3. Production 環境に `RANKING_AUDIT_MODE=disabled` を設定し、同じコミットを再デプロイする(§7.1)。
+   デプロイ完了後に1件投稿し、§7.3 の SQL で新規行が `verified` で入ることを確認する。
+4. 残った pending 行を、監査なしモードと同じ扱いとして verified に変える(下の SQL)。
+5. 以後、監査は実行しない。
+
+順序の理由: pending を0にして監査を止めても、再デプロイが完了するまでは POST が pending を
+保存し、それらは未監査のまま72時間で表示・リプレイから消える(手順4がそれを拾う)。また、
+再デプロイ後に監査を走らせると、未監査の verified 行の11位以下が削除される(§7.6)。
+
+手順4の SQL。`submitter_hash` は監査なしモードと同じく保持する(SET しない)。旧シーズン・
+旧ルールセット・旧フォーマットの pending 行は対象外で、72時間後に §7.5 の掃除 SQL で消える。
+
+```sql
+UPDATE scores
+SET status = 'verified', audit_attempts = 0, next_attempt_at = NULL
+WHERE status = 'pending'
+  AND season_id = <CURRENT_SEASON_ID>
+  AND ruleset_version = <RULESET_VERSION>
+  AND replay_format_version = <REPLAY_FORMAT_VERSION>;
+```
+
+切替直後は、直近72時間の**監査済み** verified 行も上限(全体200・IP あたり3)の件数に入る。
+件数が上限を超えている IP は、自己置換の場合分けが「ちょうど上限」のときしか候補を
+出さないので 429 になる(行を消さない安全側)。窓が進めば解消する。
+
+### 7.8 監査なし → 監査ありへの切替(再監査)
+
+監査なし期間の verified 行は、切り替えても自動では再監査されない。再監査するなら、
+**最初の監査実行より前に**差し戻す。順序は次のとおりで、**入れ替えない**。
+
+1. 監査準備(§3.3 の plist、Keychain、D1 API トークン)を済ませる。launchd はまだ
+   `bootstrap` せず、監査も実行しない(§3.1 手順2の「手動で1回実行」もまだ行わない)。
+2. `scores` をバックアップする(`id` と `created_at` を必ず含める)。
+3. `RANKING_AUDIT_MODE` を `enabled` にして(Production 環境の変数を変更し、同じコミットを
+   再デプロイする)反映し、1件投稿して §7.3 の SQL で新規行が `pending` で入ることを確認する。
+4. 差し戻し SQL を流す(下記)。
+5. `npm run ranking:remote:audit` を、pending が0になるまで手動で繰り返す。
+6. 順位表を確認してから launchd を `bootstrap` する(§3.3 手順7)。
+7. (任意)手順2のバックアップから、verified に戻った行の元の `created_at` を戻す。
+
+手順2のバックアップ。手順7に必要なのは `id` と `created_at` だけなので、まずこれを取る。
+行全体が必要なら `wrangler d1 export`(wrangler 3.114.17 に `--remote` / `--table` /
+`--no-schema` / `--output` がある)で SQL ダンプも取る。どちらのファイルもリポジトリの外に置き、
+ダンプは `ip_hash` / `submitter_hash` を含むので共有しない。
+
+```sh
+npx wrangler d1 execute qixxx-scores --remote --json --command \
+  "SELECT id, created_at FROM scores WHERE status = 'verified'" > scores-created-at-backup.json
+
+# (任意)行全体
+npx wrangler d1 export qixxx-scores --remote --table scores --no-schema --output scores-backup.sql
+```
+
+手順4の差し戻し SQL:
+
+```sql
+UPDATE scores
+SET status = 'pending', audit_attempts = 0, next_attempt_at = NULL,
+    submitter_hash = NULL, created_at = unixepoch() * 1000
+WHERE status = 'verified'
+  AND season_id = <CURRENT_SEASON_ID>
+  AND ruleset_version = <RULESET_VERSION>
+  AND replay_format_version = <REPLAY_FORMAT_VERSION>;
+```
+
+各条件の理由:
+
+- **`created_at` を現在時刻にする**: 監査は冒頭で `created_at <= now - 72h` の pending を
+  検証せずに削除する。古い行を元の日時のまま pending に戻すと、監査されずに消える。
+  元の投稿日時は失われるので、手順7で戻せるようにバックアップを取る。
+- **3つの版(シーズン・ルールセット・リプレイ形式)で絞る**: 旧シーズンや旧フォーマットの
+  行を pending にすると、監査が版の不一致として削除する。
+- **期間で絞らない**: 監査済みの行を再監査しても、同じ結果で verified に戻るだけ。監査なし
+  期間を示す列や記録が要らず、migration も不要になる。
+- **`submitter_hash = NULL`**: 再監査待ちの行が、新しい投稿の自己置換で消えないようにする。
+
+差し戻し中の副作用(手順4〜5の間。数分で終わるよう手順5を続けて行う):
+
+- `entries`(確定 TOP10)が空になり、事前ゲートの閾値が -1 に下がる。
+- 表示(`displayEntries`)は pending の上位最大3件だけになる。
+- 差し戻した行が pending の上限(全体200・IP あたり3)に数えられ、監査が終わるまで
+  新規投稿が 429 になり得る。
+
+監査は正しいリプレイを verified に戻し(スコア・ステージ・tick 数は再シミュレーション値で
+上書き、`submitter_hash` は `NULL`)、申告スコアがリプレイと一致しない行を削除する。
+
+手順7(任意)。バックアップから行ごとの UPDATE を作って流す。監査で削除された行や、
+その後 pending で入った行は `status = 'verified'` の条件で対象外になる。
+
+```sql
+UPDATE scores SET created_at = <ORIGINAL_CREATED_AT> WHERE id = '<ID>' AND status = 'verified';
+```
+
+```sh
+jq -r '.[0].results[] | "UPDATE scores SET created_at = \(.created_at) WHERE id = '\''\(.id)'\'' AND status = '\''verified'\'';"' \
+  scores-created-at-backup.json > restore-created-at.sql
+npx wrangler d1 execute qixxx-scores --remote --file restore-created-at.sql
+```
+
+**再監査しない場合**は、差し戻しの代わりに §7.4 の SQL で `submitter_hash` を消し、
+最初の監査で現行シーズンの verified 11位以下が削除されることを受け入れてから、§3.1 の順で
+監査を導入する。
