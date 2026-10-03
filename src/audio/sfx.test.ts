@@ -97,6 +97,43 @@ describe('SfxEngine — iOS WebKit audio unlock (fix/ios-audio-unlock, GitHub #4
     expect(createBufferSourceSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('retries the unlock on the next resume() while the context stays suspended', () => {
+    // iOS ignores the unlock from a non-activating event (touch pointerdown);
+    // the following touchend/pointerup must get another attempt.
+    const createBufferSourceSpy = vi.fn(() => new MockBufferSourceNode());
+    class StuckAudioContext extends MockAudioContext {
+      createBufferSource(): MockBufferSourceNode {
+        return createBufferSourceSpy();
+      }
+      resume(): Promise<void> {
+        return Promise.resolve();
+      }
+    }
+    (globalThis as { window?: unknown }).window = { AudioContext: StuckAudioContext };
+
+    const sfx = new SfxEngine();
+    sfx.resume();
+    sfx.resume();
+
+    expect(createBufferSourceSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('calls ctx.resume() when iOS reports the context as interrupted', () => {
+    const resumeSpy = vi.fn(() => Promise.resolve());
+    class InterruptedAudioContext extends MockAudioContext {
+      state = 'interrupted' as unknown as 'suspended';
+      resume(): Promise<void> {
+        return resumeSpy();
+      }
+    }
+    (globalThis as { window?: unknown }).window = { AudioContext: InterruptedAudioContext };
+
+    const sfx = new SfxEngine();
+    sfx.resume();
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('still calls ctx.resume() when the context starts suspended', () => {
     const resumeSpy = vi.fn(function (this: MockAudioContext) {
       this.state = 'running';

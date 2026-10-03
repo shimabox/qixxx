@@ -459,6 +459,11 @@ function init(): void {
   // gesture; resume() is a cheap no-op once the context is already running.
   window.addEventListener('keydown', () => sfx.resume());
   window.addEventListener('pointerdown', () => sfx.resume());
+  // iOS doesn't treat a touch pointerdown as a user activation, and the
+  // touch controls preventDefault() it, so no click follows. touchend and
+  // pointerup are the events iOS does accept for unlocking audio.
+  window.addEventListener('pointerup', () => sfx.resume());
+  window.addEventListener('touchend', () => sfx.resume());
 
   fitCanvasToViewport();
   window.addEventListener('resize', fitCanvasToViewport);
