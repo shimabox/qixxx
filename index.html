@@ -34,6 +34,19 @@
         min-height: 100vh;
         min-height: 100dvh;
         overflow: hidden;
+        /* A game screen has no text to select. Holding a touch control on
+           iOS would otherwise start a text selection / callout on nearby
+           text; Safari needs the -webkit- prefixed properties. */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      input,
+      textarea {
+        -webkit-user-select: text;
+        user-select: text;
       }
 
       /* #game-root (created by main.ts) fills the space above the controls

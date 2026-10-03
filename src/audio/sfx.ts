@@ -48,7 +48,6 @@ export class SfxEngine {
   private drawOsc: OscillatorNode | null = null;
   private drawGain: GainNode | null = null;
   private drawing = false;
-  private unlocked = false;
 
   /** @param initialMuted Seeded from src/storage/settings.ts by main.ts. */
   constructor(initialMuted = false) {
@@ -83,15 +82,20 @@ export class SfxEngine {
    * audio output itself gated even after the AudioContext reports
    * `state === 'running'`, until a buffer has actually been played through
    * it at least once from directly within a user-gesture call stack. See
-   * `unlockAudioOutput()` for the fix; it runs once per context, tracked by
-   * `unlocked`.
+   * `unlockAudioOutput()` for the fix.
+   *
+   * The unlock is repeated on every call until the context reports
+   * `running`, not just attempted once: iOS only honours it from events it
+   * counts as a user activation (`touchend`/`pointerup`/`click`, not a touch
+   * `pointerdown`), and main.ts calls this from both kinds. A single attempt
+   * spent on a non-activating event would leave audio locked for the whole
+   * session.
    */
   resume(): void {
     const ctx = this.ensureContext();
     if (!ctx) return;
-    if (!this.unlocked) {
+    if (ctx.state !== 'running') {
       this.unlockAudioOutput(ctx);
-      this.unlocked = true;
     }
     this.resumeIfSuspended(ctx);
   }
@@ -113,7 +117,9 @@ export class SfxEngine {
    * context.
    */
   private resumeIfSuspended(ctx: AudioContext): void {
-    if (ctx.state === 'suspended') {
+    // iOS also reports a non-standard 'interrupted' state (e.g. after a call
+    // or returning from the background), which needs the same resume().
+    if (ctx.state !== 'running' && ctx.state !== 'closed') {
       void ctx.resume();
     }
   }
@@ -218,7 +224,6 @@ export class SfxEngine {
       void this.ctx.close();
       this.ctx = null;
       this.masterGain = null;
-      this.unlocked = false;
     }
   }
 
