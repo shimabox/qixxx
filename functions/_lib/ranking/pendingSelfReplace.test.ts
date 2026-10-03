@@ -16,14 +16,40 @@
 // taking its place — so the invariant is checked on the happy path, the
 // rejected paths, and the error paths alike, not only where it is the
 // headline assertion.
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+//
+// BOTH AUDIT MODES
+// ----------------
+// The whole suite runs once per RANKING_AUDIT_MODE. The audit-free mode's
+// replacement SQL drops the status predicate from the candidate and from all
+// four COUNTs at once, so the same scenarios must hold with every row
+// verified. Per mode, three helpers change and nothing else: post() sends the
+// mode, seedPending() seeds the kind of row that mode stores (pending /
+// verified), and pendingCount() counts what that mode's caps count (fresh
+// pending rows / all rows).
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { createTestD1, seedScoreRow, type TestD1 } from '../../../scripts/audit/testSupport/localD1';
 import { onRequestPost } from '../../api/scores';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
 import { computeSubmitterHash } from './submitterToken';
 import { computeReplayHash } from './hash';
+import * as pendingGateModule from './pendingGate';
 import { PENDING_EXPIRY_MS } from './pendingGate';
 import { encodeRle, type InputSample } from '../../../src/core/rle';
+
+interface ModeVariant {
+  /** RANKING_AUDIT_MODE as sent to the handler. */
+  envValue: string | undefined;
+  /** The status this mode stores, and therefore the status the suite seeds. */
+  storedStatus: 'pending' | 'verified';
+}
+
+const MODE_VARIANTS: [string, ModeVariant][] = [
+  ['audited (RANKING_AUDIT_MODE unset)', { envValue: undefined, storedStatus: 'pending' }],
+  ['audit-free (RANKING_AUDIT_MODE=disabled)', { envValue: 'disabled', storedStatus: 'verified' }],
+];
+
+/** The variant the currently running describe block was instantiated for — set in its beforeAll; tests in a file run one at a time. */
+let activeMode: ModeVariant = MODE_VARIANTS[0][1];
 
 const SELF_ORIGIN = 'https://qixxx.example';
 const IP_HASH_KEY = 'self-replace-test-hmac-key';
@@ -55,6 +81,7 @@ function makeEnv(db: D1Database) {
   return {
     DB: db,
     RANKING_IP_HASH_KEY: IP_HASH_KEY,
+    ...(activeMode.envValue === undefined ? {} : { RANKING_AUDIT_MODE: activeMode.envValue }),
   };
 }
 
@@ -104,8 +131,10 @@ async function allRows(db: D1Database): Promise<Row[]> {
   return results;
 }
 
+/** What the active mode's caps count: pending rows (audited) or rows of any status (audit-free). */
 async function pendingCount(db: D1Database): Promise<number> {
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM scores WHERE status = 'pending'`).first<{ c: number }>();
+  const sql = activeMode.storedStatus === 'pending' ? `SELECT COUNT(*) AS c FROM scores WHERE status = 'pending'` : `SELECT COUNT(*) AS c FROM scores`;
+  const row = await db.prepare(sql).first<{ c: number }>();
   return row!.c;
 }
 
@@ -136,12 +165,13 @@ async function withRowConservation<T>(db: D1Database, body: () => Promise<T>, in
   return result;
 }
 
-describe('POST /api/scores pending self-replacement (real local D1)', () => {
+describe.each(MODE_VARIANTS)('POST /api/scores pending self-replacement (real local D1, %s)', (_label, mode) => {
   let testDb: TestD1;
   let myHash: string;
   let otherHash: string;
 
   beforeAll(async () => {
+    activeMode = mode;
     testDb = await createTestD1();
     myHash = await computeSubmitterHash(MY_TOKEN);
     otherHash = await computeSubmitterHash(OTHER_TOKEN);
@@ -154,15 +184,25 @@ describe('POST /api/scores pending self-replacement (real local D1)', () => {
   beforeEach(async () => {
     await testDb.db.prepare(`DELETE FROM scores`).run();
     await testDb.db.prepare(`DELETE FROM ranking_rate_limits`).run();
+    // In audit-free mode the seeded rows are VERIFIED, and verified rows set
+    // the pre-gate's 10th-place threshold: the 200-row scenarios below would
+    // then be refused as out-of-range before the cap logic under test is
+    // ever reached. The pre-gate has its own tests; here it is held open so
+    // both modes exercise the same replacement scenarios.
+    if (mode.storedStatus === 'verified') vi.spyOn(pendingGateModule, 'getVerifiedTenthPlaceThreshold').mockResolvedValue(-1);
   });
 
-  /** Seeds one fresh pending row with this suite's defaults. */
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Seeds one fresh row of the kind the active mode stores (pending / verified) with this suite's defaults. */
   async function seedPending(overrides: Parameters<typeof seedScoreRow>[1] = {}): Promise<string> {
     return seedScoreRow(testDb.db, {
       season_id: CURRENT_SEASON_ID,
       ruleset_version: RULESET_VERSION,
       replay_format_version: REPLAY_FORMAT_VERSION,
-      status: 'pending',
+      status: mode.storedStatus,
       created_at: Date.now(),
       ...overrides,
     });

@@ -156,7 +156,8 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
 }
 
 /**
- * The delete half removes only a caller-owned pending row and executes in
+ * The delete half removes only a caller-owned row (a pending one in audited
+ * mode; a fresh row of either status in audit-free mode) and executes in
  * the same D1 batch as its replacement INSERT — the single most
  * load-bearing statement in this file.
  *
@@ -215,8 +216,14 @@ function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number
  * attempt and this batch, which is precisely why the case analysis has to be
  * self-contained at one instant.
  *
- * Candidate conditions beyond the case analysis: still pending,
- * still fresh by the shared pendingFreshnessCutoff() definition, owned by
+ * THE MODE MUST BE THE SAME IN EVERY STATEMENT OF THE BATCH
+ * ---------------------------------------------------------
+ * For the same reason, `mode` selects this DELETE's SQL and must be the one
+ * value the batch's buildCappedInsert() is given (see SELF_REPLACE_DELETE_SQL
+ * below for what differs between the modes and why that is safe).
+ *
+ * Candidate conditions beyond the case analysis: still pending (audited mode
+ * only), still fresh by the shared pendingFreshnessCutoff() definition, owned by
  * this submitter (`submitter_hash = ?` — a NULL submitter_hash never compares
  * equal to anything, which is what keeps un-owned and legacy rows out of
  * reach), not the row holding the new claim's own effective seed
@@ -237,11 +244,38 @@ function buildSelfReplaceDelete(
   score: number,
   rngKey: number,
   ipHash: string,
-  cutoff: number
+  cutoff: number,
+  mode: AuditMode
 ): D1PreparedStatement {
   return db
-    .prepare(
-      `DELETE FROM scores
+    .prepare(SELF_REPLACE_DELETE_SQL[mode])
+    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING, rngKey);
+}
+
+/**
+ * The self-replacement DELETE's SQL, one fixed string per audit mode, paired
+ * with CAPPED_INSERT_SQL of the SAME mode inside one batch.
+ *
+ * The audit-free statement is the audited one with the same predicate removed
+ * from all six places it appears — the candidate's `c.status = 'pending'` and
+ * the `status = 'pending' AND` of all four COUNTs — and nothing else changed.
+ * The case analysis above stays sound because its only load-bearing premise is
+ * "the delete candidate is itself one of the rows both COUNTs count": then
+ * deleting it lowers each count by exactly one. Dropping the status predicate
+ * everywhere at once keeps that premise (the candidate is a fresh row; every
+ * COUNT counts fresh rows), which is also why the two statements of a batch
+ * must always be built for the same mode: a pending-only DELETE paired with
+ * an all-status INSERT would break it.
+ *
+ * In audit-free mode the candidate is therefore one of this browser's own
+ * fresh VERIFIED rows (or a leftover pending one): a better score replaces
+ * the weakest of them, exactly as it replaces a pending row in audited mode.
+ *
+ * `enabled` is byte-for-byte the statement this endpoint sent before the
+ * audit mode existed (scoresEndpoint.test.ts pins it).
+ */
+const SELF_REPLACE_DELETE_SQL: Record<AuditMode, string> = {
+  enabled: `DELETE FROM scores
        WHERE rank_seq = (
          SELECT c.rank_seq FROM scores AS c
          WHERE c.status = 'pending'
@@ -263,10 +297,30 @@ function buildSelfReplaceDelete(
            )
          ORDER BY c.score ASC, c.rank_seq DESC
          LIMIT 1
-       )`
-    )
-    .bind(cutoff, submitterHash, score, ipHash, MAX_PENDING_PER_IP, MAX_GLOBAL_PENDING, rngKey);
-}
+       )`,
+  disabled: `DELETE FROM scores
+       WHERE rank_seq = (
+         SELECT c.rank_seq FROM scores AS c
+         WHERE c.created_at > ?1
+           AND c.submitter_hash = ?2
+           AND c.score < ?3
+           AND c.rng_key <> ?7
+           AND (
+             (
+               (SELECT COUNT(*) FROM scores WHERE ip_hash = ?4 AND created_at > ?1) = ?5
+               AND (SELECT COUNT(*) FROM scores WHERE created_at > ?1) <= ?6
+               AND c.ip_hash = ?4
+             )
+             OR
+             (
+               (SELECT COUNT(*) FROM scores WHERE ip_hash = ?4 AND created_at > ?1) < ?5
+               AND (SELECT COUNT(*) FROM scores WHERE created_at > ?1) = ?6
+             )
+           )
+         ORDER BY c.score ASC, c.rank_seq DESC
+         LIMIT 1
+       )`,
+};
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
@@ -503,10 +557,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const id = generateShareId();
   const rngKey = computeRngKey(seed);
   const createdAt = Date.now();
-  // Ownership only exists for the self-replacement below, which the
-  // audit-free mode does not support: its rows are verified on arrival, and a
-  // verified row keeps no submitter_hash.
-  const submitterHash = tokenParse.kind === 'valid' && auditMode === 'enabled' ? await computeSubmitterHash(tokenParse.token) : null;
+  // Stored in both modes. In audit-free mode this deliberately keeps the hash
+  // on a VERIFIED row — nothing will ever run the audit's verified-flip that
+  // clears it in audited mode — because self-replacement needs it there. The
+  // runbook documents this and the SQL that clears it.
+  const submitterHash = tokenParse.kind === 'valid' ? await computeSubmitterHash(tokenParse.token) : null;
   // The shared 72h boundary: rows with
   // `created_at > cutoff` are fresh and therefore counted; `<= cutoff` are
   // expired and ignored. Same helper the display query, the replay endpoint
@@ -554,7 +609,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   }
 
   // 4. Cap reached — one retry, as a self-replacement, if (and only if) this
-  // browser proved ownership of a weaker pending row of its own.
+  // browser proved ownership of a weaker row of its own (a pending one in
+  // audited mode; any fresh one in audit-free mode).
   //
   // Somebody ELSE's row is never at risk: the DELETE below can only ever
   // match a row whose submitter_hash equals this request's, and a
@@ -576,7 +632,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       // duplicate answer below is a plain 409 and not a 409 with a hole in
       // the table behind it.
       batchResults = await env.DB.batch([
-        buildSelfReplaceDelete(env.DB, submitterHash, score, rngKey, ipHash, replaceCutoff),
+        buildSelfReplaceDelete(env.DB, submitterHash, score, rngKey, ipHash, replaceCutoff, auditMode),
         buildCappedInsert(env.DB, pendingRow, replaceCutoff, auditMode),
       ]);
     } catch (err) {

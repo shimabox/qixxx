@@ -14,12 +14,14 @@ import { onRequestPost } from '../../api/scores';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
 import { computeIpHash } from './ipHash';
 import { computeReplayHash } from './hash';
+import { computeSubmitterHash } from './submitterToken';
 import { PENDING_EXPIRY_MS } from './pendingGate';
 import { encodeRle, type InputSample } from '../../../src/core/rle';
 
 const SELF_ORIGIN = 'https://qixxx.example';
 const IP_HASH_KEY = 'audit-disabled-caps-test-hmac-key';
 const IP = '203.0.113.9';
+const MY_TOKEN = 'aaaaaaaabbbbbbbbccccccccdddddddd';
 
 function rleBytesFor(seed: number): Uint8Array {
   const samples: InputSample[] = [
@@ -117,13 +119,76 @@ describe('RANKING_AUDIT_MODE=disabled caps (real local D1)', () => {
     });
   }
 
-  it('stores the submission as verified, with audit bookkeeping at rest, and answers status:verified', async () => {
-    const { status, body } = await post(testDb.db, 'disabled', { seed: 5001, score: 4321 });
+  it('stores the submission as verified, with audit bookkeeping at rest and the owner hash kept, and answers status:verified', async () => {
+    const { status, body } = await post(testDb.db, 'disabled', { seed: 5001, score: 4321, token: MY_TOKEN });
     expect(status).toBe(200);
     expect(body).toMatchObject({ accepted: true, status: 'verified', message: 'accepted', score: 4321, stage: 2, durationTicks: 3 });
 
     const row = await storedRow(body.id as string);
     expect(row).toMatchObject({ status: 'verified', score: 4321, stage: 2, audit_attempts: 0, next_attempt_at: null, ip_hash: myIpHash, duration_ticks: 3 });
+    // Deliberately kept on a verified row in this mode (audited mode clears it
+    // at verification): self-replacement needs it.
+    expect(row!.submitter_hash).toBe(await computeSubmitterHash(MY_TOKEN));
+  });
+
+  it('stores a NULL submitter_hash for a token-less submission', async () => {
+    const { body } = await post(testDb.db, 'disabled', { seed: 5011, score: 10 });
+    expect((await storedRow(body.id as string))!.submitter_hash).toBeNull();
+  });
+
+  describe('self-replacement', () => {
+    it('at exactly the per-IP cap, a better claim replaces this browser\'s weakest verified row', async () => {
+      const myHash = await computeSubmitterHash(MY_TOKEN);
+      const weakest = await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 100 });
+      const kept = [await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 200 }), await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 300 })];
+
+      const { status, body } = await post(testDb.db, 'disabled', { seed: 5012, score: 400, token: MY_TOKEN });
+      expect(status).toBe(200);
+      expect(body.status).toBe('verified');
+      expect(await storedRow(weakest)).toBeNull();
+      for (const id of kept) expect(await storedRow(id)).not.toBeNull();
+      expect(await storedRow(body.id as string)).toMatchObject({ status: 'verified', score: 400, submitter_hash: myHash });
+      expect(await rowCount()).toBe(3);
+    });
+
+    it('counts a leftover pending row of the same owner as a candidate too (no status predicate anywhere)', async () => {
+      const myHash = await computeSubmitterHash(MY_TOKEN);
+      const leftoverPending = await seed({ status: 'pending', ip_hash: myIpHash, submitter_hash: myHash, score: 50 });
+      await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 200 });
+      await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 300 });
+
+      const { status } = await post(testDb.db, 'disabled', { seed: 5013, score: 400, token: MY_TOKEN });
+      expect(status).toBe(200);
+      expect(await storedRow(leftoverPending)).toBeNull();
+      expect(await rowCount()).toBe(3);
+    });
+
+    // Reachable right after switching from the audited mode: the last 72h of
+    // audited verified rows now count too, and can put an IP over its cap.
+    // The case analysis only offers a candidate at EXACTLY the cap, so this is
+    // a plain 429 that deletes nothing.
+    it('over the per-IP cap: 429, and nothing is deleted even though weaker own rows exist', async () => {
+      const myHash = await computeSubmitterHash(MY_TOKEN);
+      const seeded = [
+        await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 100 }),
+        await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: myHash, score: 200 }),
+        await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: null, score: 300 }),
+        await seed({ status: 'pending', ip_hash: myIpHash, submitter_hash: myHash, score: 10 }),
+      ];
+
+      const { status, body } = await post(testDb.db, 'disabled', { seed: 5014, score: 999, token: MY_TOKEN });
+      expect(status).toBe(429);
+      expect(body).toEqual({ error: 'pending submission limit reached, try again later', accepted: false });
+      for (const id of seeded) expect(await storedRow(id)).not.toBeNull();
+      expect(await rowCount()).toBe(4);
+    });
+
+    it('at the cap with only rows it does not own (e.g. audited rows whose owner hash was cleared): 429', async () => {
+      for (let i = 0; i < 3; i++) await seed({ status: 'verified', ip_hash: myIpHash, submitter_hash: null, score: 10 + i });
+      const { status } = await post(testDb.db, 'disabled', { seed: 5015, score: 999, token: MY_TOKEN });
+      expect(status).toBe(429);
+      expect(await rowCount()).toBe(3);
+    });
   });
 
   it.each([

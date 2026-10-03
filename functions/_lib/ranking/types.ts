@@ -35,6 +35,9 @@ export interface ScoreRow {
    * SHA-256 of the submitting browser's ownership token bytes. This is the
    * only value that lets a POST replace one of its own pending rows. Null
    * means no owner; verification clears it to avoid a durable identifier.
+   * Exception: rows written while RANKING_AUDIT_MODE=disabled are verified on
+   * arrival and keep the hash, because audit-free self-replacement needs it
+   * (docs/ranking-audit-runbook.md has the SQL that clears it).
    */
   submitter_hash: string | null;
 }
