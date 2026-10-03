@@ -1,10 +1,12 @@
 // E2E ranking suite. Runs
 // against Vite's dev server like tests/e2e/smoke.spec.ts (playwright.config.ts's
-// webServer) — there is no local Pages Functions server here, so every
-// /api/* call is mocked via page.route(). This suite only exercises the
-// ranking UI (src/ui/ranking.ts) wired through main.ts; server-side
-// verifyReplay()/hash/name-validation behavior has its own unit tests under
-// functions/_lib/ranking/*.test.ts (verified DOM-free there).
+// webServer), and almost every /api/* call is mocked via page.route(). This
+// suite mostly exercises the ranking UI (src/ui/ranking.ts) wired through
+// main.ts; server-side verifyReplay()/hash/name-validation behavior has its
+// own unit tests under functions/_lib/ranking/*.test.ts (verified DOM-free
+// there). The one exception is the RANKING_AUDIT_MODE=disabled describe at
+// the end, which forwards /api/* to a real Pages Functions server
+// (tests/e2e/support/auditDisabledApiServer.mjs).
 import { test, expect, type Page } from '@playwright/test';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
@@ -397,7 +399,7 @@ test.describe('ranking display', () => {
     await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
     await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
     // The one place verification IS mentioned: the board-wide notice.
-    await expect(page.getByText('Scores are verified after posting; entries that fail verification are removed.')).toBeVisible();
+    await expect(page.getByText('Scores may be checked after posting, and entries found invalid may be removed.')).toBeVisible();
 
     // Every row — pending included — gets a REPLAY button, because a fresh
     // pending row's replay is servable now.
@@ -411,7 +413,7 @@ test.describe('ranking display', () => {
     await page.goto(APP_URL);
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  900  STAGE 3')).toBeVisible();
-    await expect(page.getByText('Scores are verified after posting; entries that fail verification are removed.')).toBeVisible();
+    await expect(page.getByText('Scores may be checked after posting, and entries found invalid may be removed.')).toBeVisible();
     await expect(page.getByText(/VERIFYING/)).toHaveCount(0);
   });
 
@@ -1647,5 +1649,161 @@ test.describe('replay viewing', () => {
     expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
     const ticks = await page.evaluate(() => window.__game__!.session.getTotalTicks());
     await expect.poll(() => page.evaluate(() => window.__game__!.session.getTotalTicks())).toBeGreaterThan(ticks);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RANKING_AUDIT_MODE=disabled, against a REAL server.
+//
+// Nothing here is mocked: playwright.config.ts starts `wrangler pages dev`
+// with RANKING_AUDIT_MODE=disabled on a fresh local D1, and the page's /api/*
+// calls are forwarded to it. No audit ever runs in this suite, so whatever the
+// board shows is exactly what POST stored.
+//
+// Each test posts from its own CF-Connecting-IP (the local server only fills
+// that header in when a request arrives without one), so the per-IP cap one
+// test exercises is never shared with another.
+// ---------------------------------------------------------------------------
+
+// Must match playwright.config.ts's AUDIT_DISABLED_API_ORIGIN.
+const AUDIT_DISABLED_API_ORIGIN = 'http://127.0.0.1:8790';
+
+/** Sends this page's /api/* calls to the audit-free server, as `ip`, with the Origin that server's own same-origin check expects. */
+async function routeApiToAuditDisabledServer(page: Page, ip: string): Promise<void> {
+  await page.route(
+    (url) => url.port === '4173' && url.pathname.startsWith('/api/'),
+    async (route) => {
+      const original = new URL(route.request().url());
+      const response = await route.fetch({
+        url: `${AUDIT_DISABLED_API_ORIGIN}${original.pathname}${original.search}`,
+        headers: { ...route.request().headers(), origin: AUDIT_DISABLED_API_ORIGIN, 'cf-connecting-ip': ip },
+      });
+      await route.fulfill({ response });
+    }
+  );
+}
+
+interface LiveRankingResponse {
+  entries: (RankingEntry & { status?: unknown })[];
+  displayEntries: DisplayRankingEntry[];
+}
+
+function shortRleBase64(variant: number): string {
+  const samples: InputSample[] = [
+    { dx: 1, dy: 0, drawHeld: false, slow: false },
+    { dx: 0, dy: 1, drawHeld: true, slow: variant % 2 === 0 },
+    { dx: -1, dy: 0, drawHeld: false, slow: false },
+  ];
+  return Buffer.from(encodeRle(samples)).toString('base64');
+}
+
+test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audit)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  test('a real run is SUBMITTED. straight onto both boards as a verified row, and its replay plays', async ({ page, request }) => {
+    // One real, wall-clock-timed run (~22s) plus a replay.
+    test.setTimeout(120_000);
+    await routeApiToAuditDisabledServer(page, '203.0.113.71');
+    const postResponse = page.waitForResponse((response) => response.url().endsWith('/api/scores') && response.request().method() === 'POST');
+
+    await stubDeterministicNormalSeed(page);
+    await page.goto(APP_URL);
+    await reachGameoverDeterministically(page);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    // A name free of "audit"/"disabled", so the no-mode-in-the-response check
+    // below cannot trip over the row's own name.
+    await page.getByPlaceholder('NAME').fill('LIVEPOST');
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+
+    const posted = (await (await postResponse).json()) as { accepted: boolean; id: string; status: string; message: string };
+    expect(posted).toMatchObject({ accepted: true, status: 'verified', message: 'accepted' });
+    await expect(page.getByText('SUBMITTED.', { exact: true })).toBeVisible();
+    await expect(page.getByText('PENDING VERIFICATION')).toHaveCount(0);
+
+    // Straight from the server: the row is in the CONFIRMED `entries` (which
+    // carry no status at all) and in `displayEntries` as verified — and the
+    // response says nothing about the server's mode.
+    const rankingResponse = await request.get(`${AUDIT_DISABLED_API_ORIGIN}/api/ranking`);
+    expect(rankingResponse.status()).toBe(200);
+    const ranking = (await rankingResponse.json()) as LiveRankingResponse & Record<string, unknown>;
+    expect(Object.keys(ranking).sort()).toEqual(['displayEntries', 'entries', 'rulesetVersion', 'seasonId']);
+    expect(JSON.stringify(ranking)).not.toMatch(/audit|disabled/i);
+    const confirmed = ranking.entries.find((entry) => entry.id === posted.id);
+    expect(confirmed).toMatchObject({ name: 'LIVEPOST', replayAvailable: true });
+    expect(confirmed).not.toHaveProperty('status');
+    expect(ranking.displayEntries.find((entry) => entry.id === posted.id)).toMatchObject({ name: 'LIVEPOST', status: 'verified', replayAvailable: true });
+
+    const replayResponse = await request.get(`${AUDIT_DISABLED_API_ORIGIN}/api/ranking/${posted.id}/replay`);
+    expect(replayResponse.status()).toBe(200);
+    expect(await replayResponse.json()).toMatchObject({ seed: SEED_VALUE, status: 'verified' });
+
+    // ...and through the UI: listed, and its REPLAY plays.
+    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await page.locator('#ranking-button').click();
+    const row = page.locator('#ranking-list-body > *').filter({ hasText: 'LIVEPOST' });
+    await expect(row).toHaveCount(1);
+    await row.getByRole('button', { name: 'REPLAY' }).click();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
+    await expect(page.locator('#replay-stage-label')).toContainText('STAGE 1 / 1');
+    await page.getByRole('button', { name: 'EXIT' }).click();
+    await expect(page.getByRole('button', { name: 'EXIT' })).toBeHidden();
+  });
+
+  test('a 4th submission from the same IP self-replaces this browser\'s weakest row when it beats it, and is a 429 when it does not', async ({ request }) => {
+    const ip = '203.0.113.72';
+    const token = 'aaaaaaaabbbbbbbbccccccccdddddddd';
+    const post = (seed: number, score: number, submitterToken?: string) =>
+      request.post(`${AUDIT_DISABLED_API_ORIGIN}/api/scores`, {
+        headers: { Origin: AUDIT_DISABLED_API_ORIGIN, 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+        data: {
+          seed,
+          rleBase64: shortRleBase64(seed),
+          score,
+          stage: 1,
+          name: `E2E${seed}`,
+          rulesetVersion: RULESET_VERSION,
+          replayFormatVersion: REPLAY_FORMAT_VERSION,
+          ...(submitterToken === undefined ? {} : { submitterToken }),
+        },
+      });
+    const displayedIds = async (): Promise<string[]> => {
+      const ranking = (await (await request.get(`${AUDIT_DISABLED_API_ORIGIN}/api/ranking`)).json()) as LiveRankingResponse;
+      return ranking.displayEntries.map((entry) => entry.id);
+    };
+
+    const ids: string[] = [];
+    for (const [seed, score] of [
+      [880_001, 100],
+      [880_002, 200],
+      [880_003, 300],
+    ]) {
+      const response = await post(seed, score, token);
+      expect(response.status()).toBe(200);
+      const body = (await response.json()) as { id: string; status: string };
+      expect(body.status).toBe('verified');
+      ids.push(body.id);
+    }
+
+    // At the cap, a claim weaker than every row this browser owns: nothing
+    // to replace.
+    const weaker = await post(880_004, 50, token);
+    expect(weaker.status()).toBe(429);
+    expect(await weaker.json()).toEqual({ error: 'pending submission limit reached, try again later', accepted: false });
+
+    // Without a token there is no ownership, so nothing is replaceable either.
+    const tokenless = await post(880_005, 999);
+    expect(tokenless.status()).toBe(429);
+
+    // A better claim with the token replaces the weakest (100) of the three.
+    const better = await post(880_006, 400, token);
+    expect(better.status()).toBe(200);
+    const betterBody = (await better.json()) as { id: string; status: string };
+    expect(betterBody.status).toBe('verified');
+
+    const shown = await displayedIds();
+    expect(shown).toContain(betterBody.id);
+    expect(shown).not.toContain(ids[0]);
+    expect(shown).toEqual(expect.arrayContaining([ids[1], ids[2]]));
   });
 });

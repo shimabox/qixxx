@@ -7,6 +7,9 @@ import { defineConfig, devices } from '@playwright/test';
 // `npm run typecheck`/`npm run build`.
 const PORT = 4173;
 const BASE_URL = `http://localhost:${PORT}/`;
+// Must match AUDIT_DISABLED_API_ORIGIN in tests/e2e/ranking.spec.ts.
+const AUDIT_DISABLED_API_PORT = 8790;
+const AUDIT_DISABLED_API_ORIGIN = `http://127.0.0.1:${AUDIT_DISABLED_API_PORT}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -38,13 +41,31 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    // Vite's dev server (not a production build) is enough for a smoke
-    // suite and starts faster; it already serves under `base: '/'`
-    // exactly like the production build does (vite.config.ts).
-    command: `npx vite --port ${PORT} --strictPort`,
-    url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      // Vite's dev server (not a production build) is enough for a smoke
+      // suite and starts faster; it already serves under `base: '/'`
+      // exactly like the production build does (vite.config.ts).
+      command: `npx vite --port ${PORT} --strictPort`,
+      url: BASE_URL,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      // The one real API server: Pages Functions with
+      // RANKING_AUDIT_MODE=disabled on a throwaway local D1
+      // (tests/e2e/support/auditDisabledApiServer.mjs). Only the
+      // audit-free describe in tests/e2e/ranking.spec.ts talks to it; every
+      // other ranking test keeps mocking /api/*. Never reused: its tests
+      // assume the fresh, empty database the launcher migrates on start.
+      command: `node tests/e2e/support/auditDisabledApiServer.mjs`,
+      url: `${AUDIT_DISABLED_API_ORIGIN}/api/ranking`,
+      env: { AUDIT_DISABLED_API_PORT: String(AUDIT_DISABLED_API_PORT) },
+      reuseExistingServer: false,
+      // Migrating a fresh D1 and bundling the Functions takes longer than
+      // Vite's cold start.
+      timeout: 120_000,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
+    },
+  ],
 });

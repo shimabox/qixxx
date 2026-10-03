@@ -7,6 +7,8 @@
 // (vitest runs in the `node` environment for this repo; see vitest.config.ts).
 import { describe, it, expect } from 'vitest';
 import {
+  acceptedSubmissionText,
+  BOARD_NOTICE,
   decideSubmissionOffer,
   isSnapshotEligible,
   isReplayPayloadPlayable,
@@ -17,6 +19,30 @@ import {
   type RunSubmissionSnapshot,
 } from './ranking';
 import { MAX_VERIFIED_CLAIMS } from '../config';
+
+describe('acceptedSubmissionText', () => {
+  it('says plainly SUBMITTED for a row the server stored as verified (no audit)', () => {
+    expect(acceptedSubmissionText('verified')).toBe('SUBMITTED.');
+  });
+
+  it('keeps the pending-verification line for a pending row', () => {
+    expect(acceptedSubmissionText('pending')).toBe('SUBMITTED — PENDING VERIFICATION.');
+  });
+
+  it('falls back to the pending-verification line when the status is missing or unrecognized', () => {
+    for (const status of [undefined, null, '', 'VERIFIED', 42]) {
+      expect(acceptedSubmissionText(status)).toBe('SUBMITTED — PENDING VERIFICATION.');
+    }
+  });
+});
+
+describe('BOARD_NOTICE', () => {
+  it('discloses both board rules without claiming every score is verified', () => {
+    expect(BOARD_NOTICE).toContain('X handles are self-reported');
+    expect(BOARD_NOTICE).toContain('may be removed');
+    expect(BOARD_NOTICE).not.toMatch(/scores are verified/i);
+  });
+});
 
 describe('limitRankingName', () => {
   it('allows 24 emoji code points and removes the 25th', () => {

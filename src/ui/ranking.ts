@@ -43,7 +43,7 @@ export function limitRankingName(value: string): string {
  * and deliberately NOT rendered: the public board
  * treats pending and verified rows as one real-time ranking. Verification
  * is disclosed once, as a rule of the board, by the static notice under the
- * heading ("entries that fail verification are removed") rather than by
+ * list (BOARD_NOTICE: "entries found invalid may be removed") rather than by
  * marking individual rows as suspect. The X handle is linked either way —
  * the audit verifies the SCORE, never handle ownership, so a row's audit
  * state was never a reason to withhold the link (the self-reported-handles
@@ -55,6 +55,25 @@ export function limitRankingName(value: string): string {
  */
 export interface DisplayRankingEntry extends RankingEntry {
   status: 'pending' | 'verified';
+}
+
+/**
+ * The board-wide notice under the ranking list. Neutral about the audit on
+ * purpose: the server may store scores for a later audit or, with
+ * RANKING_AUDIT_MODE=disabled, rank them as submitted, and GET /api/ranking
+ * does not say which — so the notice has to be true either way.
+ */
+export const BOARD_NOTICE = 'X handles are self-reported — ownership is not verified. Scores may be checked after posting, and entries found invalid may be removed.';
+
+/**
+ * The submission form's line for an accepted POST, chosen from the `status`
+ * the server reports for the row it stored: 'verified' (the server ranks
+ * scores as submitted, without the audit) is simply on the board now; anything
+ * else — 'pending', or an older server that sends no status — is waiting for
+ * the audit.
+ */
+export function acceptedSubmissionText(status: unknown): string {
+  return status === 'verified' ? 'SUBMITTED.' : 'SUBMITTED — PENDING VERIFICATION.';
 }
 
 /**
@@ -401,12 +420,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listOverlay.appendChild(listHeading);
   const disclaimer = document.createElement('div');
   // Two rules of the board, stated once for everyone: handles are
-  // self-reported, and scores are audited AFTER they
+  // self-reported, and scores can be checked AFTER they
   // appear — a row can vanish later. The second sentence is what replaced the
   // per-row VERIFYING badge, so it must stay visible whenever the list is.
+  // Worded so it is true whether or not the server currently runs the audit
+  // (RANKING_AUDIT_MODE): the board never says which, by design.
   // Appended BELOW the list (see the end of this block), as a footnote: up
   // between the heading and the rows it read as the panel's headline.
-  disclaimer.textContent = 'X handles are self-reported — ownership is not verified. Scores are verified after posting; entries that fail verification are removed.';
+  disclaimer.textContent = BOARD_NOTICE;
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
@@ -933,14 +954,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // Free-tier async-audit response contract: a 200 accepted:true never
       // carries a final rank anymore (POST no longer resimulates
       // synchronously — see functions/api/scores.ts's own module comment) —
-      // only "provisionally accepted, pending verification". A rejected
+      // only the stored row's `status`: "provisionally accepted, pending
+      // verification", or "verified" when the server runs without the audit
+      // (see acceptedSubmissionText()). A rejected
       // submission (out-of-range pre-gate, pending-cap 429, duplicate 409,
       // or any other declined outcome) is reported as-is; the previously
       // Paid-version-only "JUST MISSED THE TOP 10" copy doesn't distinguish
       // these anymore, so the server's own reason/error string is surfaced
       // directly instead.
       if (data.accepted) {
-        submitStatus.textContent = 'SUBMITTED — PENDING VERIFICATION.';
+        submitStatus.textContent = acceptedSubmissionText(data.status);
       } else if (data.reason === 'out-of-range') {
         submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
       } else if (retryLater) {
