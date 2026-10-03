@@ -11,11 +11,21 @@
 // (functions/_lib/ranking/rleDuration.ts) — never a full resimulation;
 // - a submission that can't possibly make the confirmed TOP10 is rejected
 // immediately without ever being stored (the pre-pending gate);
-// - everything that passes is stored as `status='pending'` and returned
-// as "provisionally accepted, verification pending" — a separate,
-// asynchronous audit job (scripts/audit/) is what actually calls
-// verifyReplay() (via verifyPendingEntry()) later and either confirms
-// (`status='verified'`) or deletes the row.
+// - in the default, AUDITED mode, everything that passes is stored as
+// `status='pending'` and returned as "provisionally accepted, verification
+// pending" — a separate, asynchronous audit job (scripts/audit/) is what
+// actually calls verifyReplay() (via verifyPendingEntry()) later and either
+// confirms (`status='verified'`) or deletes the row;
+// - in the AUDIT-FREE mode (`RANKING_AUDIT_MODE=disabled`, see
+// _lib/ranking/auditMode.ts), everything that passes is stored as
+// `status='verified'` straight away and returned as accepted. Nothing ever
+// resimulates it: the client's score/stage claim IS the ranked score, and the
+// replay is not guaranteed to match it. 'verified' then means "on the
+// ranking", not "audited".
+//
+// The mode is resolved once per request, before the first D1 operation, and
+// only changes what this handler writes. Every reader (GET /api/ranking, the
+// replay endpoint, the audit) goes by the stored `status` alone.
 import type { Env } from '../_lib/types';
 import { jsonResponse } from '../_lib/response';
 import { readBodyWithLimit } from '../_lib/readBody';
@@ -31,6 +41,7 @@ import { computeRngKey } from '../_lib/ranking/rngKey';
 import { parseSubmitterToken, computeSubmitterHash } from '../_lib/ranking/submitterToken';
 import { consumeRankingRateLimit } from '../_lib/ranking/rateLimit';
 import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../_lib/ranking/season';
+import { resolveAuditMode, type AuditMode } from '../_lib/ranking/auditMode';
 import { RleDecodeError } from '../../src/core/rle';
 import type { ScoreSubmission } from '../_lib/ranking/types';
 
@@ -46,10 +57,12 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_GLOBAL_PENDING = 200;
 const MAX_PENDING_PER_IP = 3;
 
-// The row the whole handler is trying to write, minus the two things the
-// replacement path re-derives (the cap constants) — bundled so the first
-// attempt and the replacement batch can be built from ONE description of the
-// row and cannot drift apart.
+// The row the whole handler is trying to write, minus the things the
+// replacement path re-derives (the cap constants) or that the audit mode
+// decides (the stored status) — bundled so the first attempt and the
+// replacement batch can be built from ONE description of the row and cannot
+// drift apart. Named for the audited mode it was written for; in audit-free
+// mode the very same values are stored as a verified row.
 interface PendingRowValues {
   id: string;
   score: number;
@@ -68,6 +81,38 @@ interface PendingRowValues {
 }
 
 /**
+ * The capped INSERT's SQL, one fixed string per audit mode — chosen whole,
+ * never assembled from fragments at run time, so each mode's statement can
+ * be read (and pinned by tests) exactly as D1 receives it.
+ *
+ * The two differ in exactly two ways and share everything else (columns,
+ * placeholders, bind order, the `created_at > ?15` freshness window, the caps
+ * ?16/?17):
+ * - the stored status literal: 'pending' (audited) vs 'verified' (audit-free);
+ * - what the two COUNT(*)s count. Audited mode counts fresh PENDING rows — the
+ *   audit queue — so verified rows never use up a slot. Audit-free mode has no
+ *   queue: every row is verified the moment it lands, so the same caps instead
+ *   count every row written in the last 72h, whatever its status. That is
+ *   precisely what audited mode would count if the audit never ran, which
+ *   bounds storage the same way: at most 200 rows per 72h, at most 3 per IP.
+ *
+ * `enabled` is byte-for-byte the statement this endpoint sent before the
+ * audit mode existed (scoresEndpoint.test.ts pins it).
+ */
+const CAPPED_INSERT_SQL: Record<AuditMode, string> = {
+  enabled: `INSERT INTO scores
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending', ?14, 0, NULL, ?18, ?19
+       WHERE (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?15) < ?16
+         AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?14 AND created_at > ?15) < ?17`,
+  disabled: `INSERT INTO scores
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'verified', ?14, 0, NULL, ?18, ?19
+       WHERE (SELECT COUNT(*) FROM scores WHERE created_at > ?15) < ?16
+         AND (SELECT COUNT(*) FROM scores WHERE ip_hash = ?14 AND created_at > ?15) < ?17`,
+};
+
+/**
  * The cap-enforcing INSERT, in the one form both the first attempt and the
  * replacement batch use.
  *
@@ -75,24 +120,18 @@ interface PendingRowValues {
  * the row insertion are evaluated together — a concurrent POST cannot slip
  * past the cap the way a separate "SELECT COUNT then INSERT" round trip
  * could. `changes === 0` afterward means the WHERE clause's conditions failed
- * (cap reached), NOT a UNIQUE violation (which throws instead). Expired (>72h
- * old) pending rows are excluded from both COUNT(*)s, so a stalled audit job
- * cannot leave stale pending rows permanently blocking new submissions.
- * This keeps expired backlog entries from consuming capacity.
+ * (cap reached), NOT a UNIQUE violation (which throws instead). Rows older
+ * than 72h are excluded from both COUNT(*)s, so a stalled audit job cannot
+ * leave stale pending rows permanently blocking new submissions (audited
+ * mode), and the audit-free mode's caps renew every 72h.
  *
- * `cutoff` is a PARAMETER rather than something this function computes:
- * inside the replacement batch it MUST be the very same value the DELETE was
- * built with (see buildSelfReplaceDelete()'s doc comment).
+ * `cutoff` and `mode` are PARAMETERS rather than something this function
+ * computes: inside the replacement batch both MUST be the very same values
+ * the DELETE was built with (see buildSelfReplaceDelete()'s doc comment).
  */
-function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number): D1PreparedStatement {
+function buildCappedInsert(db: D1Database, row: PendingRowValues, cutoff: number, mode: AuditMode): D1PreparedStatement {
   return db
-    .prepare(
-      `INSERT INTO scores
-         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending', ?14, 0, NULL, ?18, ?19
-       WHERE (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?15) < ?16
-         AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?14 AND created_at > ?15) < ?17`
-    )
+    .prepare(CAPPED_INSERT_SQL[mode])
     .bind(
       row.id,
       CURRENT_SEASON_ID,
@@ -308,6 +347,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     throw err;
   }
 
+  // Resolved exactly once, before the first D1 operation (the rate limit
+  // below), so the first INSERT and any replacement batch are built for the
+  // same mode even if the variable were to change mid-request.
+  const auditMode = resolveAuditMode(env.RANKING_AUDIT_MODE);
+
   // IPv6 is keyed per /64 (one residential allocation), not per address —
   // see normalizeClientIp(). Otherwise a single subscriber rotating through
   // their 2^64 addresses would defeat both the rate limit and the per-IP
@@ -396,7 +440,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
   // score/stage are client claims — structurally validated here, but NOT trusted for ranking
   // correctness until the async audit's verifyPendingEntry() confirms it
-  // against a real resimulation.
+  // against a real resimulation. In audit-free mode nothing ever does: the
+  // claim is stored as the ranked score as-is.
   const scoreResult = validateScore(submission.score);
   if (!scoreResult.ok) {
     return jsonResponse({ error: scoreResult.reason }, 400);
@@ -458,7 +503,10 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   const id = generateShareId();
   const rngKey = computeRngKey(seed);
   const createdAt = Date.now();
-  const submitterHash = tokenParse.kind === 'valid' ? await computeSubmitterHash(tokenParse.token) : null;
+  // Ownership only exists for the self-replacement below, which the
+  // audit-free mode does not support: its rows are verified on arrival, and a
+  // verified row keeps no submitter_hash.
+  const submitterHash = tokenParse.kind === 'valid' && auditMode === 'enabled' ? await computeSubmitterHash(tokenParse.token) : null;
   // The shared 72h boundary: rows with
   // `created_at > cutoff` are fresh and therefore counted; `<= cutoff` are
   // expired and ignored. Same helper the display query, the replay endpoint
@@ -486,7 +534,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   // statement.
   let insertResult;
   try {
-    insertResult = await buildCappedInsert(env.DB, pendingRow, expiryCutoff).run();
+    insertResult = await buildCappedInsert(env.DB, pendingRow, expiryCutoff, auditMode).run();
   } catch (err) {
     // Only a UNIQUE violation means "this run was already submitted
     // (pending or verified)" — see isUniqueConstraintViolation() for the
@@ -529,7 +577,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       // the table behind it.
       batchResults = await env.DB.batch([
         buildSelfReplaceDelete(env.DB, submitterHash, score, rngKey, ipHash, replaceCutoff),
-        buildCappedInsert(env.DB, pendingRow, replaceCutoff),
+        buildCappedInsert(env.DB, pendingRow, replaceCutoff, auditMode),
       ]);
     } catch (err) {
       if (isUniqueConstraintViolation(err)) {
@@ -559,16 +607,28 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return jsonResponse({ error: 'pending submission limit reached, try again later', accepted: false }, 429);
   }
 
+  // The 429/409/500 bodies above are deliberately the same in both modes;
+  // only the success answer says which kind of row was written.
   return jsonResponse(
-    {
-      accepted: true,
-      id,
-      status: 'pending',
-      message: 'provisionally accepted — pending verification',
-      score,
-      stage,
-      durationTicks,
-    },
+    auditMode === 'disabled'
+      ? {
+          accepted: true,
+          id,
+          status: 'verified',
+          message: 'accepted',
+          score,
+          stage,
+          durationTicks,
+        }
+      : {
+          accepted: true,
+          id,
+          status: 'pending',
+          message: 'provisionally accepted — pending verification',
+          score,
+          stage,
+          durationTicks,
+        },
     200
   );
 };

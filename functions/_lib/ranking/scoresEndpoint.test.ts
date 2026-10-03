@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { onRequestPost, isUniqueConstraintViolation } from '../../api/scores';
 import { readBodyWithLimit } from '../readBody';
-import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
+import { CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION } from './season';
 import { computeSubmitterHash } from './submitterToken';
 import { computeIpHash } from './ipHash';
 import { PENDING_EXPIRY_MS } from './pendingGate';
@@ -802,6 +802,213 @@ describe('POST /api/scores self-replacement batch', () => {
     expect(response.status).toBe(200);
     expect(body.accepted).toBe(true);
     expect(batches).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RANKING_AUDIT_MODE.
+//
+// The audited mode is the regression baseline: its statements are pinned
+// below byte-for-byte as they were before the mode existed, so any edit to
+// them fails here rather than silently changing production SQL. The
+// audit-free mode's statements are checked against the same baseline with
+// only the documented differences applied. Cap BOUNDARIES (what the COUNTs
+// actually count) are exercised against a real D1 in
+// auditDisabledCaps.test.ts.
+// ---------------------------------------------------------------------------
+
+/** The capped INSERT exactly as this endpoint sent it before RANKING_AUDIT_MODE existed. */
+const BASELINE_CAPPED_INSERT_SQL = `INSERT INTO scores
+         (id, season_id, ruleset_version, replay_format_version, score, stage, name, x_handle, seed, inputs, duration_ticks, replay_hash, created_at, status, ip_hash, audit_attempts, next_attempt_at, submitter_hash, rng_key)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending', ?14, 0, NULL, ?18, ?19
+       WHERE (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?15) < ?16
+         AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?14 AND created_at > ?15) < ?17`;
+
+/** The self-replacement DELETE exactly as this endpoint sent it before RANKING_AUDIT_MODE existed. */
+const BASELINE_SELF_REPLACE_DELETE_SQL = `DELETE FROM scores
+       WHERE rank_seq = (
+         SELECT c.rank_seq FROM scores AS c
+         WHERE c.status = 'pending'
+           AND c.created_at > ?1
+           AND c.submitter_hash = ?2
+           AND c.score < ?3
+           AND c.rng_key <> ?7
+           AND (
+             (
+               (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?4 AND created_at > ?1) = ?5
+               AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?1) <= ?6
+               AND c.ip_hash = ?4
+             )
+             OR
+             (
+               (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND ip_hash = ?4 AND created_at > ?1) < ?5
+               AND (SELECT COUNT(*) FROM scores WHERE status = 'pending' AND created_at > ?1) = ?6
+             )
+           )
+         ORDER BY c.score ASC, c.rank_seq DESC
+         LIMIT 1
+       )`;
+
+/** The audit-free INSERT is the baseline with exactly two documented edits: the stored status, and status-agnostic COUNTs. */
+const EXPECTED_DISABLED_CAPPED_INSERT_SQL = BASELINE_CAPPED_INSERT_SQL.replace("?13, 'pending', ?14", "?13, 'verified', ?14").replaceAll("WHERE status = 'pending' AND ", 'WHERE ');
+
+function withAuditMode<T extends object>(env: T, mode: string | undefined): T & { RANKING_AUDIT_MODE?: string } {
+  return mode === undefined ? env : { ...env, RANKING_AUDIT_MODE: mode };
+}
+
+describe('POST /api/scores RANKING_AUDIT_MODE: audited mode is unchanged', () => {
+  // Unset is the default production state; 'enabled' and an unknown value
+  // must be indistinguishable from it.
+  it.each([
+    ['unset', undefined],
+    ['enabled', 'enabled'],
+    ['an unknown value', 'maybe'],
+  ])('sends the baseline capped INSERT and answers status:pending when the mode is %s', async (_label, mode) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { env, prepared } = makeRecordingEnv({ firstInsertChanges: 1, clockStart: 1_800_000_000_000 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 250, stage: 3 })), withAuditMode(env, mode) as never);
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ accepted: true, status: 'pending', message: 'provisionally accepted — pending verification', score: 250, stage: 3 });
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].sql).toBe(BASELINE_CAPPED_INSERT_SQL);
+    const args = prepared[0].args;
+    expect(args).toHaveLength(19);
+    expect(args.slice(1, 4)).toEqual([CURRENT_SEASON_ID, RULESET_VERSION, REPLAY_FORMAT_VERSION]);
+    expect(args.slice(4, 9)).toEqual([250, 3, 'TESTER', null, 1264]);
+    expect(args[10]).toBe(SAMPLE_RLE.length);
+    expect(args[12]).toBe(1_800_000_000_000);
+    expect(args[13]).toBe(await computeIpHash('203.0.113.1', IP_HASH_KEY));
+    expect(args.slice(14, 18)).toEqual([1_800_000_000_000 - PENDING_EXPIRY_MS, 200, 3, null]);
+  });
+
+  it('sends the baseline DELETE and INSERT, with the baseline binds, in the self-replacement batch', async () => {
+    const { env, batches } = makeRecordingEnv({ firstInsertChanges: 0, batchChanges: [1, 1], clockStart: 1_800_000_000_000 });
+    await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN, score: 4321 })), withAuditMode(env, 'enabled') as never);
+
+    const { del, ins } = splitBatch(batches[0]);
+    expect(del.sql).toBe(BASELINE_SELF_REPLACE_DELETE_SQL);
+    expect(ins.sql).toBe(BASELINE_CAPPED_INSERT_SQL);
+    const cutoff = 1_800_000_000_000 - PENDING_EXPIRY_MS;
+    expect(del.args).toEqual([cutoff, await computeSubmitterHash(VALID_TOKEN), 4321, ins.args[13], 3, 200, ins.args[18]]);
+    expect(ins.args[14]).toBe(cutoff);
+    expect(ins.args[17]).toBe(await computeSubmitterHash(VALID_TOKEN));
+  });
+});
+
+describe('POST /api/scores RANKING_AUDIT_MODE=disabled', () => {
+  it.each([['disabled'], ['DISABLED'], ['  disabled  ']])('stores a verified row and answers status:verified for %j', async (mode) => {
+    const { env, prepared } = makeRecordingEnv({ firstInsertChanges: 1 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 250, stage: 3 })), withAuditMode(env, mode) as never);
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ accepted: true, id: body.id, status: 'verified', message: 'accepted', score: 250, stage: 3, durationTicks: SAMPLE_RLE.length });
+    expect(typeof body.id).toBe('string');
+    expect(prepared[0].sql).toBe(EXPECTED_DISABLED_CAPPED_INSERT_SQL);
+    expect(prepared[0].sql).toContain("'verified'");
+    expect(prepared[0].sql).not.toContain("'pending'");
+  });
+
+  it('binds exactly the values the audited mode binds — the mode changes the SQL, never the bind order', async () => {
+    const clockStart = 1_800_000_000_000;
+    const audited = makeRecordingEnv({ firstInsertChanges: 1, clockStart });
+    await callHandler(makeRequest(validShapedBody()), audited.env as never);
+    const auditedArgs = audited.prepared[0].args;
+    vi.restoreAllMocks();
+
+    const free = makeRecordingEnv({ firstInsertChanges: 1, clockStart });
+    await callHandler(makeRequest(validShapedBody()), withAuditMode(free.env, 'disabled') as never);
+    const freeArgs = free.prepared[0].args;
+
+    // Everything but the random public id is identical: same row, same
+    // 72h cutoff (?15), same caps (?16 = 200, ?17 = 3).
+    expect(freeArgs.slice(1)).toEqual(auditedArgs.slice(1));
+    expect(freeArgs[14]).toBe(clockStart - PENDING_EXPIRY_MS);
+    expect(freeArgs[15]).toBe(200);
+    expect(freeArgs[16]).toBe(3);
+  });
+
+  it('keeps no submitter_hash on the verified row and never attempts a self-replacement batch', async () => {
+    const { env, prepared, batches } = makeRecordingEnv({ firstInsertChanges: 0 });
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), withAuditMode(env, 'disabled') as never);
+    expect(response.status).toBe(429);
+    expect(body).toEqual({ error: 'pending submission limit reached, try again later', accepted: false });
+    expect(prepared[0].args[17]).toBeNull();
+    expect(batches).toHaveLength(0);
+  });
+
+  it('answers the cap, duplicate and failure cases with the same bodies as the audited mode', async () => {
+    const cases: { opts: Parameters<typeof makeEnv>[0]; status: number; body: Record<string, unknown> }[] = [
+      { opts: { runImpl: () => ({ meta: { changes: 0 } }) }, status: 429, body: { error: 'pending submission limit reached, try again later', accepted: false } },
+      {
+        opts: {
+          runImpl: () => {
+            throw new Error('D1_ERROR: UNIQUE constraint failed: scores.rng_key');
+          },
+        },
+        status: 409,
+        body: { error: 'duplicate replay', accepted: false },
+      },
+      {
+        opts: {
+          runImpl: () => {
+            throw new Error('D1_ERROR: something else');
+          },
+        },
+        status: 500,
+        body: { error: 'internal error', accepted: false },
+      },
+    ];
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const c of cases) {
+      const audited = await callHandler(makeRequest(validShapedBody()), makeEnv(c.opts));
+      const free = await callHandler(makeRequest(validShapedBody()), withAuditMode(makeEnv(c.opts), 'disabled'));
+      expect(audited.response.status).toBe(c.status);
+      expect(free.response.status).toBe(c.status);
+      expect(audited.body).toEqual(c.body);
+      expect(free.body).toEqual(c.body);
+    }
+  });
+
+  it('still derives duration_ticks server-side and never calls verifyReplay()', async () => {
+    const verifyModule = await import('./verifyReplay');
+    const spy = vi.spyOn(verifyModule, 'verifyReplay');
+    const { response, body } = await callHandler(makeRequest(validShapedBody()), withAuditMode(makeEnv({}), 'disabled'));
+    expect(response.status).toBe(200);
+    expect(body.durationTicks).toBe(SAMPLE_RLE.length);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('applies the same pre-gate (verified 10th place) as the audited mode', async () => {
+    let dbTouched = false;
+    const env = withAuditMode(makeEnv({ thresholdScore: 100, runImpl: () => ((dbTouched = true), { meta: { changes: 1 } }) }), 'disabled');
+    const { response, body } = await callHandler(makeRequest(validShapedBody({ score: 100 })), env);
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ accepted: false, reason: 'out-of-range' });
+    expect(dbTouched).toBe(false);
+  });
+});
+
+describe('POST /api/scores resolves RANKING_AUDIT_MODE once per request', () => {
+  it('reads the variable once, before any D1 statement, and builds the whole batch for that one value', async () => {
+    const { env, prepared, rateLimits, batches } = makeRecordingEnv({ firstInsertChanges: 0, batchChanges: [1, 1] });
+    const reads: number[] = [];
+    // A value that changes on every read: if the handler re-read it between
+    // the first INSERT and the batch, the two would disagree.
+    const flipping = Object.defineProperty({ ...env }, 'RANKING_AUDIT_MODE', {
+      get() {
+        reads.push(rateLimits.length + prepared.length);
+        return reads.length === 1 ? 'enabled' : 'disabled';
+      },
+    });
+    const { response } = await callHandler(makeRequest(validShapedBody({ submitterToken: VALID_TOKEN })), flipping as never);
+
+    expect(response.status).toBe(200);
+    expect(reads).toEqual([0]); // once, and before the rate-limit UPSERT
+    const { del, ins } = splitBatch(batches[0]);
+    expect(prepared[0].sql).toBe(BASELINE_CAPPED_INSERT_SQL);
+    expect(ins.sql).toBe(BASELINE_CAPPED_INSERT_SQL);
+    expect(del.sql).toBe(BASELINE_SELF_REPLACE_DELETE_SQL);
   });
 });
 

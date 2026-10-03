@@ -13,3 +13,11 @@
 # pages secret put RANKING_IP_HASH_KEY`), set to a real random value and
 # never checked into source control — see docs/ranking-audit-runbook.md.
 RANKING_IP_HASH_KEY=local-dev-only-change-me
+
+# Optional. `disabled` makes POST /api/scores store new submissions as
+# `verified` right away, with no asynchronous audit (the client's score is
+# trusted). Unset, empty or any other value keeps the audited behavior
+# (`pending`, confirmed later by scripts/audit/). Leave it commented out
+# unless you are testing the audit-free mode — see
+# docs/ranking-audit-runbook.md.
+# RANKING_AUDIT_MODE=disabled

@@ -18,7 +18,13 @@ export interface ScoreRow {
   duration_ticks: number;
   replay_hash: string;
   created_at: number;
-  /** 'verified' is ranking-eligible; 'pending' is accepted but not yet audited. */
+  /**
+   * 'verified' is ranking-eligible; 'pending' is accepted but not yet audited.
+   * 'verified' means "on the ranking", not necessarily "audited": rows
+   * written while RANKING_AUDIT_MODE=disabled are stored verified with the
+   * client's claimed score and were never resimulated
+   * (functions/_lib/ranking/auditMode.ts).
+   */
   status: 'verified' | 'pending';
   /** HMAC-SHA-256(CF-Connecting-IP) — null for rows backfilled from the pre-async-audit (always-verified) era, which predate this column. */
   ip_hash: string | null;

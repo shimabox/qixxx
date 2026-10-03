@@ -39,4 +39,13 @@ export interface Env {
    * rather than trusting this field's mere presence in the type.
    */
   RANKING_IP_HASH_KEY?: string;
+  /**
+   * `disabled` stores new ranking submissions as verified without the
+   * asynchronous audit; anything else (including unset) keeps the audit.
+   * Read only through functions/_lib/ranking/auditMode.ts's
+   * resolveAuditMode(), never compared directly. A Cloudflare Pages
+   * Production variable in production (see docs/ranking-audit-runbook.md),
+   * `.dev.vars` locally.
+   */
+  RANKING_AUDIT_MODE?: string;
 }

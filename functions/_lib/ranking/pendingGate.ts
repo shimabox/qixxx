@@ -25,6 +25,10 @@ export const PENDING_EXPIRY_MS = 72 * 60 * 60 * 1000;
  * - GET /api/ranking's displayEntries candidate filter (fresh only)
  * - POST /api/scores's pending-cap COUNT subqueries (fresh only, so a
  * stalled audit's backlog can't block new submissions)
+ * - POST /api/scores's audit-free-mode cap COUNT subqueries
+ * (RANKING_AUDIT_MODE=disabled): the same 72h window, counting every row
+ * written in it whatever its status, so the same 200/3 caps bound how many
+ * unaudited verified rows can land per window
  * - GET /api/ranking/:id/replay's judgement 2 (expired pending -> 404)
  * - the audit job's opening expired-pending sweep (expired -> DELETE)
  *
