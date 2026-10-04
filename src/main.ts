@@ -5,6 +5,7 @@ import {
   TouchControls,
   attachTapToConfirm,
   isTouchCapableDevice,
+  resolveNarrowSideHudFontSize,
   resolveTouchLayout,
 } from './input/touch';
 import { SfxEngine } from './audio/sfx';
@@ -136,11 +137,13 @@ function getCanvasElement(wrap: HTMLDivElement): HTMLCanvasElement {
 // Holds one, two, or three line elements (see getHudLineElement() below) —
 // never wraps text itself. fitCanvasToViewport() reads this row's *height*
 // to reserve space for the canvas below it, so the number of lines is
-// decided explicitly (updateHudMode(), keyed only off window.innerWidth)
+// decided explicitly (updateHudMode(), keyed only off the viewport geometry)
 // rather than left to the browser's text wrapping, which would depend on
 // the row's own *width* — itself derived from this row's height — creating
 // a circular width<->height layout dependency between the HUD row and the
-// canvas.
+// canvas. The font-size clamp below is overridden only by index.html's
+// narrow-side rule, whose size depends only on window.innerWidth and the
+// touch layout (see updateTouchLayout()).
 function getHudElement(row: HTMLDivElement): HTMLDivElement {
   let hud = document.getElementById('hud') as HTMLDivElement | null;
   if (!hud) {
@@ -511,6 +514,18 @@ function updateTouchLayout(): void {
     viewportWidth: window.innerWidth,
     viewportHeight: window.innerHeight,
   });
+  // Updated on every call, not just on a layout flip: the center column (and
+  // with it this font size) changes while resizing within side mode.
+  const narrowSideHudFontSize = resolveNarrowSideHudFontSize(layout, window.innerWidth);
+  if (narrowSideHudFontSize === null) {
+    delete document.body.dataset.touchNarrowSide;
+  } else {
+    document.documentElement.style.setProperty(
+      '--touch-narrow-side-hud-font',
+      `${narrowSideHudFontSize}px`,
+    );
+    document.body.dataset.touchNarrowSide = '';
+  }
   if (document.body.dataset.touchLayout === layout) return;
 
   document.body.dataset.touchLayout = layout;
@@ -566,9 +581,11 @@ function measureNonHudRowWidth(): number {
 }
 
 // The natural (unclipped) on-screen width of the single-line HUD text at
-// #hud's *current* font-size — itself a function of window.innerWidth alone
-// (the clamp(10px, 3.2vw, 16px) in getHudElement()), never of hudRow's own
-// width, so this is safe to measure before hudRow has been sized for real.
+// #hud's *current* font-size — itself a function of window.innerWidth and the
+// touch layout alone (the clamp(10px, 3.2vw, 16px) in getHudElement(), or the
+// narrow-side size set by updateTouchLayout(), which fitCanvasToViewport()
+// runs first), never of hudRow's own width, so this is safe to measure
+// before hudRow has been sized for real.
 // Combines config.ts's HUD_WORST_CASE_STATS_TEXT (a deliberately generous
 // worst-case STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN digit budget — see that
 // constant's doc comment) with the mode prefix (runMode.ts's
@@ -604,10 +621,10 @@ function measureRequiredSingleLineWidth(): number {
 // caller, updateHudMode(), always overwrites their real final display state
 // right after based on the actual decision below). A single-line row's
 // height depends only on font-size, which — as measureRequiredSingleLineWidth()
-// documents — depends only on window.innerWidth, never on the row's own
-// width, so this measurement is valid regardless of whatever hudRow.style.width
-// currently holds (stale from a previous call, or not yet set at all on the
-// very first one). Feeding that height into predictCanvasScale() (the exact
+// documents — depends only on window.innerWidth and the touch layout, never
+// on the row's own width, so this measurement is valid regardless of whatever
+// hudRow.style.width currently holds (stale from a previous call, or not yet
+// set at all on the very first one). Feeding that height into predictCanvasScale() (the exact
 // math fitCanvasToViewport() itself uses) gives the width a single-line
 // hudRow would actually end up with; measureNonHudRowWidth()'s fixed-size
 // siblings are subtracted to get #hud's own share, then compared against

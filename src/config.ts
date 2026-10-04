@@ -387,5 +387,25 @@ export const TOUCH_DPAD_HIT_MARGIN = 16;
 // Ignore touches near the d-pad center so an ambiguous press does not move.
 export const TOUCH_DPAD_DEAD_ZONE_RADIUS = 16;
 export const TOUCH_SIDE_COLUMN_PADDING = 8;
+// Vertical padding (CSS px) above and below the bottom-mode control row.
+// touch.ts publishes it as --touch-bottom-pad-y for index.html and also uses
+// it to estimate the bottom-mode field size.
+export const TOUCH_BOTTOM_CONTROLS_PADDING_Y = 10;
+// A touch landscape whose center column is at least this wide always uses
+// side mode. Narrower touch landscapes compare the estimated field size of
+// side and bottom mode and take the larger one (touch.ts's
+// resolveTouchLayout()).
 export const TOUCH_SIDE_MIN_FIELD_WIDTH = 240;
+// Height (CSS px) reserved for the HUD row plus its gap above the field when
+// estimating the field size of either touch layout. Measured with a 3-line
+// HUD at 16px: the row is 54px in Chromium and 57px in WebKit, plus main.ts's
+// 6px HUD_GAP_PX; the taller WebKit value is used.
+export const TOUCH_LAYOUT_HUD_RESERVE_HEIGHT = 63;
+// In a side layout whose center column is narrower than
+// TOUCH_SIDE_MIN_FIELD_WIDTH, the HUD font shrinks so that this many ems fit
+// in the column (but never below TOUCH_NARROW_SIDE_HUD_MIN_FONT_SIZE). The
+// longest normal-digit HUD line is about 18.7em in a monospace font, and
+// two 6-digit scores make it about 19.9em.
+export const TOUCH_NARROW_SIDE_HUD_LINE_EM = 20;
+export const TOUCH_NARROW_SIDE_HUD_MIN_FONT_SIZE = 10;
 export const TOUCH_CONTROLS_OPACITY = 0.55;

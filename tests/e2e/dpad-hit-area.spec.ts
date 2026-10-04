@@ -212,7 +212,11 @@ test.describe('side layout minimum width', () => {
     expect((await keyLog(page)).filter(({ code }) => MOVEMENT_CODES.includes(code))).toEqual([]);
     if (evidenceDir) await page.screenshot({ path: `${evidenceDir}/dpad-704x300.png` });
 
+    // Below 704px the layout with the larger field wins: side for a short
+    // landscape, bottom when there is enough height below the field.
     await page.setViewportSize({ width: 703, height: 300 });
+    await expectLayout(page, 'side');
+    await page.setViewportSize({ width: 640, height: 480 });
     await expectLayout(page, 'bottom');
   });
 });
