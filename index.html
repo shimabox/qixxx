@@ -58,7 +58,7 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 10px 8px;
+        padding: var(--touch-bottom-pad-y) 8px;
         width: 100%;
       }
 
@@ -142,6 +142,13 @@
 
       body[data-touch-layout='side'] #credit-link {
         font-size: 10px !important;
+      }
+
+      /* A side layout with a narrow center column (main.ts sets the
+         attribute and --touch-narrow-side-hud-font) shrinks the HUD so its
+         lines fit the field-wide HUD row. */
+      body[data-touch-layout='side'][data-touch-narrow-side] #hud {
+        font-size: var(--touch-narrow-side-hud-font) !important;
       }
 
       body[data-touch-layout='side'] #game-root {

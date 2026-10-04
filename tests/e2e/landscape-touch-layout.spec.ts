@@ -154,6 +154,119 @@ test.describe('Pixel 5 portrait touch layout', () => {
   });
 });
 
+async function hudFontSize(page: Page): Promise<number> {
+  return page
+    .locator('#hud')
+    .evaluate((hud) => Number.parseFloat(window.getComputedStyle(hud).fontSize));
+}
+
+async function expectBottomHudOrder(page: Page): Promise<void> {
+  expect(
+    await page.locator('#hud-row > *').evaluateAll((children) => children.map((child) => child.id)),
+  ).toEqual(['hud', 'credit-link', 'mute-button']);
+}
+
+// Narrow touch landscapes (center column below TOUCH_SIDE_MIN_FIELD_WIDTH)
+// pick side mode because it gives a larger field than bottom mode.
+for (const viewport of [
+  { width: 667, height: 375 },
+  { width: 667, height: 320 },
+]) {
+  test.describe(`narrow touch landscape ${viewport.width}x${viewport.height}`, () => {
+    test.use({ viewport, hasTouch: true });
+
+    test('uses side mode with a readable field and a shrunk HUD', async ({ page }) => {
+      await page.goto(APP_URL);
+      await expectLayout(page, 'side');
+      await expectSideGeometry(page);
+
+      const canvas = await page.locator('#game-canvas').boundingBox();
+      expect(canvas!.width).toBeGreaterThanOrEqual(200);
+      expect(canvas!.height).toBeGreaterThanOrEqual(150);
+
+      const fontSize = await hudFontSize(page);
+      expect(fontSize).toBeLessThan(16);
+      expect(fontSize).toBeGreaterThanOrEqual(10);
+      if (evidenceDir) {
+        await page.screenshot({
+          path: `${evidenceDir}/narrow-landscape-${viewport.width}x${viewport.height}.png`,
+        });
+      }
+    });
+
+    test('keeps normal-digit HUD lines unclipped', async ({ page }) => {
+      await page.goto(APP_URL);
+      await expectLayout(page, 'side');
+      const unclipped = await page.evaluate(() => {
+        const lines = ['hud-line1', 'hud-line2', 'hud-line3'].map(
+          (id) => document.getElementById(id) as HTMLElement,
+        );
+        const texts = [
+          'STAGE 12  SCORE: 54321  HI: 98765',
+          'OCCUPANCY: 75%  LIVES: 3  x4',
+          'TIME 3:00.0',
+        ];
+        lines.forEach((line, index) => {
+          line.textContent = texts[index];
+        });
+        return lines.map((line) => line.scrollWidth <= line.clientWidth);
+      });
+      expect(unclipped).toEqual([true, true, true]);
+    });
+  });
+}
+
+test.describe('touch portrait 375x667', () => {
+  test.use({ viewport: { width: 375, height: 667 }, hasTouch: true });
+
+  test('keeps bottom mode with controls matching the layout estimate', async ({ page }) => {
+    await page.goto(APP_URL);
+    await expectLayout(page, 'bottom');
+    await expectBottomHudOrder(page);
+    // touch.ts estimates the bottom control row as 3 buttons + 2 gaps + padding.
+    const controls = await page.locator('#touch-controls').boundingBox();
+    expect(controls!.height).toBe(220);
+  });
+});
+
+test.describe('touch landscape 812x375', () => {
+  test.use({ viewport: { width: 812, height: 375 }, hasTouch: true });
+
+  test('keeps side mode with the default HUD font', async ({ page }) => {
+    await page.goto(APP_URL);
+    await expectLayout(page, 'side');
+    await expectSideGeometry(page);
+    expect(await hudFontSize(page)).toBe(16);
+  });
+});
+
+test.describe('narrow touch landscape rotation', () => {
+  test.use({ viewport: { width: 667, height: 375 }, hasTouch: true });
+
+  test('tracks landscape, portrait, and landscape changes on one page', async ({ page }) => {
+    await page.goto(APP_URL);
+    await expectLayout(page, 'side');
+    await expectSideGeometry(page);
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    await expectLayout(page, 'bottom');
+    await expectBottomHudOrder(page);
+    const positions = await page.evaluate(() => ({
+      canvasBottom: document.querySelector('#game-canvas')!.getBoundingClientRect().bottom,
+      controlsTop: document.querySelector('#touch-controls')!.getBoundingClientRect().top,
+      hudFontSize: Number.parseFloat(
+        window.getComputedStyle(document.querySelector('#hud')!).fontSize,
+      ),
+    }));
+    expect(positions.controlsTop).toBeGreaterThanOrEqual(positions.canvasBottom);
+    expect(positions.hudFontSize).toBe(12);
+
+    await page.setViewportSize({ width: 667, height: 375 });
+    await expectLayout(page, 'side');
+    await expectSideGeometry(page);
+  });
+});
+
 test('keeps touch controls hidden on desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(APP_URL);

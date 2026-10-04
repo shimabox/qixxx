@@ -1,8 +1,10 @@
 // Virtual touch controls (docs/plan.md §5.2/§12.1/§12.8): a d-pad on the
 // left plus FAST/SLOW buttons on the right, built as plain DOM elements.
 // Portrait uses a bottom row; sufficiently wide touch landscapes use side
-// columns so the field can consume the viewport height. DOM-dependent by
-// design, exactly like input/keyboard.ts.
+// columns so the field can consume the viewport height. Narrower touch
+// landscapes use whichever of the two layouts gives the larger field (see
+// resolveTouchLayout). DOM-dependent by design, exactly like
+// input/keyboard.ts.
 //
 // GB-style left/right split (docs/plan.md §12.1 "タッチパッドのGB風左右
 // 分離"): the d-pad and the FAST/SLOW cluster are two independent groups
@@ -32,10 +34,16 @@
 // without interfering with simultaneous movement + action input.
 import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS } from './keys';
 import {
+  CANVAS_HEIGHT,
+  CANVAS_WIDTH,
+  TOUCH_BOTTOM_CONTROLS_PADDING_Y,
   TOUCH_BUTTON_SIZE,
   TOUCH_DPAD_DEAD_ZONE_RADIUS,
   TOUCH_DPAD_GAP,
   TOUCH_DPAD_HIT_MARGIN,
+  TOUCH_LAYOUT_HUD_RESERVE_HEIGHT,
+  TOUCH_NARROW_SIDE_HUD_LINE_EM,
+  TOUCH_NARROW_SIDE_HUD_MIN_FONT_SIZE,
   TOUCH_SIDE_COLUMN_PADDING,
   TOUCH_SIDE_MIN_FIELD_WIDTH,
 } from '../config';
@@ -66,6 +74,10 @@ const ACTION_CLUSTER_SIZE = TOUCH_BUTTON_SIZE * 2 + TOUCH_DPAD_GAP * 2;
 const SIDE_PADDING = Math.max(TOUCH_SIDE_COLUMN_PADDING, TOUCH_DPAD_HIT_MARGIN);
 const SIDE_COLUMN_WIDTH =
   TOUCH_BUTTON_SIZE * 3 + TOUCH_DPAD_GAP * 2 + SIDE_PADDING * 2;
+// Height of the bottom-mode control row: the d-pad (taller than the action
+// cluster) plus the row's vertical padding.
+const BOTTOM_CONTROLS_HEIGHT =
+  TOUCH_BUTTON_SIZE * 3 + TOUCH_DPAD_GAP * 2 + TOUCH_BOTTOM_CONTROLS_PADDING_Y * 2;
 
 export type DpadDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -125,17 +137,59 @@ export interface TouchLayoutInput {
   viewportHeight: number;
 }
 
-/** Resolve touch layout solely from the current device and viewport geometry. */
+/**
+ * Estimated on-screen width (CSS px) of the 4:3 field scaled up to fit the
+ * given layout, or 0 when it can't fit at all. Only used to choose a layout;
+ * main.ts's fitCanvasToViewport() still sizes the canvas from the real DOM.
+ */
+export function estimateFieldWidth(
+  layout: TouchLayout,
+  viewportWidth: number,
+  viewportHeight: number,
+): number {
+  const availW = layout === 'side' ? viewportWidth - 2 * SIDE_COLUMN_WIDTH : viewportWidth;
+  const availH =
+    viewportHeight -
+    TOUCH_LAYOUT_HUD_RESERVE_HEIGHT -
+    (layout === 'bottom' ? BOTTOM_CONTROLS_HEIGHT : 0);
+  if (availW <= 0 || availH <= 0) return 0;
+  return CANVAS_WIDTH * Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT);
+}
+
+/**
+ * Resolve touch layout solely from the current device and viewport geometry.
+ * Touch landscapes with a center column of at least TOUCH_SIDE_MIN_FIELD_WIDTH
+ * always use side mode, so tablets keep their controls beside the field.
+ * Narrower touch landscapes take whichever layout gives the larger field
+ * (ties go to bottom, so side never gets a center column of 0 or less).
+ */
 export function resolveTouchLayout({
   touchCapable,
   viewportWidth,
   viewportHeight,
 }: TouchLayoutInput): TouchLayout {
-  return touchCapable &&
-    viewportWidth > viewportHeight &&
-    viewportWidth - 2 * SIDE_COLUMN_WIDTH >= TOUCH_SIDE_MIN_FIELD_WIDTH
+  if (!touchCapable || viewportWidth <= viewportHeight) return 'bottom';
+  if (viewportWidth - 2 * SIDE_COLUMN_WIDTH >= TOUCH_SIDE_MIN_FIELD_WIDTH) return 'side';
+  return estimateFieldWidth('side', viewportWidth, viewportHeight) >
+    estimateFieldWidth('bottom', viewportWidth, viewportHeight)
     ? 'side'
     : 'bottom';
+}
+
+/**
+ * HUD font size (CSS px) for a side layout whose center column is narrower
+ * than TOUCH_SIDE_MIN_FIELD_WIDTH, or null when the HUD keeps its default
+ * size. Proportional to the center column width, so the HUD lines fit the
+ * field-wide HUD row; depends only on the layout and viewport width.
+ */
+export function resolveNarrowSideHudFontSize(
+  layout: TouchLayout,
+  viewportWidth: number,
+): number | null {
+  if (layout !== 'side') return null;
+  const centerWidth = viewportWidth - 2 * SIDE_COLUMN_WIDTH;
+  if (centerWidth >= TOUCH_SIDE_MIN_FIELD_WIDTH) return null;
+  return Math.max(TOUCH_NARROW_SIDE_HUD_MIN_FONT_SIZE, centerWidth / TOUCH_NARROW_SIDE_HUD_LINE_EM);
 }
 
 /** True on devices where a touch-style pointer is the primary input (docs/plan.md §5.2). */
@@ -179,6 +233,10 @@ export class TouchControls {
     document.documentElement.style.setProperty(
       '--touch-dpad-hit-margin',
       `${TOUCH_DPAD_HIT_MARGIN}px`,
+    );
+    document.documentElement.style.setProperty(
+      '--touch-bottom-pad-y',
+      `${TOUCH_BOTTOM_CONTROLS_PADDING_Y}px`,
     );
   }
 
