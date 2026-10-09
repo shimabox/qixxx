@@ -666,6 +666,11 @@ test.describe('name-input submission flow', () => {
 
     // ...and the fakes really were dominating the board the player saw, so
     // the "form still opened" half above is not a vacuous pass.
+    // SUBMIT does not blur itself on click, and Chromium (>= 156) can keep
+    // focus on the just-disabled/hidden button until the next render. A Space
+    // landing on it is swallowed by stopKeyPropagation / the
+    // interactive-element filter, so move focus off it first.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
@@ -895,6 +900,11 @@ test.describe('name-input submission flow', () => {
     await expect(page.getByText('SUBMITTING...')).toBeVisible();
 
     // --- Run B: back to Title, play again, get a fresh offer ---
+    // SUBMIT is disabled by the click above, but Chromium (>= 156) keeps focus
+    // on the disabled button until the next render. A Space pressed in that
+    // window lands on the button and is swallowed by stopKeyPropagation /
+    // the interactive-element filter, so Title is never reached.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space');
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await reachGameoverDeterministically(page);
@@ -1738,6 +1748,11 @@ test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audi
     expect(await replayResponse.json()).toMatchObject({ seed: SEED_VALUE, status: 'verified' });
 
     // ...and through the UI: listed, and its REPLAY plays.
+    // SUBMIT does not blur itself on click, and Chromium (>= 156) can keep
+    // focus on the just-disabled/hidden button until the next render. A Space
+    // landing on it is swallowed by stopKeyPropagation / the
+    // interactive-element filter, so move focus off it first.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
