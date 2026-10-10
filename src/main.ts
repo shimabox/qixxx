@@ -15,6 +15,8 @@ import { loadHighScore, saveHighScore } from './storage/highscore';
 import { loadMuted, saveMuted } from './storage/settings';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
+import { ReplayStageClearHold } from './replayStageClearHold';
+import { stageClearText } from './stageClearText';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import {
@@ -32,6 +34,7 @@ import {
   HUD_TIME_WARNING_COLOR,
   RULESET_VERSION,
   REPLAY_FORMAT_VERSION,
+  REPLAY_STAGE_CLEAR_HOLD_TICKS,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -342,6 +345,9 @@ let replayAutoAdvance = true;
 // Test-visibility only (see the onReplayAutoAdvanceChange wiring in init()):
 // a capped record of the auto-advance transitions, exposed on window.__game__.
 const replayAutoAdvanceLog: boolean[] = [];
+// Keeps a cleared stage on screen for REPLAY_STAGE_CLEAR_HOLD_TICKS before
+// playback moves on — see update()'s replay branch.
+const replayStageClearHold = new ReplayStageClearHold(REPLAY_STAGE_CLEAR_HOLD_TICKS);
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -642,6 +648,7 @@ function enterReplayMode(engine: ReplayEngine): void {
   viewMode = 'replay';
   replayEngine = engine;
   replayAutoAdvance = true;
+  replayStageClearHold.reset();
   // Replays are silent, so stop any in-progress
   // continuous draw tone left over from live play — otherwise the live
   // run's audio state leaks into playback.
@@ -657,6 +664,8 @@ function enterReplayMode(engine: ReplayEngine): void {
 function exitReplayMode(): void {
   viewMode = 'live';
   replayEngine = null;
+  // A replay left mid-hold must not shorten the next one's first STAGE CLEAR.
+  replayStageClearHold.reset();
   lastHudStage = -1;
   lastScreenText = null;
 }
@@ -927,8 +936,23 @@ function update(): void {
   // plays.
   if (viewMode === 'replay') {
     if (replayEngine && replayAutoAdvance) {
-      const advanced = replayEngine.stepTick();
       const replaySession = replayEngine.getSession();
+      // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
+      // the next stage's first tick in one call, so calling it every tick
+      // replaces a cleared stage before a single frame can show it. While the
+      // hold lasts the replay session is simply left alone — not even a
+      // no-op update() — so its tick count (and with it the HUD's TIME),
+      // score, RNG state and position in the recorded input all stand still,
+      // and the tick that ends the hold makes the very same stepTick() call
+      // an unheld playback would have made. Never reached while a skip is in
+      // charge of the engine (replayAutoAdvance is false then), so the hold
+      // can't count down behind a skip either.
+      const holding = replayStageClearHold.shouldHold({
+        status: replaySession.getStatus(),
+        finished: replayEngine.isFinished(),
+      });
+      if (holding) return;
+      const advanced = replayEngine.stepTick();
       // Drain (not forward anywhere) every tick, same as a live run —
       // GameSession's own doc comments warn these queues grow unbounded
       // otherwise.
@@ -1034,10 +1058,10 @@ function renderFrame(): void {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
     // modal's
     // "POST TO X" button assumes a *live* run's just-finished score
-    // (see src/ui/gameOverModal.ts). A replay's own session can only ever be
-    // 'playing' or 'gameover' from the outside (ReplayEngine.stepTick()
-    // always auto-confirms all the way through Title/StageClear before
-    // returning) — the end-of-run line below covers the other case.
+    // (see src/ui/gameOverModal.ts). A replay's own session is never seen on
+    // 'title' (ReplayEngine confirms through it before the first frame), so
+    // that leaves 'playing' (no overlay), 'stageclear' and 'gameover' — the
+    // two overlay lines below.
     updateHud();
     // Keeps the control bar's "STAGE n / N" line in step with the frame being
     // drawn (see RankingUI.syncReplayStatus()).
@@ -1052,10 +1076,18 @@ function renderFrame(): void {
     // at an arbitrary word, so the layout is fixed here instead of left to
     // the browser.
     const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
-    const text =
-      status === 'gameover'
-        ? `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`
-        : '';
+    let text = '';
+    if (status === 'gameover') {
+      text = `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`;
+    } else if (status === 'stageclear' && replayAutoAdvance && replayEngine && !replayEngine.isFinished()) {
+      // Shown for as long as update() holds the cleared stage, with no
+      // "press any key" line: playback moves on by itself. The extra
+      // conditions keep it to exactly the frames update() is holding on,
+      // since anywhere else it would only flash for a single frame: a skip
+      // (replayAutoAdvance false) can yield between chunks on a StageClear,
+      // and a recording whose input stops on one is never held.
+      text = stageClearText(activeSession, { withPrompt: false });
+    }
     if (text !== lastScreenText) {
       lastScreenText = text;
       screen.textContent = text;
@@ -1132,10 +1164,8 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
   switch (status) {
     case 'title':
       return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
-    case 'stageclear': {
-      const splitNote = session.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
-      return `STAGE ${session.getStage()} CLEAR!${splitNote}\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE`;
-    }
+    case 'stageclear':
+      return stageClearText(session, { withPrompt: true });
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
       // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's
