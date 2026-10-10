@@ -1,0 +1,37 @@
+[2026-08-17T16:17:53.117Z] [pid 94621] START single-process serial measurement (node v20.19.5)
+[2026-08-17T16:17:53.122Z] [pid 94621] building fixtures...
+[2026-08-17T16:17:56.072Z] [pid 94621] fixtures built: A=3B Bsuccess=808B (claims=100) Brejected=816B (claims=101) Realistic=3B
+[2026-08-17T16:17:56.073Z] [pid 94621] [A] warmup (10 calls, serial)...
+[2026-08-17T16:17:56.283Z] [pid 94621] [A] measuring (100 calls, serial)...
+[2026-08-17T16:17:56.576Z] [pid 94621] [A] 20/100 done (last=14.3ms, ok ticks=715 claims=0)
+[2026-08-17T16:17:56.871Z] [pid 94621] [A] 40/100 done (last=14.3ms, ok ticks=715 claims=0)
+[2026-08-17T16:17:57.184Z] [pid 94621] [A] 60/100 done (last=9.0ms, ok ticks=715 claims=0)
+[2026-08-17T16:17:57.539Z] [pid 94621] [A] 80/100 done (last=7.8ms, ok ticks=715 claims=0)
+[2026-08-17T16:17:57.824Z] [pid 94621] [A] 100/100 done (last=8.7ms, ok ticks=715 claims=0)
+[2026-08-17T16:17:57.825Z] [pid 94621] [A] p99=41.51ms mean=15.36ms min=7.65ms max=47.54ms outcomes=ok ticks=715 claims=0
+[2026-08-17T16:17:57.825Z] [pid 94621] [Bsuccess] warmup (10 calls, serial)...
+[2026-08-17T16:18:11.054Z] [pid 94621] [Bsuccess] measuring (100 calls, serial)...
+[2026-08-17T16:18:37.706Z] [pid 94621] [Bsuccess] 20/100 done (last=1477.8ms, ok ticks=10800 claims=100)
+[2026-08-17T16:19:05.382Z] [pid 94621] [Bsuccess] 40/100 done (last=1352.2ms, ok ticks=10800 claims=100)
+[2026-08-17T16:19:32.771Z] [pid 94621] [Bsuccess] 60/100 done (last=1330.9ms, ok ticks=10800 claims=100)
+[2026-08-17T16:20:00.186Z] [pid 94621] [Bsuccess] 80/100 done (last=1323.7ms, ok ticks=10800 claims=100)
+[2026-08-17T16:20:27.449Z] [pid 94621] [Bsuccess] 100/100 done (last=1349.9ms, ok ticks=10800 claims=100)
+[2026-08-17T16:20:27.450Z] [pid 94621] [Bsuccess] p99=1563.73ms mean=1363.81ms min=1265.48ms max=1624.69ms outcomes=ok ticks=10800 claims=100
+[2026-08-17T16:20:27.451Z] [pid 94621] [Brejected] warmup (10 calls, serial)...
+[2026-08-17T16:20:40.691Z] [pid 94621] [Brejected] measuring (100 calls, serial)...
+[2026-08-17T16:21:07.047Z] [pid 94621] [Brejected] 20/100 done (last=1276.4ms, rejected:max-verified-claims-exceeded ticks=1467)
+[2026-08-17T16:21:35.817Z] [pid 94621] [Brejected] 40/100 done (last=1364.5ms, rejected:max-verified-claims-exceeded ticks=1467)
+[2026-08-17T16:22:11.143Z] [pid 94621] [Brejected] 60/100 done (last=2050.3ms, rejected:max-verified-claims-exceeded ticks=1467)
+[2026-08-17T16:22:51.620Z] [pid 94621] [Brejected] 80/100 done (last=2106.7ms, rejected:max-verified-claims-exceeded ticks=1467)
+[2026-08-17T16:23:29.041Z] [pid 94621] [Brejected] 100/100 done (last=2037.5ms, rejected:max-verified-claims-exceeded ticks=1467)
+[2026-08-17T16:23:29.043Z] [pid 94621] [Brejected] p99=2311.17ms mean=1683.13ms min=1232.25ms max=2552.86ms outcomes=rejected:max-verified-claims-exceeded ticks=1467
+[2026-08-17T16:23:29.043Z] [pid 94621] [Realistic] warmup (10 calls, serial)...
+[2026-08-17T16:23:29.266Z] [pid 94621] [Realistic] measuring (100 calls, serial)...
+[2026-08-17T16:23:29.946Z] [pid 94621] [Realistic] 20/100 done (last=42.9ms, ok score=4602)
+[2026-08-17T16:23:30.692Z] [pid 94621] [Realistic] 40/100 done (last=101.3ms, ok score=4602)
+[2026-08-17T16:23:31.389Z] [pid 94621] [Realistic] 60/100 done (last=49.8ms, ok score=4602)
+[2026-08-17T16:23:32.090Z] [pid 94621] [Realistic] 80/100 done (last=32.8ms, ok score=4602)
+[2026-08-17T16:23:32.579Z] [pid 94621] [Realistic] 100/100 done (last=14.5ms, ok score=4602)
+[2026-08-17T16:23:32.580Z] [pid 94621] [Realistic] p99=96.41ms mean=33.01ms min=12.77ms max=101.33ms outcomes=ok score=4602
+[2026-08-17T16:23:32.581Z] [pid 94621] DONE combined p99 = 41.51 + max(1563.73, 2311.17) = 2352.68ms vs 1000ms -> FAIL
+[2026-08-17T16:23:32.581Z] [pid 94621] wrote verify-cpu-2026-08-17T16-17-53-116Z.json and verify-cpu-2026-08-17T16-17-53-116Z-summary.json

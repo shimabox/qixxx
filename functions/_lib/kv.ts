@@ -11,12 +11,15 @@ export function shareRecordKey(id: string): string {
   return `share:${id}`;
 }
 
-/** Rate limit: 30 requests/hour per IP (docs/plan-cloudflare-x-share.md Phase 2). */
+/** Rate limit: 30 requests/hour per client (docs/plan-cloudflare-x-share.md Phase 2). */
 export const RATE_LIMIT_MAX_REQUESTS = 30;
 export const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
 
 /**
- * Key for an IP's rate-limit counter in the current fixed window. The
+ * Key for a client's rate-limit counter in the current fixed window.
+ * `clientKey` is the client's ip_hash (functions/_lib/ranking/ipHash.ts:
+ * HMAC of the /64-normalized address), never the raw IP — the same
+ * no-raw-IP-at-rest rule the D1 side follows. The
  * window index (epoch-hour, when windowSeconds is the default 3600) is
  * baked into the key itself, so the counter for a past window is simply a
  * different (and, thanks to the KV entry's own `expirationTtl`, self
@@ -24,7 +27,7 @@ export const RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
  * fixed-window limiter rather than a sliding one, which is a deliberate
  * simplification (see rateLimit.ts's module comment).
  */
-export function rateLimitKey(ip: string, now: number, windowSeconds: number = RATE_LIMIT_WINDOW_SECONDS): string {
+export function rateLimitKey(clientKey: string, now: number, windowSeconds: number = RATE_LIMIT_WINDOW_SECONDS): string {
   const windowIndex = Math.floor(now / (windowSeconds * 1000));
-  return `ratelimit:${ip}:${windowIndex}`;
+  return `ratelimit:${clientKey}:${windowIndex}`;
 }

@@ -4,6 +4,20 @@
 // and with 128 bits of entropy (no realistic brute-force/enumeration risk).
 const ID_BYTE_LENGTH = 16;
 
+/** Exactly the shape generateShareId() produces: 32 lowercase hex characters. */
+const SHARE_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * True only for a string generateShareId() could have produced. The read
+ * paths (GET /s, GET /og) gate on this before touching KV: anything else
+ * can never resolve to a record, so rejecting it up front saves a billed KV
+ * read and keeps an over-long key (KV's 512-byte key limit throws) from
+ * surfacing as a 500 instead of a 404.
+ */
+export function isShareId(value: unknown): value is string {
+  return typeof value === 'string' && SHARE_ID_PATTERN.test(value);
+}
+
 function toHex(bytes: Uint8Array): string {
   let out = '';
   for (const byte of bytes) {

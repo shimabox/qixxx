@@ -12,16 +12,16 @@
 import { RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS, rateLimitKey } from './kv';
 
 /**
- * Returns true (and records the hit) if `ip` is still under the limit for
- * its current window; false if the limit has already been reached (caller
+ * Returns true (and records the hit) if `clientKey` (the client's ip_hash —
+ * see kv.ts's rateLimitKey) is still under the limit for its current window; false if the limit has already been reached (caller
  * should respond 429 and must NOT record anything further).
  */
 export async function consumeRateLimit(
   kv: KVNamespace,
-  ip: string,
+  clientKey: string,
   now: number = Date.now()
 ): Promise<boolean> {
-  const key = rateLimitKey(ip, now);
+  const key = rateLimitKey(clientKey, now);
   const current = await kv.get(key);
   const count = current === null ? 0 : parseInt(current, 10);
 

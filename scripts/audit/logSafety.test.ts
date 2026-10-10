@@ -1,0 +1,200 @@
+// Unit tests for the audit job's log-redaction helpers (docs/ranking-audit-
+// runbook.md §"ログ方針"). The end-to-end guarantee — that a REAL runAudit()
+// run never emits a forbidden field — lives in runAudit.test.ts's
+// "public-log hygiene" describe; this file covers the primitives.
+import { describe, it, expect } from 'vitest';
+import { safeErrorName, safeErrorDetail, errorDetailEnabled, ERROR_DETAIL_ENV_VAR, MAX_ERROR_DETAIL_CHARS, ALLOWED_ERROR_NAMES } from './logSafety';
+
+/** A realistically hostile error: a multi-line message with a path/connection-shaped first line, plus a real stack. */
+function messyError(): Error {
+  const err = new TypeError('connect ECONNREFUSED 10.1.2.3:5432 (token=abcdef0123456789abcdef0123456789)\nat /Users/someone/secret-project/scripts/audit/cli.ts:42');
+  return err;
+}
+
+describe('safeErrorName', () => {
+  it('returns the error class name for ordinary errors', () => {
+    expect(safeErrorName(new TypeError('boom'))).toBe('TypeError');
+    expect(safeErrorName(new Error('boom'))).toBe('Error');
+  });
+
+  it('never returns the message or the stack', () => {
+    const summary = safeErrorName(messyError());
+    expect(summary).toBe('TypeError');
+    expect(summary).not.toContain('ECONNREFUSED');
+    expect(summary).not.toContain('/Users/');
+  });
+
+  it('returns the repo-defined audit-stack error names', () => {
+    const missingKey = new Error('...');
+    missingKey.name = 'MissingIpHashKeyError';
+    expect(safeErrorName(missingKey)).toBe('MissingIpHashKeyError');
+    const decode = new Error('...');
+    decode.name = 'RleDecodeError';
+    expect(safeErrorName(decode)).toBe('RleDecodeError');
+  });
+
+  it('returns each fixed remote D1 error name', () => {
+    for (const name of ['RemoteD1ConfigurationError', 'RemoteD1RequestError', 'RemoteD1ResponseError', 'RemoteD1QueryError']) {
+      const error = new Error('fixed');
+      error.name = name;
+      expect(safeErrorName(error)).toBe(name);
+    }
+  });
+
+  it('refuses a name that is not a plain identifier (a forged/interpolated one)', () => {
+    const forged = new Error('boom');
+    forged.name = 'Error: leaked /etc/passwd';
+    expect(safeErrorName(forged)).toBe('UnknownError');
+  });
+
+  // An identifier-SHAPED name used to
+  // pass, so a thrown object could publish arbitrary text just by naming
+  // itself. `name` is a writable property — only a fixed allowlist is
+  // evidence that a name is a real, vetted class name.
+  it('refuses an identifier-shaped but unlisted name (the smuggling case)', () => {
+    const forged = new Error('boom');
+    forged.name = 'Secret_supersecret';
+    expect(safeErrorName(forged)).toBe('UnknownError');
+    const camouflaged = new Error('boom');
+    camouflaged.name = 'ErrorFromHost_db_prod_internal_example_com';
+    expect(safeErrorName(camouflaged)).toBe('UnknownError');
+  });
+
+  it('refuses a real Error subclass that is not on the allowlist', () => {
+    class TotallyLegitimateError extends Error {
+      constructor() {
+        super('boom');
+        this.name = 'TotallyLegitimateError';
+      }
+    }
+    expect(safeErrorName(new TotallyLegitimateError())).toBe('UnknownError');
+  });
+
+  it('refuses an over-long name rather than echoing it', () => {
+    const forged = new Error('boom');
+    forged.name = 'A'.repeat(200);
+    expect(safeErrorName(forged)).toBe('UnknownError');
+  });
+
+  it('every allowlisted name is echoed as itself (the list is the whole contract)', () => {
+    for (const name of ALLOWED_ERROR_NAMES) {
+      const err = new Error('boom');
+      err.name = name;
+      expect(safeErrorName(err)).toBe(name);
+    }
+  });
+
+  it('the allowlist itself stays small and identifier-shaped (no room for a smuggled entry)', () => {
+    expect(ALLOWED_ERROR_NAMES.length).toBeLessThanOrEqual(16);
+    for (const name of ALLOWED_ERROR_NAMES) expect(name).toMatch(/^[A-Za-z][A-Za-z0-9]{0,39}$/);
+  });
+
+  // A sanitizer whose only callers are catch
+  // handlers must not itself throw — an exception raised while READING
+  // `err.name` escapes the very handler meant to redact the failure, and the
+  // runtime then prints the raw stack.
+  it('survives a throwing `name` getter (returns UnknownError instead of throwing)', () => {
+    const hostile = {
+      get name(): string {
+        throw new Error('boom from the getter: /Users/someone/secret');
+      },
+    };
+    expect(() => safeErrorName(hostile)).not.toThrow();
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
+  it('survives a Proxy whose get trap throws', () => {
+    const hostile = new Proxy(new Error('boom'), {
+      get() {
+        throw new Error('boom from the trap');
+      },
+    });
+    expect(() => safeErrorName(hostile)).not.toThrow();
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
+  it('survives a throwing getter even when the name it would have returned is allowlisted', () => {
+    let reads = 0;
+    const hostile = {
+      get name(): string {
+        reads++;
+        if (reads === 1) throw new Error('boom');
+        return 'TypeError';
+      },
+    };
+    expect(safeErrorName(hostile)).toBe('UnknownError');
+  });
+
+  it('handles non-Error throws without echoing them', () => {
+    expect(safeErrorName('a thrown string with a secret')).toBe('UnknownError');
+    expect(safeErrorName(null)).toBe('UnknownError');
+    expect(safeErrorName(undefined)).toBe('UnknownError');
+    expect(safeErrorName({ name: 42 })).toBe('UnknownError');
+  });
+});
+
+describe('safeErrorDetail', () => {
+  it('keeps only the first line — never the stack lines that follow it', () => {
+    const detail = safeErrorDetail(messyError());
+    expect(detail).toBe('connect ECONNREFUSED 10.1.2.3:5432 (token=abcdef0123456789abcdef0123456789)');
+    expect(detail).not.toContain('cli.ts:42');
+    expect(detail).not.toContain('\n');
+  });
+
+  it('truncates to MAX_ERROR_DETAIL_CHARS', () => {
+    const detail = safeErrorDetail(new Error('x'.repeat(5000)));
+    expect(detail.startsWith('x'.repeat(MAX_ERROR_DETAIL_CHARS))).toBe(true);
+    expect(detail).toBe(`${'x'.repeat(MAX_ERROR_DETAIL_CHARS)}...(truncated)`);
+  });
+
+  it('strips control characters (no ANSI escapes or stray control bytes smuggled into a log line)', () => {
+    const ESC = String.fromCharCode(27);
+    const BELL = String.fromCharCode(7);
+    const detail = safeErrorDetail(new Error(`before${ESC}[31mafter${BELL}end`));
+    expect(detail).toBe('before [31mafter end');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u0000-\u001f\u007f]/.test(detail)).toBe(false);
+  });
+
+  it('returns an empty string for a non-Error throw (nothing to summarize, nothing echoed)', () => {
+    expect(safeErrorDetail('a thrown string')).toBe('');
+    expect(safeErrorDetail(null)).toBe('');
+    expect(safeErrorDetail({ message: 42 })).toBe('');
+  });
+
+  it('survives a throwing `message` getter and a throwing Proxy trap', () => {
+    const hostileGetter = {
+      get message(): string {
+        throw new Error('boom from the getter');
+      },
+    };
+    expect(() => safeErrorDetail(hostileGetter)).not.toThrow();
+    expect(safeErrorDetail(hostileGetter)).toBe('');
+
+    const hostileProxy = new Proxy(new Error('boom'), {
+      get() {
+        throw new Error('boom from the trap');
+      },
+    });
+    expect(() => safeErrorDetail(hostileProxy)).not.toThrow();
+    expect(safeErrorDetail(hostileProxy)).toBe('');
+  });
+});
+
+describe('errorDetailEnabled', () => {
+  it('is OFF by default — a scheduled launchd run never sets the variable', () => {
+    expect(errorDetailEnabled({})).toBe(false);
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: '' })).toBe(false);
+  });
+
+  it('treats an explicit disabling value as off', () => {
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: '0' })).toBe(false);
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: 'false' })).toBe(false);
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: ' FALSE ' })).toBe(false);
+  });
+
+  it('is on for an explicit opt-in', () => {
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: '1' })).toBe(true);
+    expect(errorDetailEnabled({ [ERROR_DETAIL_ENV_VAR]: 'true' })).toBe(true);
+  });
+});
