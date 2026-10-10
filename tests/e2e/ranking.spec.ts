@@ -10,7 +10,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
+import { simulateReplayFromRle } from '../../src/core/replayEngine';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
+import { advanceUntil } from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes,
 // matching smoke.spec.ts's own local (not imported) declaration.
@@ -1659,6 +1661,198 @@ test.describe('replay viewing', () => {
     expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
     const ticks = await page.evaluate(() => window.__game__!.session.getTotalTicks());
     await expect.poll(() => page.evaluate(() => window.__game__!.session.getTotalTicks())).toBeGreaterThan(ticks);
+  });
+});
+
+// Replay viewing keeps a cleared stage on screen — "STAGE n CLEAR!", for 1.5s
+// (90 ticks) — and then moves on by itself, where it used to cut to the next
+// stage on the very next tick.
+//
+// Every test here runs on a faked, paused page clock (see
+// tests/e2e/gameover-share.spec.ts for the full rationale): the game only
+// advances through page.clock.runFor(), so "1.5 seconds" is an exact number
+// of ticks rather than a wall-clock wait, and every budget below is game
+// time. The replay's own chunked work (ReplayEngine's pre-pass and skip) yields
+// through setTimeout(0), which is faked too — so those are waited for by
+// advancing the clock, never by waiting on real time.
+//
+// Only the FIRST clear is watched here. Every frame of fake-clock time is
+// still really rendered, so playing all four stages through unskipped (~43s
+// of game time) would cost more wall-clock than the rest of these tests put
+// together; that the later clears are held too, and that a fully held
+// playback reproduces the recorded run tick for tick, is covered headlessly in
+// src/replayStageClearHold.test.ts.
+test.describe('replay STAGE CLEAR hold', () => {
+  // The fixture's first clear is ~20s of game time in — several seconds of
+  // wall-clock on the fake clock, more on a loaded machine.
+  test.setTimeout(90_000);
+
+  const CLOCK_START = new Date('2026-01-01T00:00:00Z');
+  const screenText = async (page: Page): Promise<string> => (await page.locator('#screen').textContent()) ?? '';
+  const hudText = async (page: Page): Promise<string> => (await page.locator('#hud').textContent()) ?? '';
+  const stageLabel = (page: Page) => page.locator('#replay-stage-label');
+  const skipButton = (page: Page) => page.getByRole('button', { name: 'SKIP TO FINAL STAGE' });
+  const exitButton = (page: Page) => page.getByRole('button', { name: 'EXIT' });
+
+  /** Clicks the list's REPLAY button and advances the clock until the viewer is up (the pre-pass has finished). */
+  async function startReplayFromList(page: Page): Promise<void> {
+    await page.getByRole('button', { name: 'REPLAY' }).click();
+    await advanceUntil(page, () => exitButton(page).isVisible(), 60_000);
+  }
+
+  /**
+   * Loads the page on a paused fake clock and starts viewing the mocked
+   * multi-stage replay. Returns the score that recording ends on, from the
+   * same headless simulation the server verifies with.
+   */
+  async function openMultiStageReplay(page: Page): Promise<number> {
+    const rleBase64 = recordMultiStageReplay(MULTI_STAGE_SEED);
+    const recorded = simulateReplayFromRle(MULTI_STAGE_SEED, Buffer.from(rleBase64, 'base64'));
+    expect(recorded.stage).toBe(MULTI_STAGE_FINAL_STAGE);
+    expect(recorded.reachedGameOver).toBe(true);
+    await mockRanking(page, [
+      { id: 'ms', createdAt: '2026-01-01T12:00:00Z', score: 10, stage: MULTI_STAGE_FINAL_STAGE, name: 'MULTI', xHandle: null, replayAvailable: true },
+    ]);
+    await page.route('**/api/ranking/*/replay', (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ seed: MULTI_STAGE_SEED, rleBase64, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION }),
+      });
+    });
+
+    await page.clock.install({ time: CLOCK_START });
+    await page.goto(APP_URL);
+    await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
+    await page.locator('#ranking-button').click();
+    await startReplayFromList(page);
+    return recorded.score;
+  }
+
+  /** Advances the clock, in 50ms (3-tick) slices, until the overlay announces that stage 1 was cleared. */
+  async function advanceToFirstStageClear(page: Page): Promise<void> {
+    await advanceUntil(page, async () => (await screenText(page)).includes('STAGE 1 CLEAR!'), 60_000);
+  }
+
+  /** Advances the clock until the replay's end-of-run overlay is up. */
+  async function advanceToReplayEnd(page: Page): Promise<void> {
+    await advanceUntil(page, async () => (await screenText(page)).includes('GAME OVER - REPLAY END'), 10_000);
+  }
+
+  /** Clicks SKIP TO FINAL STAGE and advances the clock until the (chunked) skip has finished. Returns whether any frame along the way showed a CLEAR overlay. */
+  async function skipToFinalStage(page: Page): Promise<boolean> {
+    await skipButton(page).click();
+    // Not vacuous: the skip is genuinely in progress (it yields between
+    // chunks, and the clock those yields wait on is not moving yet).
+    expect(await page.getByRole('button', { name: 'SKIPPING...' }).isVisible()).toBe(true);
+    await page.clock.runFor(50);
+    let clearShown = false;
+    await advanceUntil(
+      page,
+      async () => {
+        if ((await screenText(page)).includes('CLEAR')) clearShown = true;
+        return page.getByRole('button', { name: 'SKIPPING...' }).isHidden();
+      },
+      60_000
+    );
+    await page.clock.runFor(50); // one more frame, drawn after the skip landed
+    return clearShown;
+  }
+
+  test('shows STAGE n CLEAR! with no key prompt, holds it for 1.5s with TIME stopped, then moves on by itself', async ({ page }) => {
+    const recordedScore = await openMultiStageReplay(page);
+
+    // Found within one 50ms slice (3 ticks) of the clear itself.
+    await advanceToFirstStageClear(page);
+    const hudAtClear = await hudText(page);
+    expect(hudAtClear).toContain('STAGE 1');
+
+    // 1.0s on: still the cleared stage, and nothing on the HUD has moved —
+    // TIME included, since the replay is not being ticked at all.
+    await page.clock.runFor(1000);
+    expect(await screenText(page)).toContain('STAGE 1 CLEAR!');
+    expect(await screenText(page)).not.toContain('PRESS ANY KEY');
+    expect(await hudText(page)).toBe(hudAtClear);
+    expect(await stageLabel(page).textContent()).toBe(`REPLAY - STAGE 1 / ${MULTI_STAGE_FINAL_STAGE}`);
+    await expect(skipButton(page)).toBeVisible();
+
+    // 1.4s on (at most 1.45s into the hold): still held...
+    await page.clock.runFor(400);
+    expect(await screenText(page)).toContain('STAGE 1 CLEAR!');
+    expect(await hudText(page)).toBe(hudAtClear);
+
+    // ...and by 1.6s it has moved on with no input at all. Together the two
+    // checks pin the hold to 1.5s, give or take the detection slice.
+    await page.clock.runFor(200);
+    expect(await screenText(page)).not.toContain('CLEAR');
+    expect(await hudText(page)).toContain('STAGE 2');
+    expect(await stageLabel(page).textContent()).toBe(`REPLAY - STAGE 2 / ${MULTI_STAGE_FINAL_STAGE}`);
+
+    // And stage 2 is really playing: the HUD (TIME, if nothing else) moves again.
+    const hudOnStage2 = await hudText(page);
+    await page.clock.runFor(500);
+    expect(await hudText(page)).not.toBe(hudOnStage2);
+
+    // The hold changed nothing about the run itself: played out from here
+    // (skipping ahead to its final stage), it ends on the recorded score.
+    await skipToFinalStage(page);
+    await advanceToReplayEnd(page);
+    expect(await screenText(page)).toContain(`SCORE ${recordedScore}\n`);
+    expect(await stageLabel(page).textContent()).toBe(`REPLAY END - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (GAME OVER HERE)`);
+  });
+
+  test('SKIP TO FINAL STAGE during the hold lands on the final stage and playback carries on to the end', async ({ page }) => {
+    const recordedScore = await openMultiStageReplay(page);
+    await advanceToFirstStageClear(page);
+
+    // The CLEAR wording goes with the first frame after the skip takes over,
+    // and none of the StageClears the skip passes through brings it back.
+    expect(await skipToFinalStage(page)).toBe(false);
+    expect(await screenText(page)).not.toContain('CLEAR');
+    expect(await hudText(page)).toContain(`STAGE ${MULTI_STAGE_FINAL_STAGE}`);
+    expect(await stageLabel(page).textContent()).toBe(`REPLAY - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`);
+    await expect(skipButton(page)).toBeHidden();
+
+    // Normal playback was suspended for the skip and restored after it.
+    const autoAdvanceLog = await page.evaluate(() => window.__game__!.getReplayAutoAdvanceLog());
+    expect(autoAdvanceLog.slice(-2)).toEqual([false, true]);
+
+    // The interrupted hold did not leave playback stuck: the final stage
+    // plays on, all the way to the run's gameover and its recorded score.
+    const hudAfterSkip = await hudText(page);
+    await page.clock.runFor(500);
+    expect(await hudText(page)).not.toBe(hudAfterSkip);
+    await advanceToReplayEnd(page);
+    expect(await screenText(page)).toContain(`SCORE ${recordedScore}\n`);
+  });
+
+  test('EXIT during the hold returns to Title, and viewing the replay again starts clean', async ({ page }) => {
+    await openMultiStageReplay(page);
+    await advanceToFirstStageClear(page);
+    // Leave with most of the hold (60 of its 90 ticks) already spent.
+    await page.clock.runFor(1000);
+    expect(await screenText(page)).toContain('STAGE 1 CLEAR!');
+
+    await exitButton(page).click();
+    await page.clock.runFor(50);
+    await expect(exitButton(page)).toBeHidden();
+    expect(await screenText(page)).toContain('QIXXX');
+    expect(await screenText(page)).not.toContain('CLEAR');
+    expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+
+    // EXIT reopened the list; view the same replay again.
+    await expect(page.getByRole('button', { name: 'REPLAY' })).toBeVisible();
+    await startReplayFromList(page);
+    // It starts over on stage 1, playing: no CLEAR overlay left behind, and
+    // the HUD is moving rather than frozen in a leftover hold.
+    const hudAtRestart = await hudText(page);
+    for (let i = 0; i < 4; i++) {
+      await page.clock.runFor(50);
+      expect(await screenText(page)).not.toContain('CLEAR');
+    }
+    expect(await hudText(page)).toContain('STAGE 1');
+    expect(await hudText(page)).not.toBe(hudAtRestart);
   });
 });
 
