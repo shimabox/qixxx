@@ -424,6 +424,16 @@ export const TOUCH_CONTROLS_OPACITY = 0.55;
 export const RULESET_VERSION = 1;
 export const REPLAY_FORMAT_VERSION = 1;
 
+// Replay viewing: how long a cleared stage stays on screen, with its
+// "STAGE n CLEAR!" overlay, before playback moves on to the next stage by
+// itself. Live play waits for a key press at this point; a replay has nobody
+// to press one, and advancing on the very next tick left the clear unreadable.
+// Purely a viewing pause (src/main.ts's replay driver) — the recorded run,
+// its score and its verification are untouched, so this is neither a
+// RULESET_VERSION nor a REPLAY_FORMAT_VERSION matter.
+export const REPLAY_STAGE_CLEAR_HOLD_SECONDS = 1.5;
+export const REPLAY_STAGE_CLEAR_HOLD_TICKS = Math.round(REPLAY_STAGE_CLEAR_HOLD_SECONDS * TICK_RATE); // 90
+
 // InputRecorder: the hard cap
 // on recorded PLAYING-tick samples for a single run, matching
 // TIME_LIMIT_TICKS exactly — a run can never accumulate more playing ticks

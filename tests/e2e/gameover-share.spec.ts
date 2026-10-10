@@ -4,7 +4,8 @@
 // Function doesn't exist yet, so the POST is stubbed via route interception
 // — this test only exercises Phase 1's DOM layer (modal, button wiring,
 // intent-URL construction), not the real share backend.
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { advanceUntil } from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes
 // (docs/plan.md §7.2), extended with the session getters/debug-override
@@ -30,27 +31,6 @@ declare global {
 // window.__game__.session.applyDebugOverrides actually take effect — dev
 // only, never shipped, exactly like the debug panel's own gating.
 const APP_URL = 'http://localhost:4173/?debug';
-
-// Advances the page's (faked) clock in `stepMs` slices until `predicate`
-// holds, giving up after `maxMs` of *game* time. Under `page.clock.install()`
-// requestAnimationFrame only fires while the clock is advanced, so the game
-// loop (main.ts's fixed-timestep accumulator) runs exactly as many ticks as
-// the advanced time dictates — independent of how fast the machine running
-// the test happens to be. Budgets below are therefore game-time budgets,
-// not wall-clock timeouts.
-async function advanceUntil(
-  page: Page,
-  predicate: () => Promise<boolean>,
-  maxMs: number,
-  stepMs = 50,
-): Promise<void> {
-  for (let elapsed = 0; elapsed < maxMs; elapsed += stepMs) {
-    if (await predicate()) return;
-    await page.clock.runFor(stepMs);
-  }
-  if (await predicate()) return;
-  throw new Error(`condition not met within ${maxMs}ms of game time`);
-}
 
 test('GAME OVER modal shows score/stage, shares to X, and returns to Title', async ({ page, context }) => {
   // Stand in for Phase 2's not-yet-implemented `/share` Function.
