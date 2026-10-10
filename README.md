@@ -6,7 +6,7 @@
 線を引いて陣地を切り取る、ネオン風の陣取りアクションゲーム。  
 1981 年のアーケードゲーム QIX へのオマージュとして、メカニクスは原作準拠・名称やビジュアルはオリジナルで作られています。
 
-![プレイ画面。左が低速ライン（赤・高得点）、右が高速ライン（青）で取った陣地。中央の黄色が引き途中のライン](docs/images/readme-playing.png)
+![プレイ画面。左の赤が低速ライン（高得点）、右上と右下の青が高速ラインで取った陣地。中央の黄色が引き途中のライン。紫の点がウィスプ、枠の上のオレンジの点がエンバー](docs/images/readme-playing.png)
 
 敵に触れないようにフィールドへラインを引き、**占有率が目標値に達したらステージクリア**。
 目標値はステージ 1 が **65%**、ステージが進むごとに少しずつ上がり、ステージ 10 で最大の **90%** になります。敵（ウィスプ）もステージごとに増え、ステージ 10 で最大の **10 匹**に到達します（速度・出現間隔なども同時に最大まで上昇し、11 面以降はその最大値のまま据え置きです）。
@@ -16,6 +16,10 @@
 ゲームオーバー時には、そのプレイのスコアを **X（旧 Twitter）にシェア**できます。スコア入りのカード画像付きで投稿されます。
 
 ![X シェア時に生成されるスコアカード](docs/images/readme-share-card.png)
+
+スコアが **TOP 10** に入る見込みのときは、ゲームオーバー画面から名前または X ハンドルを添えて **オンラインランキングに投稿**できます。タイトル画面の **RANKING** ボタンで上位 10 件を確認でき、各エントリの **REPLAY** でそのプレイを最初から再生して見られます。
+
+![ランキング一覧。順位・スコア・到達ステージ・名前が並び、各行に REPLAY ボタンがある](docs/images/ranking-list.png)
 
 **➡️ 詳しいルールと遊び方: [遊び方ガイド](docs/how-to-play.md)**
 
@@ -30,7 +34,7 @@ npm install
 npm run dev
 ```
 
-表示された URL（例: `http://localhost:5173/`）をブラウザで開き、何かキーを押す（タップする）とスタートします。
+表示された URL（例: `http://localhost:5173/`）をブラウザで開き、何かキーを押す（タップする）とスタートします。タイトル画面では、右上の **RANKING** ボタンからランキングを開けます。
 
 ![タイトル画面](docs/images/readme-title.png)
 
@@ -55,6 +59,7 @@ npm run dev
 - 効果音は Web Audio API による実行時生成（音源アセットなし）
 - ホスティングは Cloudflare Pages（qixxx.orukubami.sh）
 - X シェアのスコアカードは Cloudflare Pages Functions + Workers KV + workers-og（Satori）でエッジ動的生成
+- スコアランキング（投稿・TOP 10・リプレイ）は Cloudflare Pages Functions + **Cloudflare D1** に保存。リプレイは投稿時の入力記録をクライアント側で再生
 
 コアロジック（`src/core/`）は DOM・Canvas 非依存の純 TypeScript で、ユニットテストで網羅しています。
 
@@ -85,12 +90,17 @@ src/
 ├── audio/    # Web Audio 効果音
 ├── storage/  # localStorage（ハイスコア・設定）
 ├── config.ts # チューニング定数・配色
-├── ui/       # GAME OVER モーダル（X シェア）
+├── ui/       # GAME OVER モーダル（X シェア・スコア投稿）、ランキング一覧・リプレイ UI
 └── main.ts   # エントリポイント（結線・ゲームループ）
-functions/    # Cloudflare Pages Functions（シェア API・OG カード生成）
+functions/    # Cloudflare Pages Functions（シェア API・OG カード生成・ランキング API）
 docs/
-├── plan.md          # 実装計画書
-└── how-to-play.md   # 遊び方ガイド
+├── plan.md                   # 実装計画書
+├── how-to-play.md            # 遊び方ガイド
+├── cloudflare-setup.md       # Cloudflare 環境構築
+├── ranking-schema.md         # ランキングの D1 スキーマ
+├── ranking-runbook.md        # ランキング運用手順書（削除・シーズン・ルール変更）
+├── ranking-audit-runbook.md  # リプレイ監査の手順書
+└── images/                   # 文書用スクリーンショット
 ```
 
 ## ライセンス
