@@ -203,6 +203,27 @@ export const HUD_ACCENT_COLOR = '#00ff41'; // Same neon green as COLOR_BORDER, r
 // introducing a fourth alarm color.
 export const HUD_TIME_WARNING_TICKS = 30 * TICK_RATE;
 export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
+// TIME countdown warning sounds (src/timeWarningCue.ts decides the tick,
+// audio/sfx.ts's playTimeWarning() plays it): the audible counterpart of the
+// color change above, for a player whose eyes are on the board. A rising
+// alarm sweeps once on the tick the remaining time reaches
+// HUD_TIME_WARNING_TICKS — the same tick TIME turns red — and once more, with
+// the same sound, at SFX_TIME_WARNING_SECOND_ALARM_SEC (the HUD does not
+// change there: TIME is already red). Then a short beep marks every whole
+// second from SFX_TIME_WARNING_BEEP_FROM_SEC down to 1, switching to a higher
+// pitch from SFX_TIME_WARNING_HIGH_FROM_SEC. Nothing plays at 0: that tick is
+// the TIME UP gameover itself.
+// The beeps sit well above the Igniter approach beep (500 Hz) and apart from
+// the area-claimed chime (660 Hz), so neither can be mistaken for them.
+export const SFX_TIME_WARNING_SECOND_ALARM_SEC = 15;
+export const SFX_TIME_WARNING_BEEP_FROM_SEC = 10;
+export const SFX_TIME_WARNING_HIGH_FROM_SEC = 5;
+export const SFX_TIME_WARNING_ALARM_FREQ_START = 440;
+export const SFX_TIME_WARNING_ALARM_FREQ_END = 880;
+export const SFX_TIME_WARNING_ALARM_DURATION = 0.4;
+export const SFX_TIME_WARNING_BEEP_FREQ = 880;
+export const SFX_TIME_WARNING_BEEP_HIGH_FREQ = 1320; // 1.5x the plain beep
+export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
 // The HUD switches from its single nowrap+ellipsis line to its
 // stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
 // STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being

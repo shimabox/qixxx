@@ -16,6 +16,7 @@ import { loadMuted, saveMuted } from './storage/settings';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
+import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
@@ -348,6 +349,8 @@ const replayAutoAdvanceLog: boolean[] = [];
 // Keeps a cleared stage on screen for REPLAY_STAGE_CLEAR_HOLD_TICKS before
 // playback moves on — see update()'s replay branch.
 const replayStageClearHold = new ReplayStageClearHold(REPLAY_STAGE_CLEAR_HOLD_TICKS);
+// TIME countdown warning sounds for the live run — see src/timeWarningCue.ts.
+const timeWarningCueTracker = new TimeWarningCueTracker();
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -649,6 +652,7 @@ function enterReplayMode(engine: ReplayEngine): void {
   replayEngine = engine;
   replayAutoAdvance = true;
   replayStageClearHold.reset();
+  timeWarningCueTracker.reset();
   // Replays are silent, so stop any in-progress
   // continuous draw tone left over from live play — otherwise the live
   // run's audio state leaks into playback.
@@ -666,6 +670,8 @@ function exitReplayMode(): void {
   replayEngine = null;
   // A replay left mid-hold must not shorten the next one's first STAGE CLEAR.
   replayStageClearHold.reset();
+  // The live run's countdown is tracked afresh after a replay.
+  timeWarningCueTracker.reset();
   lastHudStage = -1;
   lastScreenText = null;
 }
@@ -1001,6 +1007,12 @@ function update(): void {
   const events = session.drainEvents();
   for (const ev of events) if (ev === 'area-claimed') runClaims++;
   sfx.handleEvents(events);
+  // TIME countdown warning: decided here, once per live tick, from the
+  // remaining time this tick's session.update() left behind. The replay
+  // branch above returns before reaching this, which is what keeps replays
+  // silent.
+  const timeWarningCue = timeWarningCueTracker.step(session.getRemainingTicks(), session.getStatus());
+  if (timeWarningCue) sfx.playTimeWarning(timeWarningCue);
   // Ember despawn vanish effect (docs/plan.md §6 M11 / §12.6): drained at
   // tick granularity, same as the events above, so an effect is queued for
   // every despawn even if several ticks elapse before the next rendered
