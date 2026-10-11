@@ -7,6 +7,7 @@
 // render/renderer.ts and input/keyboard.ts are DOM-dependent by design.
 import type { GameEvent } from '../core/events';
 import type { LineSpeed } from '../core/claim';
+import type { TimeWarningCue } from '../timeWarningCue';
 import {
   SFX_MASTER_GAIN,
   SFX_DRAW_GAIN,
@@ -32,6 +33,12 @@ import {
   SFX_EMBER_BLAZE_SPAWN_DURATION,
   SFX_EMBER_ENTERED_LINE_NOTES,
   SFX_EMBER_ENTERED_LINE_NOTE_DURATION,
+  SFX_TIME_WARNING_ALARM_FREQ_START,
+  SFX_TIME_WARNING_ALARM_FREQ_END,
+  SFX_TIME_WARNING_ALARM_DURATION,
+  SFX_TIME_WARNING_BEEP_FREQ,
+  SFX_TIME_WARNING_BEEP_HIGH_FREQ,
+  SFX_TIME_WARNING_BEEP_DURATION,
 } from '../config';
 
 // Safari (incl. iOS) still only exposes `webkitAudioContext` in some
@@ -39,6 +46,11 @@ import {
 type AudioContextCtor = typeof AudioContext;
 interface WindowWithWebkitAudio extends Window {
   webkitAudioContext?: AudioContextCtor;
+}
+
+/** Where a falling one-shot (miss, ember-despawned) ends its glide from `freq`. */
+function descendFrom(freq: number): number {
+  return Math.max(20, freq * 0.4);
 }
 
 export class SfxEngine {
@@ -212,9 +224,34 @@ export class SfxEngine {
           this.playArpeggio(SFX_EMBER_ENTERED_LINE_NOTES, SFX_EMBER_ENTERED_LINE_NOTE_DURATION, 'square', 0.16);
           break;
         case 'ember-despawned':
-          this.playTone(SFX_EMBER_DESPAWN_FREQ, SFX_EMBER_DESPAWN_DURATION, 'sine', 0.15, /* descend */ true);
+          this.playTone(SFX_EMBER_DESPAWN_FREQ, SFX_EMBER_DESPAWN_DURATION, 'sine', 0.15, descendFrom(SFX_EMBER_DESPAWN_FREQ));
           break;
       }
+    }
+  }
+
+  /**
+   * Plays one TIME countdown warning cue. Not a GameEvent: src/timeWarningCue.ts
+   * decides the tick from the live session's remaining time and main.ts
+   * calls this directly, so a replay's session can never trigger it.
+   */
+  playTimeWarning(cue: TimeWarningCue): void {
+    switch (cue) {
+      case 'alarm':
+        this.playTone(
+          SFX_TIME_WARNING_ALARM_FREQ_START,
+          SFX_TIME_WARNING_ALARM_DURATION,
+          'square',
+          0.2,
+          SFX_TIME_WARNING_ALARM_FREQ_END
+        );
+        break;
+      case 'beep':
+        this.playTone(SFX_TIME_WARNING_BEEP_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', 0.16);
+        break;
+      case 'beep-high':
+        this.playTone(SFX_TIME_WARNING_BEEP_HIGH_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', 0.16);
+        break;
     }
   }
 
@@ -232,7 +269,7 @@ export class SfxEngine {
   }
 
   private playMiss(): void {
-    this.playTone(SFX_MISS_FREQ, SFX_MISS_DURATION, 'sawtooth', 0.25, /* descend */ true);
+    this.playTone(SFX_MISS_FREQ, SFX_MISS_DURATION, 'sawtooth', 0.25, descendFrom(SFX_MISS_FREQ));
   }
 
   private playStageClear(): void {
@@ -247,7 +284,7 @@ export class SfxEngine {
     const ctx = this.ensureContext();
     if (!ctx) return;
     notes.forEach((freq, i) => {
-      this.playTone(freq, noteDuration, type, gain, false, ctx.currentTime + i * noteDuration);
+      this.playTone(freq, noteDuration, type, gain, undefined, ctx.currentTime + i * noteDuration);
     });
   }
 
@@ -257,13 +294,16 @@ export class SfxEngine {
    * each call creates and tears down its own nodes, so overlapping one-shot
    * SEs (e.g. an area-claimed chime while an Igniter approach beep is still
    * ringing) never fight over shared state.
+   *
+   * With `endFreq` the pitch glides from `freq` to it over the note, falling
+   * or rising; without it the note holds `freq`.
    */
   private playTone(
     freq: number,
     duration: number,
     type: OscillatorType = 'sine',
     gain = 0.2,
-    descend = false,
+    endFreq?: number,
     startTime?: number
   ): void {
     if (this.muted) return;
@@ -276,8 +316,8 @@ export class SfxEngine {
     const env = ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, start);
-    if (descend) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq * 0.4), start + duration);
+    if (endFreq !== undefined) {
+      osc.frequency.exponentialRampToValueAtTime(endFreq, start + duration);
     }
 
     env.gain.setValueAtTime(0, start);

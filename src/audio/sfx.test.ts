@@ -234,3 +234,145 @@ describe('SfxEngine — retry resume() on sound-producing calls (fix/ios-audio-r
     expect(resumeSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+// Records every node a one-shot creates, so a test can read back what
+// playTone() asked Web Audio for: pitch, waveform, pitch glide and peak gain.
+function installRecordingAudioContext(): { oscillators: MockOscillatorNode[]; gains: MockGainNode[] } {
+  const oscillators: MockOscillatorNode[] = [];
+  const gains: MockGainNode[] = [];
+  class RecordingAudioContext extends MockAudioContext {
+    state: 'suspended' | 'running' | 'closed' = 'running';
+    createOscillator(): MockOscillatorNode {
+      const osc = new MockOscillatorNode();
+      oscillators.push(osc);
+      return osc;
+    }
+    createGain(): MockGainNode {
+      const gain = new MockGainNode();
+      gains.push(gain);
+      return gain;
+    }
+  }
+  (globalThis as { window?: unknown }).window = { AudioContext: RecordingAudioContext };
+  return { oscillators, gains };
+}
+
+describe('SfxEngine — TIME countdown warning cues', () => {
+  it('plays the alarm as a square wave rising from 440 Hz to 880 Hz over 0.4s', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+
+    new SfxEngine().playTimeWarning('alarm');
+
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe('square');
+    expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(440, 0);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledTimes(1);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(880, 0.4);
+    // gains[0] is the master gain; gains[1] this note's own envelope.
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.2, 0.01);
+    expect(gains[1].gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(0.0001, 0.4);
+  });
+
+  it('plays the beep as a steady 880 Hz square wave for 0.07s', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+
+    new SfxEngine().playTimeWarning('beep');
+
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe('square');
+    expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(880, 0);
+    expect(osc.frequency.exponentialRampToValueAtTime).not.toHaveBeenCalled();
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.16, 0.01);
+    expect(gains[1].gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(0.0001, 0.07);
+  });
+
+  it('plays the high beep as a steady 1320 Hz square wave for 0.07s', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+
+    new SfxEngine().playTimeWarning('beep-high');
+
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe('square');
+    expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(1320, 0);
+    expect(osc.frequency.exponentialRampToValueAtTime).not.toHaveBeenCalled();
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.16, 0.01);
+    expect(gains[1].gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(0.0001, 0.07);
+  });
+
+  it('creates no oscillator for any cue while muted', () => {
+    const { oscillators } = installRecordingAudioContext();
+
+    const sfx = new SfxEngine(true);
+    sfx.playTimeWarning('alarm');
+    sfx.playTimeWarning('beep');
+    sfx.playTimeWarning('beep-high');
+
+    expect(oscillators).toHaveLength(0);
+  });
+
+  it('plays again once unmuted', () => {
+    const { oscillators } = installRecordingAudioContext();
+
+    const sfx = new SfxEngine(true);
+    sfx.playTimeWarning('beep');
+    sfx.setMuted(false);
+    sfx.playTimeWarning('beep-high');
+
+    expect(oscillators).toHaveLength(1);
+    expect(oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(1320, 0);
+  });
+});
+
+describe('SfxEngine — pitch glide of the existing one-shots', () => {
+  it('still plays the miss falling from 90 Hz to 36 Hz over 0.35s', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+
+    new SfxEngine().handleEvents(['miss']);
+
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe('sawtooth');
+    expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(90, 0);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledTimes(1);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(36, 0.35);
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 0.01);
+  });
+
+  it('still plays the ember despawn falling from 180 Hz to 72 Hz over 0.07s', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+
+    new SfxEngine().handleEvents(['ember-despawned']);
+
+    expect(oscillators).toHaveLength(1);
+    const [osc] = oscillators;
+    expect(osc.type).toBe('sine');
+    expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(180, 0);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledTimes(1);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(72, 0.07);
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.15, 0.01);
+  });
+
+  it('still holds the pitch of every other one-shot and arpeggio note', () => {
+    const { oscillators } = installRecordingAudioContext();
+
+    new SfxEngine().handleEvents([
+      'area-claimed',
+      'stage-clear',
+      'split-clear',
+      'igniter-spawned',
+      'igniter-approaching',
+      'ember-spawned',
+      'ember-blaze-spawned',
+      'ember-entered-line',
+    ]);
+
+    // 5 single notes + the 4-, 5- and 2-note arpeggios.
+    expect(oscillators).toHaveLength(16);
+    for (const osc of oscillators) {
+      expect(osc.frequency.exponentialRampToValueAtTime).not.toHaveBeenCalled();
+    }
+  });
+});
