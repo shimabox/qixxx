@@ -10,6 +10,7 @@
 // purity" invariant), matching input/keyboard.ts and input/touch.ts's
 // existing DOM-touching exemption.
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, HUD_TIME_WARNING_COLOR, COLOR_FX_NEON_CYAN } from '../config';
+import { t, type MessageKey } from '../i18n';
 
 export interface GameOverScoreInfo {
   score: number;
@@ -43,10 +44,10 @@ export interface GameOverModalActions {
   onTitle: () => void;
 }
 
-const HINT_RETRY = 'PRESS ANY KEY OR TAP FIELD TO RETRY';
+const HINT_RETRY: MessageKey = 'gameOver.hintRetry';
 // While the ranking offer holds the keyboard and the field (src/ui/ranking.ts's
 // isSubmissionBlockingRetry()).
-const HINT_SUBMISSION = 'POST OR SKIP TO CONTINUE';
+const HINT_SUBMISSION: MessageKey = 'gameOver.hintSubmission';
 // Every button's tap target is at least this tall.
 const BUTTON_MIN_HEIGHT_PX = 44;
 
@@ -119,7 +120,7 @@ export class GameOverModal {
     this.container.style.zIndex = '10';
 
     this.heading = document.createElement('div');
-    this.heading.textContent = 'GAME OVER';
+    this.heading.textContent = t('gameOver.heading');
     this.heading.style.fontSize = '1.3em';
     this.heading.style.fontWeight = 'bold';
     this.container.appendChild(this.heading);
@@ -161,7 +162,7 @@ export class GameOverModal {
     // through callbacks rather than a synthetic key, so they keep working
     // while the keyboard and the field are held (see src/fx/liveTick.ts's
     // GameOverConfirmGate).
-    const retryButton = this.buildButton('RETRY', 'gameover-retry-button');
+    const retryButton = this.buildButton(t('gameOver.retry'), 'gameover-retry-button');
     this.retryButton = retryButton;
     retryButton.style.width = '100%';
     retryButton.style.fontSize = '1em';
@@ -180,14 +181,14 @@ export class GameOverModal {
     this.lowerRow.style.display = 'flex';
     this.lowerRow.style.width = '100%';
 
-    const backButton = this.buildButton('TITLE', 'gameover-back-button');
+    const backButton = this.buildButton(t('gameOver.title'), 'gameover-back-button');
     backButton.style.flex = '1 1 0';
     backButton.addEventListener('click', (event) => {
       actions.onTitle();
       (event.currentTarget as HTMLButtonElement).blur();
     });
 
-    this.shareButton = this.buildButton('POST TO X', 'gameover-share-button');
+    this.shareButton = this.buildButton(t('gameOver.share'), 'gameover-share-button');
     this.shareButton.style.flex = '1 1 0';
     this.shareButton.addEventListener('click', () => void this.handleShareClick());
 
@@ -202,7 +203,7 @@ export class GameOverModal {
     // that message.
     this.hint = document.createElement('div');
     this.hint.id = 'gameover-hint';
-    this.hint.textContent = HINT_RETRY;
+    this.hint.textContent = t(HINT_RETRY);
     this.hint.style.fontSize = '0.7em';
     this.hint.style.opacity = '0.7';
     this.container.appendChild(this.hint);
@@ -214,18 +215,18 @@ export class GameOverModal {
   /** Shows the modal populated with this run's final score info. Idempotent — safe to call again while already shown. */
   show(info: GameOverScoreInfo): void {
     this.current = info;
-    this.scoreLine.textContent = `SCORE: ${info.score}`;
-    this.stageLine.textContent = `STAGE: ${info.stage}`;
-    this.hiLine.textContent = `HI SCORE: ${info.hiScore}`;
+    this.scoreLine.textContent = t('gameOver.score', info.score);
+    this.stageLine.textContent = t('gameOver.stage', info.stage);
+    this.hiLine.textContent = t('gameOver.hiScore', info.hiScore);
     if (info.reason === 'time') {
-      this.reasonLine.textContent = 'TIME UP!';
+      this.reasonLine.textContent = t('gameOver.timeUp');
       this.reasonLine.style.display = 'block';
     } else {
       this.reasonLine.textContent = '';
       this.reasonLine.style.display = 'none';
     }
     if (info.newRecordDelta !== undefined && info.newRecordDelta > 0) {
-      this.newRecordLine.textContent = `NEW RECORD +${info.newRecordDelta}`;
+      this.newRecordLine.textContent = t('gameOver.newRecord', info.newRecordDelta);
       this.newRecordLine.style.display = 'block';
     } else {
       this.newRecordLine.textContent = '';
@@ -242,7 +243,7 @@ export class GameOverModal {
 
   /** The hint while the ranking offer holds the keyboard and the field (true) or not. */
   setSubmissionHold(held: boolean): void {
-    const text = held ? HINT_SUBMISSION : HINT_RETRY;
+    const text = t(held ? HINT_SUBMISSION : HINT_RETRY);
     if (this.hint.textContent !== text) this.hint.textContent = text;
   }
 
@@ -318,7 +319,7 @@ export class GameOverModal {
   private resetShareButton(): void {
     this.sharing = false;
     this.shareButton.disabled = false;
-    this.shareButton.textContent = 'POST TO X';
+    this.shareButton.textContent = t('gameOver.share');
   }
 
   private async handleShareClick(): Promise<void> {
@@ -327,7 +328,7 @@ export class GameOverModal {
     if (this.sharing) return;
     this.sharing = true;
     this.shareButton.disabled = true;
-    this.shareButton.textContent = 'POSTING...';
+    this.shareButton.textContent = t('gameOver.sharing');
 
     // Popup-blocker workaround (docs/plan-cloudflare-x-share.md Phase 1):
     // open a blank tab synchronously, still inside this click handler's own
@@ -381,7 +382,7 @@ export class GameOverModal {
       popup?.close();
       this.sharing = false;
       this.shareButton.disabled = false;
-      this.shareButton.textContent = 'FAILED - RETRY';
+      this.shareButton.textContent = t('gameOver.shareFailed');
     }
   }
 }

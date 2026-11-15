@@ -15,6 +15,8 @@
 import type { Point } from '../core/field';
 import type { FxFlash, FxLineGlow, FxPopup, FxShard, FxSpark, FxSplitBanner } from '../fx/director';
 import { fxFont, fxFontEpoch } from './fxFonts';
+import { praiseText } from '../fx/params';
+import { t } from '../i18n';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -38,7 +40,7 @@ const POPUP_SPACING = 0.07; // letter spacing of the small text, of its font siz
 const POPUP_GLOW = 0.43; // glow of the small text, of its font size
 const PRAISE_FONT_SHARE = 1.3; // of the score's font size
 const CHAIN_FONT_SHARE = 0.6;
-const SPLIT_TEXT = 'SPLIT!';
+const splitText = (): string => t('fx.split');
 const SPLIT_WIDTH_SHARE = 0.6; // of the field width, letter spacing included
 const SPLIT_SPACING = 0.14; // of its font size
 const EDGE_PAD_PX = 6; // text kept this far inside the field
@@ -339,7 +341,7 @@ export function drawPopups(
 
     if (popup.praise) {
       ctx.font = fxFont(900, praisePx);
-      const praise = layoutSpaced(ctx, popup.praise, praisePx * SPLIT_SPACING);
+      const praise = layoutSpaced(ctx, praiseText(popup.praise), praisePx * SPLIT_SPACING);
       const half = praise.width / 2 + praisePx * 0.2;
       const px = clamp(x, EDGE_PAD_PX + half, CANVAS_WIDTH - EDGE_PAD_PX - half);
       strokeNeon(ctx, praise, px, y + praiseDy, praisePx, 0);
@@ -359,7 +361,7 @@ export function drawPopups(
 /** SPLIT!'s font size: letter spacing included, it spans SPLIT_WIDTH_SHARE of the field at pop 1. */
 function splitFontPx(ctx: CanvasRenderingContext2D, pop: number): number {
   ctx.font = fxFont(900, 100);
-  const natural = layoutSpaced(ctx, SPLIT_TEXT, 100 * SPLIT_SPACING).width || 1;
+  const natural = layoutSpaced(ctx, splitText(), 100 * SPLIT_SPACING).width || 1;
   return Math.round(((100 * CANVAS_WIDTH * SPLIT_WIDTH_SHARE) / natural) * pop);
 }
 
@@ -393,7 +395,7 @@ function bannerImage(slot: 'steady' | 'torn', fontPx: number, channelPx: number,
   off.textBaseline = 'middle';
   off.lineJoin = 'round';
   off.font = fxFont(900, fontPx);
-  const text = layoutSpaced(off, SPLIT_TEXT, fontPx * SPLIT_SPACING);
+  const text = layoutSpaced(off, splitText(), fontPx * SPLIT_SPACING);
   strokeNeon(off, text, CANVAS_WIDTH / 2, height / 2, fontPx, channelPx);
   const image = { canvas, key, height };
   bannerImages[slot] = image;
@@ -446,7 +448,7 @@ export function drawSplitBanner(ctx: CanvasRenderingContext2D, banner: FxSplitBa
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
     ctx.font = fxFont(900, fontPx);
-    const text = layoutSpaced(ctx, SPLIT_TEXT, fontPx * SPLIT_SPACING);
+    const text = layoutSpaced(ctx, splitText(), fontPx * SPLIT_SPACING);
     for (const band of glitch.bands) {
       ctx.save();
       if (!steady) {

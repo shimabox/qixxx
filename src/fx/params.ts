@@ -46,6 +46,7 @@ import {
   FX_TEXT_MIN_DISPLAY_PX,
   FxShakeSpec,
 } from '../config';
+import { t, type MessageKey } from '../i18n';
 
 export type { FxShakeSpec };
 
@@ -149,7 +150,19 @@ export function classifyClaimShare(share: number, params: Pick<FxParams, 'claimS
   return 'small';
 }
 
+/** Which praise a claim earns. An identifier: the word drawn for it comes from the text table (praiseText()). */
 export type ClaimPraise = 'NICE!' | 'GREAT!' | 'AWESOME!';
+
+const PRAISE_TEXT_KEYS = {
+  'NICE!': 'fx.praiseNice',
+  'GREAT!': 'fx.praiseGreat',
+  'AWESOME!': 'fx.praiseAwesome',
+} as const satisfies Record<ClaimPraise, MessageKey>;
+
+/** The word drawn for `praise`. */
+export function praiseText(praise: ClaimPraise): string {
+  return t(PRAISE_TEXT_KEYS[praise]);
+}
 
 /** The word a claim of this added occupancy (0-1) is praised with, or null below claimShareMid. */
 export function praiseForClaimShare(

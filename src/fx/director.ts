@@ -16,6 +16,7 @@ import type { ClaimFeedback, MissFeedback } from '../core/feedback';
 import type { Point } from '../core/field';
 import { FxParams, FxShakeSpec, ClaimPraise, classifyClaimShare, praiseForClaimShare } from './params';
 import { BannerGlitch, bannerGlitch, popupBounceScale, popupChannelOffset } from './textGlitch';
+import { t } from '../i18n';
 
 export interface FxLineGlow {
   cells: readonly Point[];
@@ -256,7 +257,7 @@ export class FxDirector {
         age: 0,
         duration: p.multiplierFlyTicks + p.multiplierHighlightTicks,
         flyTicks: p.multiplierFlyTicks,
-        text: `x${context.nextMultiplier}`,
+        text: t('hud.multiplier', context.nextMultiplier),
       };
       this.splitLockTicks = Math.max(this.splitLockTicks, p.splitConfirmLockTicks);
       return { hitStopTicks: p.hitStopSplitTicks, chain };
@@ -269,8 +270,8 @@ export class FxDirector {
         duration: p.popupTicks,
         revealId: this.revealSeq,
         anchor: line.length > 0 ? { ...line[Math.floor(line.length / 2)] } : { x: 0, y: 0 },
-        text: `+${feedback.areaScore}`,
-        note: feedback.lineSpeed === 'slow' ? 'x2' : null,
+        text: t('fx.score', feedback.areaScore),
+        note: feedback.lineSpeed === 'slow' ? t('fx.slowNote') : null,
         praise: praiseForClaimShare(share, p),
         chain,
       });
@@ -392,7 +393,7 @@ export class FxDirector {
         scale: popupBounceScale(pop.age, p.popupBounceScale, p.popupBounceTicks),
         channelOffset: popupChannelOffset(pop.age, reduced, p.textGlitchPopupTicks),
         praise: pop.praise,
-        chain: pop.chain >= 2 ? `CHAIN x${pop.chain}` : null,
+        chain: pop.chain >= 2 ? t('fx.chain', pop.chain) : null,
       })),
       shards: this.shards ? shardFrame(this.shards) : [],
       sparks: this.sparks.flatMap(sparkFrame),

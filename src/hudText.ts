@@ -1,7 +1,9 @@
 // The HUD's wording and the multiplier's emphasis timing. Pure and
 // tick-driven — no DOM, no clock — so the exact strings and the emphasis
 // timing have direct unit test coverage (src/hudText.test.ts). main.ts puts
-// the parts into the HUD's line elements.
+// the parts into the HUD's line elements. The words come from the text
+// table (src/i18n/) and stay English in every language.
+import { t } from './i18n';
 
 /** A whole percent of a 0-1 share, rounded down (a hair of tolerance keeps 0.7 from reading 69). */
 export function floorPercent(share: number): number {
@@ -11,7 +13,7 @@ export function floorPercent(share: number): number {
 /** `<current>%/<goal>% <left>% LEFT`, with left = max(0, goal - current) (all whole, rounded-down percents). */
 export function occupancyText(currentPercent: number, goalPercent: number): string {
   const left = Math.max(0, goalPercent - currentPercent);
-  return `${currentPercent}%/${goalPercent}% ${left}% LEFT`;
+  return t('hud.occupancy', currentPercent, goalPercent, left);
 }
 
 /**
@@ -64,9 +66,9 @@ export function hudLines(input: HudTextInput, twoLine: boolean): HudLines {
     const goal = input.goalIsHiScore ? '' : `  ${input.goal}`;
     return {
       lines: [
-        [`STAGE ${input.stage}  SCORE `, HUD_SCORE_SLOT, `  HI ${input.hiScore}`],
+        [`${t('hud.stage', input.stage)}  ${t('hud.score')} `, HUD_SCORE_SLOT, `  ${t('hud.hi', input.hiScore)}`],
         [`${occupancy}  `, HUD_LIVES_SLOT, '  ', HUD_MULTIPLIER_SLOT],
-        [`${input.modePrefix}TIME ${input.time}${goal}`],
+        [`${input.modePrefix}${t('hud.time', input.time)}${goal}`],
       ],
       timeLine: 2,
     };
@@ -74,9 +76,9 @@ export function hudLines(input: HudTextInput, twoLine: boolean): HudLines {
   return {
     lines: [
       [
-        `${input.modePrefix}STAGE ${input.stage}  SCORE `,
+        `${input.modePrefix}${t('hud.stage', input.stage)}  ${t('hud.score')} `,
         HUD_SCORE_SLOT,
-        `  ${input.goal}  TIME ${input.time}  ${occupancy}  `,
+        `  ${input.goal}  ${t('hud.time', input.time)}  ${occupancy}  `,
         HUD_LIVES_SLOT,
         '  ',
         HUD_MULTIPLIER_SLOT,

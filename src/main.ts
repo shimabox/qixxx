@@ -61,6 +61,8 @@ import {
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
+import { t } from './i18n';
+import { screenTextString, titleScreenText } from './screenText';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -332,7 +334,7 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
     // vw-based clamp(), so this button's natural width never depends on
     // window size either.
-    button.textContent = 'UNMUTE';
+    button.textContent = t('mute.unmute');
     button.style.minWidth = `${button.getBoundingClientRect().width}px`;
   }
   return button;
@@ -815,7 +817,7 @@ function toggleMute(): void {
 }
 
 function updateMuteButtonLabel(): void {
-  muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+  muteButton.textContent = sfx.isMuted() ? t('mute.unmute') : t('mute.mute');
 }
 
 function updateTouchLayout(): void {
@@ -1122,7 +1124,7 @@ function updateHud(): void {
   );
   // The `xN` multiplier and the SCORE number are their own spans (see
   // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
-  hudMultiplier.textContent = `x${multiplier}`;
+  hudMultiplier.textContent = t('hud.multiplier', multiplier);
   hudScore.textContent = String(score);
   hudLives.textContent = livesText(lives, INITIAL_LIVES);
   const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
@@ -1497,7 +1499,7 @@ function renderFrame(): void {
     const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
     let text = '';
     if (status === 'gameover') {
-      text = `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`;
+      text = `${t('replay.endHeading')}\n\n${t('replay.endScore', activeSession.getScore())}\n${t('replay.endStage', activeSession.getStage(), finalStage)}`;
     } else if (status === 'stageclear' && replayAutoAdvance && replayEngine && !replayEngine.isFinished()) {
       // Shown for as long as update() holds the cleared stage, with no
       // "press any key" line: playback moves on by itself. The extra
@@ -1599,7 +1601,7 @@ function renderFrame(): void {
 function screenText(status: ReturnType<GameSession['getStatus']>): string {
   switch (status) {
     case 'title':
-      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
+      return screenTextString(titleScreenText(session.getHighScore()));
     case 'stageclear':
       // While SPLIT! is on the field the clear text waits, so the two never
       // overlap; the split itself is announced by the banner, not by a
