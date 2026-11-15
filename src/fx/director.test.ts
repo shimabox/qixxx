@@ -216,11 +216,14 @@ describe('FxDirector — split timing', () => {
   it('flies the multiplier for 40 ticks, then highlights the HUD for 20', () => {
     const fx = new FxDirector(createDefaultFxParams());
     fx.onClaim(claim(0.03, { split: true, stageCleared: true }), { nextMultiplier: 2 });
+    expect(fx.isMultiplierFlying()).toBe(true);
     ticks(fx, FX_MULTIPLIER_FLY_TICKS - 1);
     expect(fx.getFrame().multiplierFly?.progress).toBe(1);
+    expect(fx.isMultiplierFlying()).toBe(true);
     expect(fx.getFrame().multiplierHighlight).toBe(0);
     fx.tick();
     expect(fx.getFrame().multiplierFly).toBeNull();
+    expect(fx.isMultiplierFlying()).toBe(false);
     expect(fx.getFrame().multiplierHighlight).toBe(1);
     ticks(fx, FX_MULTIPLIER_HIGHLIGHT_TICKS);
     expect(fx.getFrame().multiplierHighlight).toBe(0);

@@ -1,6 +1,8 @@
 // The run-time tunable numbers of the impact feedback (hit stop, fill reveal,
 // popup, flashes, shakes, shards, split banner, the text glitch and bounce,
-// sparks, claim chains and the HUD score count-up). Starts from src/config.ts's
+// sparks, claim chains and the HUD score count-up), plus the HUD multiplier
+// emphasis, the STAGE CLEAR result count-up, the GAME OVER retry waits and the
+// effects' smallest on-screen text size. Starts from src/config.ts's
 // FX_* constants; the dev-only debug panel changes `fxParams` in place, and
 // FxDirector reads it on every new effect, so a change applies from the next
 // claim/split/miss. Nothing here touches src/core/ or the simulation.
@@ -37,6 +39,11 @@ import {
   FX_CHAIN_WINDOW_TICKS,
   FX_CHAIN_PITCH_MAX_STEPS,
   FX_SCORE_ROLL_TICKS,
+  HUD_MULTIPLIER_EMPHASIS_TICKS,
+  STAGE_RESULT_ROLL_TICKS,
+  RETRY_OFFER_WAIT_MAX_TICKS,
+  RETRY_CONFIRM_GUARD_TICKS,
+  FX_TEXT_MIN_DISPLAY_PX,
   FxShakeSpec,
 } from '../config';
 
@@ -75,6 +82,16 @@ export interface FxParams {
   chainWindowTicks: number;
   chainPitchMaxSteps: number;
   scoreRollTicks: number;
+  /** The HUD multiplier emphasis after it rises or falls back to x1. */
+  multiplierEmphasisTicks: number;
+  /** The STAGE CLEAR result count-up. */
+  stageResultRollTicks: number;
+  /** GAME OVER: the longest the keyboard and the field wait for the ranking check. */
+  retryOfferWaitMaxTicks: number;
+  /** GAME OVER: confirm is dropped this long from the modal appearing. */
+  retryConfirmGuardTicks: number;
+  /** The effects' text is drawn at least this many CSS px tall on screen. */
+  fxTextMinDisplayPx: number;
 }
 
 /** A fresh copy of the config.ts starting values. */
@@ -112,6 +129,11 @@ export function createDefaultFxParams(): FxParams {
     chainWindowTicks: FX_CHAIN_WINDOW_TICKS,
     chainPitchMaxSteps: FX_CHAIN_PITCH_MAX_STEPS,
     scoreRollTicks: FX_SCORE_ROLL_TICKS,
+    multiplierEmphasisTicks: HUD_MULTIPLIER_EMPHASIS_TICKS,
+    stageResultRollTicks: STAGE_RESULT_ROLL_TICKS,
+    retryOfferWaitMaxTicks: RETRY_OFFER_WAIT_MAX_TICKS,
+    retryConfirmGuardTicks: RETRY_CONFIRM_GUARD_TICKS,
+    fxTextMinDisplayPx: FX_TEXT_MIN_DISPLAY_PX,
   };
 }
 

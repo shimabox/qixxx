@@ -7,6 +7,7 @@ import {
   HudTextInput,
   HUD_SCORE_SLOT,
   HUD_MULTIPLIER_SLOT,
+  HUD_LIVES_SLOT,
   MultiplierEmphasis,
 } from './hudText';
 
@@ -42,12 +43,10 @@ const input: HudTextInput = {
   time: '2:41.3',
   occupancyPercent: 41,
   goalPercent: 75,
-  lives: 2,
-  lifeSlots: 3,
 };
 
 function render(parts: (string | { slot: string })[]): string {
-  return parts.map((p) => (typeof p === 'string' ? p : p.slot === 'score' ? '12345' : 'x2')).join('');
+  return parts.map((p) => (typeof p === 'string' ? p : p.slot === 'score' ? '12345' : p.slot === 'lives' ? livesText(2, 3) : 'x2')).join('');
 }
 
 describe('hudLines', () => {
@@ -56,6 +55,7 @@ describe('hudLines', () => {
     expect(lines).toHaveLength(1);
     expect(render(lines[0])).toBe('STAGE 3  SCORE 12345  TO BEST 1200  TIME 2:41.3  41%/75% 34% LEFT  ◆◆◇  x2');
     expect(lines[0]).toContain(HUD_SCORE_SLOT);
+    expect(lines[0]).toContain(HUD_LIVES_SLOT);
     expect(lines[0][lines[0].length - 1]).toBe(HUD_MULTIPLIER_SLOT);
     expect(timeLine).toBe(0);
   });

@@ -31,7 +31,7 @@ describe('hudGoalText', () => {
   });
 
   it('with no best yet, the first point is already past it', () => {
-    expect(hudGoalText({ ...base, score: 0, bestAtStart: 0 })).toBe('TO BEST 0');
+    expect(hudGoalText({ ...base, score: 0, bestAtStart: 0 })).toBe('HI 0');
     expect(hudGoalText({ ...base, score: 1, bestAtStart: 0 })).toBe('NEW BEST!');
   });
 });

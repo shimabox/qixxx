@@ -36,6 +36,8 @@ export interface HudGoalInput {
 export function hudGoalText(input: HudGoalInput): string {
   if (input.mode === 'hi') return `HI ${input.hiScore}`;
   const { score, bestAtStart, rankInThreshold } = input;
+  // No best to chase yet (a first play, before any point): show the plain HI.
+  if (bestAtStart === 0 && score === 0) return `HI ${input.hiScore}`;
   if (score <= bestAtStart) return `TO BEST ${bestAtStart - score}`;
   if (rankInThreshold === null) return 'NEW BEST!';
   if (score <= rankInThreshold) return `TO #${RANKING_BOARD_SIZE} ${rankInThreshold - score}`;

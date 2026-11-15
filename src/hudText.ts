@@ -27,7 +27,9 @@ export function livesText(lives: number, slots: number): string {
 /** Where main.ts drops its own SCORE and multiplier spans into a line. */
 export const HUD_SCORE_SLOT = { slot: 'score' } as const;
 export const HUD_MULTIPLIER_SLOT = { slot: 'multiplier' } as const;
-export type HudPart = string | typeof HUD_SCORE_SLOT | typeof HUD_MULTIPLIER_SLOT;
+/** The lives marks (livesText()): main.ts wraps them so their fallback glyphs cannot make the line taller. */
+export const HUD_LIVES_SLOT = { slot: 'lives' } as const;
+export type HudPart = string | typeof HUD_SCORE_SLOT | typeof HUD_MULTIPLIER_SLOT | typeof HUD_LIVES_SLOT;
 
 export interface HudTextInput {
   /** runMode.ts's resolveHudModePrefix(): '' or `SEED <n>  `. */
@@ -42,8 +44,6 @@ export interface HudTextInput {
   time: string;
   occupancyPercent: number;
   goalPercent: number;
-  lives: number;
-  lifeSlots: number;
 }
 
 export interface HudLines {
@@ -60,13 +60,12 @@ export interface HudLines {
  */
 export function hudLines(input: HudTextInput, twoLine: boolean): HudLines {
   const occupancy = occupancyText(input.occupancyPercent, input.goalPercent);
-  const lives = livesText(input.lives, input.lifeSlots);
   if (twoLine) {
     const goal = input.goalIsHiScore ? '' : `  ${input.goal}`;
     return {
       lines: [
         [`STAGE ${input.stage}  SCORE `, HUD_SCORE_SLOT, `  HI ${input.hiScore}`],
-        [`${occupancy}  ${lives}  `, HUD_MULTIPLIER_SLOT],
+        [`${occupancy}  `, HUD_LIVES_SLOT, '  ', HUD_MULTIPLIER_SLOT],
         [`${input.modePrefix}TIME ${input.time}${goal}`],
       ],
       timeLine: 2,
@@ -77,7 +76,9 @@ export function hudLines(input: HudTextInput, twoLine: boolean): HudLines {
       [
         `${input.modePrefix}STAGE ${input.stage}  SCORE `,
         HUD_SCORE_SLOT,
-        `  ${input.goal}  TIME ${input.time}  ${occupancy}  ${lives}  `,
+        `  ${input.goal}  TIME ${input.time}  ${occupancy}  `,
+        HUD_LIVES_SLOT,
+        '  ',
         HUD_MULTIPLIER_SLOT,
       ],
     ],
@@ -104,16 +105,18 @@ export class MultiplierEmphasis {
   private current: { kind: MultiplierEmphasisKind; age: number; duration: number } | null = null;
   private pendingUp = false;
 
+  /** Ages the emphasis by one fixed tick (every live tick, hit-stopped ones included). */
+  tick(): void {
+    if (!this.current) return;
+    this.current.age++;
+    if (this.current.age >= this.current.duration) this.current = null;
+  }
+
   /**
-   * Once per live tick, after the session update: ages the emphasis by one
-   * tick, then reacts to the multiplier `multiplier` now reads. `flying`:
-   * the travelling multiplier is still on its way to the HUD.
+   * After a session update: reacts to the value the multiplier now reads.
+   * `flying`: the travelling multiplier is still on its way to the HUD.
    */
-  step(multiplier: number, flying: boolean, durationTicks: number): void {
-    if (this.current) {
-      this.current.age++;
-      if (this.current.age >= this.current.duration) this.current = null;
-    }
+  observe(multiplier: number, flying: boolean, durationTicks: number): void {
     if (this.last !== null && multiplier !== this.last) {
       if (multiplier > this.last) {
         if (flying) this.pendingUp = true;
@@ -126,6 +129,12 @@ export class MultiplierEmphasis {
       this.start('up', durationTicks);
     }
     this.last = multiplier;
+  }
+
+  /** tick() then observe(): one whole tick. */
+  step(multiplier: number, flying: boolean, durationTicks: number): void {
+    this.tick();
+    this.observe(multiplier, flying, durationTicks);
   }
 
   /** A new run: no emphasis, and `multiplier` is the value to compare against. */

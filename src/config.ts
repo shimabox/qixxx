@@ -259,8 +259,17 @@ export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
 // dev-only tool, exactly like a 7+-digit cumulative score, rather than one
 // this sizing protects against. A 7+-digit cumulative score remains the
 // other accepted residual.
+//
+// The goal slot (src/hudGoal.ts) replaced `HI: <n>` in the single line, and
+// the occupancy now reads `<current>%/<goal>% <left>% LEFT` (src/hudText.ts):
+// its widest form is 16 characters, since the goal is always two digits
+// (DEFAULT_REQUIRED_OCCUPANCY..REQUIRED_OCCUPANCY_MAX) and the points left
+// can only have two digits while the current share has one or two. The
+// widest goal is `TO BEST <6 digits>`, and the lives are INITIAL_LIVES marks
+// (or `◆xN` for a dev-only override past them). The colons went, so this
+// text is no wider than the one it replaced.
 export const HUD_WORST_CASE_STATS_TEXT =
-  'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+  'STAGE 999  SCORE 999999  TO BEST 999999  TIME 3:00.0  10%/90% 80% LEFT  ◆◆◇  x9';
 
 // #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
 // #hud / the credit link / the mute button. Kept as a constant — like
@@ -414,6 +423,35 @@ export const FX_CHAIN_WINDOW_TICKS = 180;
 export const FX_CHAIN_PITCH_MAX_STEPS = 6;
 // The HUD's score counts up to the real score over this many ticks.
 export const FX_SCORE_ROLL_TICKS = 18;
+// The goals, the retry and the stage result (presentation only, like the
+// impact feedback above; the tick values and the text size start
+// src/fx/params.ts's fxParams, which the debug panel can change).
+// The HUD multiplier is emphasised for this many ticks after it rises (cyan)
+// or falls back to x1 (warning colour).
+export const HUD_MULTIPLIER_EMPHASIS_TICKS = 24;
+// The HUD multiplier is always drawn this much larger (a transform, so the
+// line keeps its height), and up to EXTRA more at the start of its emphasis.
+export const HUD_MULTIPLIER_BASE_SCALE = 1.15;
+export const HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE = 0.35;
+// The occupancy gauge between the HUD and the field: its height in CSS px,
+// and how close to the goal (in percentage points) it turns brighter.
+export const HUD_GAUGE_HEIGHT_PX = 4;
+export const HUD_GAUGE_NEAR_GOAL_POINTS = 10;
+export const HUD_GAUGE_TRACK_COLOR = 'rgba(255, 255, 255, 0.14)';
+export const HUD_GAUGE_FILL_COLOR = 'rgba(0, 255, 65, 0.55)';
+export const HUD_GAUGE_NEAR_COLOR = '#b6ffc8';
+export const HUD_GAUGE_GOAL_COLOR = '#ffffff';
+// The STAGE CLEAR result (AREA / BONUS / TOTAL) counts up over this many ticks.
+export const STAGE_RESULT_ROLL_TICKS = 30;
+// GAME OVER: the keyboard and the field wait at most this many ticks for the
+// ranking check (/api/ranking) before they can start the next run again.
+export const RETRY_OFFER_WAIT_MAX_TICKS = 90;
+// GAME OVER: confirm from the keyboard, the field and the touch buttons is
+// dropped for this many ticks from the modal appearing.
+export const RETRY_CONFIRM_GUARD_TICKS = 24;
+// The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
+// this many CSS px on screen, however far the field is scaled down.
+export const FX_TEXT_MIN_DISPLAY_PX = 11;
 // The effects' text: a geometric display face bundled with the game
 // (public/fonts/), falling back to monospace until it has loaded or if it
 // cannot be loaded.

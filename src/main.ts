@@ -46,7 +46,18 @@ import {
   COLOR_FX_NEON_CYAN,
   COLOR_FX_NEON_MAGENTA,
   FX_TEXT_FONT_FAMILY,
+  INITIAL_LIVES,
+  HUD_MULTIPLIER_BASE_SCALE,
+  HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE,
+  HUD_GAUGE_HEIGHT_PX,
+  HUD_GAUGE_NEAR_GOAL_POINTS,
+  HUD_GAUGE_TRACK_COLOR,
+  HUD_GAUGE_FILL_COLOR,
+  HUD_GAUGE_NEAR_COLOR,
+  HUD_GAUGE_GOAL_COLOR,
 } from './config';
+import { hudGoalText } from './hudGoal';
+import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -368,6 +379,56 @@ function getHudScoreElement(): HTMLSpanElement {
   return el;
 }
 
+// Get or create the occupancy gauge: a HUD_GAUGE_HEIGHT_PX bar as wide as the
+// field, absolutely positioned in the HUD_GAP_PX gap just above it (anchored
+// to #canvas-wrap, whose box is the field's), so it adds nothing to the
+// layout's height. 100% is the field's full width; the goal mark is 2px wide
+// and reaches 3px past the bar above and below so it is easy to find on a
+// phone, where the bar stays 4px tall.
+function getGaugeElements(wrap: HTMLDivElement): { gauge: HTMLDivElement; fill: HTMLDivElement; goal: HTMLDivElement } {
+  let gauge = document.getElementById('hud-gauge') as HTMLDivElement | null;
+  if (!gauge) {
+    gauge = document.createElement('div');
+    gauge.id = 'hud-gauge';
+    gauge.style.position = 'absolute';
+    gauge.style.left = '0';
+    gauge.style.right = '0';
+    // Centered in the gap: (HUD_GAP_PX - height) / 2 above the field's top edge.
+    gauge.style.bottom = `calc(100% + ${(HUD_GAP_PX - HUD_GAUGE_HEIGHT_PX) / 2}px)`;
+    gauge.style.height = `${HUD_GAUGE_HEIGHT_PX}px`;
+    gauge.style.background = HUD_GAUGE_TRACK_COLOR;
+    gauge.style.pointerEvents = 'none';
+    gauge.style.userSelect = 'none';
+
+    const fill = document.createElement('div');
+    fill.id = 'hud-gauge-fill';
+    fill.style.position = 'absolute';
+    fill.style.left = '0';
+    fill.style.top = '0';
+    fill.style.bottom = '0';
+    fill.style.width = '0%';
+    fill.style.background = HUD_GAUGE_FILL_COLOR;
+    gauge.appendChild(fill);
+
+    const goal = document.createElement('div');
+    goal.id = 'hud-gauge-goal';
+    goal.style.position = 'absolute';
+    goal.style.top = '-3px';
+    goal.style.bottom = '-3px';
+    goal.style.width = '2px';
+    goal.style.left = 'calc(0% - 1px)';
+    goal.style.background = HUD_GAUGE_GOAL_COLOR;
+    gauge.appendChild(goal);
+
+    wrap.appendChild(gauge);
+  }
+  return {
+    gauge,
+    fill: document.getElementById('hud-gauge-fill') as HTMLDivElement,
+    goal: document.getElementById('hud-gauge-goal') as HTMLDivElement,
+  };
+}
+
 // Game state
 let session: GameSession;
 let renderer: Renderer;
@@ -425,7 +486,6 @@ let hudMultiplier: HTMLSpanElement;
 // The next stage's multiplier travelling from the field center to the HUD.
 // The HUD sits outside the canvas, so this one effect is a DOM element.
 let multiplierFly: HTMLDivElement;
-let lastMultiplierHighlight = 0;
 let lastMultiplierFlyShadow = '';
 // The live run's HUD SCORE number counting up to the real score after
 // points are added (src/fx/scoreRoll.ts). Ticked next to the director, so it
@@ -434,6 +494,10 @@ let lastMultiplierFlyShadow = '';
 // Replay viewing shows the replay's score as it is.
 const hudScoreRoll = new ScoreRoll();
 let hudScore: HTMLSpanElement;
+// The HUD's lives marks. Line height 0: the marks come from a fallback font
+// whose taller metrics would otherwise make the HUD line 1px taller, and with
+// it shrink the field.
+let hudLives: HTMLSpanElement;
 let lastHudScoreRolling = false;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
@@ -457,20 +521,26 @@ let lastInput: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, conf
 // last-displayed values lets the (comparatively expensive) textContent write
 // be skipped whenever nothing changed, instead of re-serializing + reflowing
 // the same string 60 times a second.
-let lastHudStage = -1;
-let lastHudScore = -1;
-let lastHudHi = -1;
-let lastHudOccupancy = -1;
-let lastHudLives = -1;
-let lastHudMultiplier = -1;
-// TIME changes far more often than the fields above (roughly every 6 ticks,
-// a decisecond at TICK_RATE=60) — cached as a string (not raw ticks) so the
-// comparison above stays a single strict-equality check per field, same
-// shape as every other lastHud* cache.
-let lastHudTime = '';
-// Whether the last-30-seconds warning color was applied on the previous write — see updateHud()'s doc
-// comment for why this is tracked separately from lastHudTime.
-let lastHudTimeWarning = false;
+// Every displayed value joined into one string (TIME included, which changes
+// roughly every 6 ticks), so "nothing changed" is a single comparison. ''
+// forces the next write.
+let lastHudKey = '';
+// The occupancy gauge's last-written state, cached the same way.
+let lastGaugeKey = '';
+
+// The player's best when the live run started. The live high score follows
+// the score during play, so the HUD's goal slot and the GAME OVER modal's NEW
+// RECORD compare against this instead. Set on page load and whenever a fresh
+// run begins (GAME OVER -> Title).
+let runBestAtStart = 0;
+// The HUD multiplier's emphasis after it rises or falls back to x1 (live
+// play only — see src/hudText.ts).
+const multiplierEmphasis = new MultiplierEmphasis();
+let lastMultiplierStyleKey = '';
+// The occupancy gauge between the HUD row and the field (see getGaugeElements()).
+let hudGauge: HTMLDivElement;
+let hudGaugeFill: HTMLDivElement;
+let hudGaugeGoal: HTMLDivElement;
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -566,6 +636,7 @@ function init(): void {
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
+  runBestAtStart = highScore;
   if (explicitSeedParam !== undefined) {
     // `?seed=` pins the whole page load to a 'seeded' run — GameSession's
     // own internal reset (triggered by its 'gameover' case) reuses this
@@ -614,7 +685,16 @@ function init(): void {
   hudLine3 = getHudLineElement(hud, 'hud-line3');
   hudMultiplier = document.createElement('span');
   hudMultiplier.id = 'hud-multiplier';
+  // Bold and drawn larger by a transform, so the line keeps its height.
+  hudMultiplier.style.display = 'inline-block';
+  hudMultiplier.style.fontWeight = 'bold';
+  hudMultiplier.style.transformOrigin = 'center';
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  ({ gauge: hudGauge, fill: hudGaugeFill, goal: hudGaugeGoal } = getGaugeElements(canvasWrap));
   hudScore = getHudScoreElement();
+  hudLives = document.createElement('span');
+  hudLives.id = 'hud-lives';
+  hudLives.style.lineHeight = '0';
   multiplierFly = getMultiplierFlyElement();
   // The effects' display face: requested now so it is ready by the first
   // claim; the effects fall back to monospace until then (or if it fails).
@@ -652,6 +732,10 @@ function init(): void {
     },
   });
   rankingUI.mountTitleButton();
+  // The board's entry score for the HUD's goal slot: asked for once now, and
+  // refreshed by each GAME OVER's own ranking check — never during play. A
+  // seeded run's goal slot shows the high score, so it does not need it.
+  if (runMode === 'normal') rankingUI.loadRankInThreshold();
 
   sfx = new SfxEngine(loadMuted());
   creditLink = getCreditLinkElement(hudRow);
@@ -771,10 +855,12 @@ function enterReplayMode(engine: ReplayEngine): void {
   fx.reset();
   gameOverConfirmGate.reset();
   renderer.resetBoard();
+  multiplierEmphasis.reset();
   renderMultiplierFx(null);
   // Force the next renderFrame() to rewrite the HUD/screen text (they were
   // last written for the live session and must not be left stale).
-  lastHudStage = -1;
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -788,7 +874,8 @@ function exitReplayMode(): void {
   // The live board is back on screen: the fill reveal must not compare it
   // with the replay's last frame.
   renderer.resetBoard();
-  lastHudStage = -1;
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -922,12 +1009,7 @@ function updateHudMode(): void {
   hudTwoLineMode = twoLine;
   hudLine2.style.display = twoLine ? 'block' : 'none';
   hudLine3.style.display = twoLine ? 'block' : 'none';
-  lastHudStage = -1;
-  lastHudScore = -1;
-  lastHudHi = -1;
-  lastHudOccupancy = -1;
-  lastHudLives = -1;
-  lastHudMultiplier = -1;
+  lastHudKey = '';
   updateHud();
 }
 
@@ -939,7 +1021,8 @@ function updateHudMode(): void {
 function updateHud(): void {
   const activeSession = currentSession();
   const game = activeSession.getGame();
-  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
+  const occupancyPercent = floorPercent(game.getOccupancy());
+  const goalPercent = floorPercent(game.getRequiredOccupancy());
   const stage = activeSession.getStage();
   // Live play shows the counting-up value; a replay shows its score as is.
   const score = viewMode === 'replay' ? activeSession.getScore() : hudScoreRoll.value();
@@ -951,13 +1034,25 @@ function updateHud(): void {
   // GameSession.getTimeLimitTicks() to 0 — a run-wide countdown, not a per-stage elapsed count.
   const remainingTicks = activeSession.getRemainingTicks();
   const timeStr = formatTicks(remainingTicks);
-  // Last-30-seconds warning: tracked
-  // as its own boolean, separately from `timeStr === lastHudTime` below,
-  // because the crossing tick doesn't always land on a decisecond-bucket
-  // boundary (formatTicks() only changes its displayed string once every 6
-  // ticks) — without this, the color flip could lag up to 5 ticks behind
-  // the instant remainingTicks actually crosses the threshold.
+  // Last-30-seconds warning: part of the cache key on its own, because the
+  // crossing tick doesn't always land on a decisecond-bucket boundary
+  // (formatTicks() only changes its displayed string once every 6 ticks) —
+  // without it, the color flip could lag up to 5 ticks behind the instant
+  // remainingTicks actually crosses the threshold.
   const timeWarning = remainingTicks <= HUD_TIME_WARNING_TICKS;
+  // The goal slot (src/hudGoal.ts): the high score for a seeded run and a
+  // replay, otherwise the next target, worked out from the REAL score (not
+  // the counting-up display value).
+  // A first play has no best to chase until its first point: plain HI then.
+  const noBestYet = runBestAtStart === 0 && activeSession.getScore() === 0;
+  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || noBestYet;
+  const goal = hudGoalText({
+    mode: goalIsHiScore ? 'hi' : 'chase',
+    score: activeSession.getScore(),
+    hiScore: hi,
+    bestAtStart: runBestAtStart,
+    rankInThreshold: rankingUI.getRankInThreshold(),
+  });
 
   // The SCORE number glows cyan while it counts up. A text-shadow only, so
   // the HUD's line height and width stay as they are.
@@ -966,61 +1061,64 @@ function updateHud(): void {
     hudScore.style.textShadow = scoreRolling ? `0 0 6px ${COLOR_FX_NEON_CYAN}, 0 0 12px ${COLOR_FX_NEON_CYAN}` : '';
   }
 
-  if (
-    stage === lastHudStage &&
-    score === lastHudScore &&
-    hi === lastHudHi &&
-    occupancyPercent === lastHudOccupancy &&
-    lives === lastHudLives &&
-    multiplier === lastHudMultiplier &&
-    timeStr === lastHudTime &&
-    timeWarning === lastHudTimeWarning
-  ) {
-    return;
-  }
-  lastHudStage = stage;
-  lastHudScore = score;
-  lastHudHi = hi;
-  lastHudOccupancy = occupancyPercent;
-  lastHudLives = lives;
-  lastHudMultiplier = multiplier;
-  lastHudTime = timeStr;
-  lastHudTimeWarning = timeWarning;
+  updateGauge(occupancyPercent, goalPercent);
 
-  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
-  // (byte-identical to before seeded-run support existed, including in
-  // two-line mode's lines 1-2 — never touched here at all — which the
-  // mobile-viewport E2E test asserts stays unclipped), `SEED <n>` for a
-  // `?seed=` run.
+  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode].join('|');
+  if (key === lastHudKey) return;
+  lastHudKey = key;
+
+  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal',
+  // `SEED <n>  ` for a `?seed=` run.
   const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
-  // Reset every line's color to its inherited default first, then apply the warning color only to
-  // whichever line actually carries TIME this frame — necessary because a
-  // HUD-mode flip (updateHudMode()) can move TIME from hudLine1 to hudLine3
-  // (or back) between one write and the next, and a stale inline color left
-  // on the line that *used* to carry TIME would otherwise persist.
+  const { lines, timeLine } = hudLines(
+    {
+      modePrefix,
+      stage,
+      hiScore: hi,
+      goal,
+      goalIsHiScore,
+      time: timeStr,
+      occupancyPercent,
+      goalPercent,
+    },
+    hudTwoLineMode
+  );
+  // The `xN` multiplier and the SCORE number are their own spans (see
+  // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
+  hudMultiplier.textContent = `x${multiplier}`;
+  hudScore.textContent = String(score);
+  hudLives.textContent = livesText(lives, INITIAL_LIVES);
+  const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
+  lineElements.forEach((el, index) => {
+    el.textContent = '';
+    for (const part of lines[index]) {
+      if (typeof part === 'string') el.append(part);
+      else el.append(part === HUD_SCORE_SLOT ? hudScore : part === HUD_LIVES_SLOT ? hudLives : hudMultiplier);
+    }
+  });
+  // Every line's color is reset first, then the warning color goes only on
+  // whichever line carries TIME this frame — a HUD-mode flip
+  // (updateHudMode()) can move TIME between lines, and a stale inline color
+  // left on the line that *used* to carry it would otherwise persist.
   hudLine1.style.color = '';
   hudLine3.style.color = '';
-  // The `xN` multiplier at the end of the line is its own span (see
-  // `hudMultiplier`); the line's text is unchanged by it.
-  hudMultiplier.textContent = `x${multiplier}`;
-  // Likewise the SCORE number (see `hudScore`).
-  hudScore.textContent = String(score);
-  if (hudTwoLineMode) {
-    hudLine1.textContent = `STAGE ${stage}  SCORE: `;
-    hudLine1.append(hudScore, `  HI: ${hi}`);
-    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
-    hudLine2.appendChild(hudMultiplier);
-    hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
-    if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
-  } else {
-    hudLine1.textContent = `${modePrefix}STAGE ${stage}  SCORE: `;
-    hudLine1.append(
-      hudScore,
-      `  HI: ${hi}  TIME ${timeStr}  OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `,
-      hudMultiplier
-    );
-    if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
-  }
+  if (timeWarning) lineElements[timeLine].style.color = HUD_TIME_WARNING_COLOR;
+}
+
+// The occupancy gauge: filled to the current share, with a white mark at the
+// goal; the fill turns brighter once HUD_GAUGE_NEAR_GOAL_POINTS or fewer
+// points are left. Shown for replays too (it is the board's state, not an
+// effect).
+function updateGauge(occupancyPercent: number, goalPercent: number): void {
+  const near = goalPercent - occupancyPercent <= HUD_GAUGE_NEAR_GOAL_POINTS;
+  const key = `${occupancyPercent}|${goalPercent}|${near}`;
+  if (key === lastGaugeKey) return;
+  lastGaugeKey = key;
+  hudGaugeFill.style.width = `${occupancyPercent}%`;
+  hudGaugeFill.style.background = near ? HUD_GAUGE_NEAR_COLOR : HUD_GAUGE_FILL_COLOR;
+  hudGaugeFill.style.boxShadow = near ? `0 0 6px ${HUD_GAUGE_NEAR_COLOR}` : 'none';
+  hudGaugeGoal.style.left = `calc(${goalPercent}% - 1px)`;
+  hudGauge.dataset.near = near ? 'true' : 'false';
 }
 
 // Moves the travelling multiplier (after a split) from the canvas center to
@@ -1052,16 +1150,34 @@ function renderMultiplierFx(frame: FxFrame | null): void {
       `translate(${fromX + (toX - fromX) * t}px, ${fromY + (toY - fromY) * t}px) translate(-50%, -50%) scale(${scale})`;
   }
 
+  // The HUD multiplier's emphasis (src/hudText.ts's MultiplierEmphasis):
+  // cyan after it rises, the warning colour after it falls back to x1, larger
+  // at first and easing back over HUD_MULTIPLIER_EMPHASIS_TICKS. A rise after
+  // a split starts as the travelling multiplier lands, which is when the
+  // director's own highlight starts too — the emphasis takes its place, so
+  // the two are never shown together. Live play only.
+  const emphasis = frame ? multiplierEmphasis.frame() : null;
   const highlight = frame?.multiplierHighlight ?? 0;
-  if (highlight !== lastMultiplierHighlight) {
-    lastMultiplierHighlight = highlight;
-    if (highlight > 0) {
-      hudMultiplier.style.color = COLOR_FX_SPLIT;
-      hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
-    } else {
-      hudMultiplier.style.color = '';
-      hudMultiplier.style.textShadow = '';
-    }
+  const styleKey = emphasis ? `${emphasis.kind}|${emphasis.strength}` : `h|${highlight}`;
+  if (styleKey === lastMultiplierStyleKey) return;
+  lastMultiplierStyleKey = styleKey;
+  if (emphasis) {
+    const color = emphasis.kind === 'up' ? COLOR_FX_NEON_CYAN : HUD_TIME_WARNING_COLOR;
+    hudMultiplier.dataset.emphasis = emphasis.kind;
+    hudMultiplier.style.color = color;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * emphasis.strength)}px ${color}`;
+    const scale = HUD_MULTIPLIER_BASE_SCALE + HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE * emphasis.strength;
+    hudMultiplier.style.transform = `scale(${Math.round(scale * 1000) / 1000})`;
+    return;
+  }
+  delete hudMultiplier.dataset.emphasis;
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  if (highlight > 0) {
+    hudMultiplier.style.color = COLOR_FX_SPLIT;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
+  } else {
+    hudMultiplier.style.color = '';
+    hudMultiplier.style.textShadow = '';
   }
 }
 
@@ -1158,6 +1274,7 @@ function updateLive(): void {
   // warning, so the run's tick count and recorded samples stand still. The
   // HUD score's count-up keeps going through a stop, like the effects.
   hudScoreRoll.tick();
+  multiplierEmphasis.tick();
   const input = beginLiveTick({
     fx,
     hitStop,
@@ -1204,6 +1321,10 @@ function updateLive(): void {
     hitStop.clear();
     fx.reset();
     renderer.resetBoard();
+    multiplierEmphasis.reset();
+    // The best this new run is chasing (the high score already includes the
+    // run that just ended).
+    runBestAtStart = session.getHighScore();
   } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
     // The next stage's board replaces this one: drop the effects tied to the
     // old board. SPLIT! and the travelling multiplier keep running.
@@ -1221,6 +1342,8 @@ function updateLive(): void {
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
+  // After the notices: a split has just started the travelling multiplier.
+  multiplierEmphasis.observe(session.getMultiplier(), fx.isMultiplierFlying(), fxParams.multiplierEmphasisTicks);
   // TIME countdown warning: decided here, once per live tick, from the
   // remaining time this tick's session.update() left behind. The replay
   // branch above returns before reaching this, which is what keeps replays
