@@ -30,7 +30,7 @@ interface ClaimNotice {
 }
 interface FxLog {
   ticks: number;
-  claims: Array<{ tick: number; hitStopTicks: number; totalTicks: number; areaScore: number }>;
+  claims: Array<{ tick: number; hitStopTicks: number; totalTicks: number; areaScore: number; score: number }>;
   misses: Array<{ tick: number; cause: string; gameOver: boolean; hitStopTicks: number; totalTicks: number; lives: number }>;
 }
 
@@ -93,6 +93,9 @@ async function startRun(page: Page, query: string, options: { splitClaims?: bool
         hitStopTicks: result.hitStopTicks,
         totalTicks: g.session.getTotalTicks(),
         areaScore: notice.areaScore,
+        // Read on the claim tick itself (the director hears of a claim right
+        // after the session.update() that made it).
+        score: g.session.getScore(),
       });
       return result;
     };
@@ -173,7 +176,7 @@ test.describe('impact feedback', () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test('a real claim: occupancy and HUD update on the claim tick, a hit stop holds the run, the popup lasts 40 ticks', async ({
+  test('a real claim: occupancy and the session score update on the claim tick, the HUD score 18 ticks later, a hit stop holds the run, the popup lasts 40 ticks', async ({
     page,
   }) => {
     await startRun(page, '?seed=1');
@@ -182,15 +185,16 @@ test.describe('impact feedback', () => {
     const [claim] = (await log(page)).claims;
     expect([3, 6, 10]).toContain(claim.hitStopTicks);
 
-    // Occupancy, score and the HUD already show the claim.
+    // Occupancy and the HUD's occupancy already show the claim, and the
+    // session's score was updated on the claim tick itself.
     const { occupancy, score } = await page.evaluate(() => ({
       occupancy: window.__game__!.session.getGame().getOccupancy(),
       score: window.__game__!.session.getScore(),
     }));
     expect(occupancy).toBeGreaterThan(0);
     expect(score).toBeGreaterThan(0);
+    expect(claim.score).toBe(score);
     await expect(page.locator('#hud')).toContainText(`OCCUPANCY: ${Math.floor(occupancy * 100)}%`);
-    await expect(page.locator('#hud')).toContainText(`SCORE: ${score}`);
     expect((await frame(page)).popups).toEqual([expect.objectContaining({ text: `+${claim.areaScore}` })]);
 
     // The run stands still for exactly the stop, then moves again.
@@ -202,9 +206,15 @@ test.describe('impact feedback', () => {
       await page.clock.runFor(FRAME_MS);
     }
 
-    // The popup is gone after 40 ticks.
+    // The HUD's score number counts up and matches the score 18 ticks after
+    // the claim. The popup is gone after 40 ticks.
+    let hudChecked = false;
     for (;;) {
       const since = await ticksSince(page, 'claims');
+      if (since >= 18 && !hudChecked) {
+        await expect(page.locator('#hud')).toContainText(`SCORE: ${score}`);
+        hudChecked = true;
+      }
       const popups = (await frame(page)).popups;
       if (since < 40) {
         expect(popups).toHaveLength(1);
@@ -214,6 +224,7 @@ test.describe('impact feedback', () => {
       }
       await page.clock.runFor(FRAME_MS);
     }
+    expect(hudChecked).toBe(true);
   });
 
   test('standing still mid-line until the Igniter catches up: a hit stop, shards, a shake, one life lost', async ({ page }) => {
