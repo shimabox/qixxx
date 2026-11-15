@@ -15,6 +15,16 @@
     <meta property="og:image" content="https://qixxx.orukubami.sh/og-image.png?v=040" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
+      /* The impact feedback's display face, bundled with the game
+         (public/fonts/, SIL Open Font License 1.1 — see Orbitron-OFL.txt).
+         Text falls back to monospace until it has loaded. */
+      @font-face {
+        font-family: "Orbitron";
+        src: url('/fonts/Orbitron-wght.ttf') format('truetype');
+        font-weight: 400 900;
+        font-display: swap;
+      }
+
       * {
         margin: 0;
         padding: 0;

@@ -1,7 +1,7 @@
 import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
 import type { Ember } from '../core/patrol';
 import type { FxFrame, FxFillReveal, FxPopup } from '../fx/director';
-import { drawFlash, drawLineGlows, drawPopups, drawShards, drawSplitBanner } from './fxLayer';
+import { drawFlash, drawLineGlows, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -185,8 +185,8 @@ export class Renderer {
   /**
    * Draws one frame. `fx` (live play only) adds the impact feedback: the
    * whole field shakes by `fx.shake`, newly claimed cells are revealed
-   * outward from the closed line, and fxLayer.ts's glows, shards, popups,
-   * SPLIT! and flash are drawn in their place in the order. Without `fx`
+   * outward from the closed line, and fxLayer.ts's glows, shards, sparks,
+   * popups, SPLIT! and flash are drawn in their place in the order. Without `fx`
    * (replay viewing) the frame is drawn exactly as before.
    */
   render(
@@ -237,6 +237,7 @@ export class Renderer {
     if (fx) {
       drawLineGlows(this.ctx, fx.lineGlows);
       drawShards(this.ctx, fx.shards);
+      drawSparks(this.ctx, fx.sparks);
     }
     // Post-miss grace feedback (docs/plan.md §6 M5): the caller blinks the
     // marker by toggling `markerVisible` off every few ticks; omitting the
@@ -248,7 +249,7 @@ export class Renderer {
     if (fx) {
       drawPopups(this.ctx, fx.popups, (popup) => this.popupPosition(popup));
       this.pruneCentroids(fx.popups);
-      if (fx.splitBanner) drawSplitBanner(this.ctx, fx.splitBanner.progress);
+      if (fx.splitBanner) drawSplitBanner(this.ctx, fx.splitBanner);
       drawFlash(this.ctx, fx.flash);
     }
     if (shaking) {

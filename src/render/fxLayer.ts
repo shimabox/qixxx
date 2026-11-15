@@ -1,10 +1,20 @@
 // Draws the impact feedback (src/fx/director.ts's FxFrame) on the game
 // canvas: the closed line's glow and the split flash, the vanished line's
-// shards, the "+score" popups, SPLIT! and the miss flash. Called by Renderer
-// in its draw order; every function takes logical (CANVAS_WIDTH x
-// CANVAS_HEIGHT) coordinates and leaves the context state as it found it.
+// shards, the sparks, the "+score" popups with their praise word and chain
+// count, SPLIT! and the miss flash. Called by Renderer in its draw order;
+// every function takes logical (CANVAS_WIDTH x CANVAS_HEIGHT) coordinates
+// and leaves the context state as it found it.
+//
+// The text is neon: the bundled display face (fxFonts.ts), drawn letter by
+// letter so its letter spacing does not depend on Canvas support for it.
+// Large text (SPLIT!, the praise word) is three glowing outlines — magenta,
+// cyan and a white core — like a neon tube; small text (the score, x2,
+// CHAIN) is a glowing fill instead, since outlines alone would not read at
+// that size. How the text tears and splits its colours comes from the frame
+// (src/fx/textGlitch.ts); nothing here decides timing.
 import type { Point } from '../core/field';
-import type { FxFlash, FxLineGlow, FxPopup, FxShard } from '../fx/director';
+import type { FxFlash, FxLineGlow, FxPopup, FxShard, FxSpark, FxSplitBanner } from '../fx/director';
+import { fxFont, fxFontEpoch } from './fxFonts';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -13,9 +23,10 @@ import {
   COLOR_FX_FLASH_LIGHT,
   COLOR_FX_FLASH_DARK,
   COLOR_FX_OUTLINE,
-  COLOR_FX_POPUP,
-  COLOR_FX_SPLIT,
-  COLOR_CLAIMED_SLOW,
+  COLOR_FX_NEON_CYAN,
+  COLOR_FX_NEON_MAGENTA,
+  COLOR_FX_NEON_CORE,
+  COLOR_FX_TEXT_FILL,
 } from '../config';
 
 const GRID_W = CANVAS_WIDTH / RENDER_SCALE;
@@ -23,8 +34,14 @@ const GRID_H = CANVAS_HEIGHT / RENDER_SCALE;
 const POPUP_FONT_PX = 22;
 const POPUP_NOTE_FONT_PX = 14;
 const POPUP_RISE_PX = 28;
+const POPUP_SPACING = 0.07; // letter spacing of the small text, of its font size
+const POPUP_GLOW = 0.43; // glow of the small text, of its font size
+const PRAISE_FONT_SHARE = 1.3; // of the score's font size
+const CHAIN_FONT_SHARE = 0.6;
 const SPLIT_TEXT = 'SPLIT!';
-const SPLIT_WIDTH_SHARE = 0.6; // of the field width
+const SPLIT_WIDTH_SHARE = 0.6; // of the field width, letter spacing included
+const SPLIT_SPACING = 0.14; // of its font size
+const EDGE_PAD_PX = 6; // text kept this far inside the field
 
 function cellCenter(c: Point): { x: number; y: number } {
   return { x: (c.x + 0.5) * RENDER_SCALE, y: (c.y + 0.5) * RENDER_SCALE };
@@ -109,9 +126,152 @@ export function drawShards(ctx: CanvasRenderingContext2D, shards: readonly FxSha
   ctx.restore();
 }
 
+const SPARK_FROM = hexToRgb(COLOR_FX_NEON_CORE);
+const SPARK_TO = hexToRgb(COLOR_FX_NEON_CYAN);
+
+/** Sparks flying off the closed line: white turning cyan, shrinking and fading, added onto what is below. */
+export function drawSparks(ctx: CanvasRenderingContext2D, sparks: readonly FxSpark[]): void {
+  if (sparks.length === 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of sparks) {
+    if (s.alpha <= 0 || s.size <= 0) continue;
+    const t = Math.max(0, Math.min(1, s.progress));
+    const r = Math.round(SPARK_FROM.r + (SPARK_TO.r - SPARK_FROM.r) * t);
+    const g = Math.round(SPARK_FROM.g + (SPARK_TO.g - SPARK_FROM.g) * t);
+    const b = Math.round(SPARK_FROM.b + (SPARK_TO.b - SPARK_FROM.b) * t);
+    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+    ctx.globalAlpha = s.alpha;
+    const size = s.size * RENDER_SCALE;
+    ctx.fillRect(s.x * RENDER_SCALE - size / 2, s.y * RENDER_SCALE - size / 2, size, size);
+  }
+  ctx.restore();
+}
+
+// --- Text ------------------------------------------------------------------
+
 /**
- * "+score" popups, floating up and fading out. `positionOf` gives the
- * popup's center in cells (the centroid of the cells it was scored for).
+ * One line of letter-spaced text for the font set on the context. Where
+ * Canvas supports `letterSpacing` the line is drawn in one call (each glowing
+ * call is a blur, so this keeps the cost down); elsewhere it is drawn letter
+ * by letter from `offsets`.
+ */
+interface SpacedText {
+  text: string;
+  /** Drawn in one call with the context's letterSpacing. */
+  whole: boolean;
+  chars: string[];
+  /** Left edge of each letter from the left edge of the text (letter by letter only). */
+  offsets: number[];
+  /** Without the spacing after the last letter. */
+  width: number;
+}
+
+type LetterSpacingContext = CanvasRenderingContext2D & { letterSpacing?: string };
+
+function layoutSpaced(ctx: CanvasRenderingContext2D, text: string, spacingPx: number): SpacedText {
+  const spaced = ctx as LetterSpacingContext;
+  if (typeof spaced.letterSpacing === 'string') {
+    spaced.letterSpacing = `${spacingPx}px`;
+    // measureText() counts the spacing after the last letter as well.
+    const width = Math.max(0, ctx.measureText(text).width - spacingPx);
+    return { text, whole: true, chars: [], offsets: [], width };
+  }
+  const chars = Array.from(text);
+  const offsets: number[] = [];
+  let x = 0;
+  chars.forEach((ch, i) => {
+    offsets.push(x);
+    x += ctx.measureText(ch).width + (i < chars.length - 1 ? spacingPx : 0);
+  });
+  return { text, whole: false, chars, offsets, width: x };
+}
+
+/** Draws `text` centered on (cx, cy); textAlign must be 'left', textBaseline 'middle'. */
+function paintSpaced(ctx: CanvasRenderingContext2D, text: SpacedText, cx: number, cy: number, mode: 'fill' | 'stroke'): void {
+  const left = cx - text.width / 2;
+  if (text.whole) {
+    if (mode === 'fill') ctx.fillText(text.text, left, cy);
+    else ctx.strokeText(text.text, left, cy);
+    return;
+  }
+  text.chars.forEach((ch, i) => {
+    if (mode === 'fill') ctx.fillText(ch, left + text.offsets[i], cy);
+    else ctx.strokeText(ch, left + text.offsets[i], cy);
+  });
+}
+
+/** Canvas shadows ignore the transform; scale glows by it so they match the text at any devicePixelRatio. */
+function shadowScale(ctx: CanvasRenderingContext2D): number {
+  const t = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+  return t ? Math.hypot(t.a, t.b) || 1 : 1;
+}
+
+/**
+ * The neon tube: three glowing outlines — magenta (widest), cyan, and a
+ * thin white core — the magenta one moved `channelPx` to the right and the
+ * cyan one as far to the left.
+ */
+function strokeNeon(ctx: CanvasRenderingContext2D, text: SpacedText, cx: number, cy: number, fontPx: number, channelPx: number): void {
+  const glow = shadowScale(ctx);
+  const layers: Array<[string, number, number, number]> = [
+    [COLOR_FX_NEON_MAGENTA, fontPx * 0.083, fontPx * 0.4, channelPx],
+    [COLOR_FX_NEON_CYAN, fontPx * 0.042, fontPx * 0.17, -channelPx],
+    [COLOR_FX_NEON_CORE, Math.max(1, fontPx * 0.015), fontPx * 0.05, 0],
+  ];
+  for (const [color, width, blur, dx] of layers) {
+    ctx.strokeStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur * glow;
+    ctx.lineWidth = width;
+    paintSpaced(ctx, text, cx + dx, cy, 'stroke');
+  }
+}
+
+/**
+ * Small glowing text: a dark edge, then — while `channelOffset` is above 0 —
+ * magenta and cyan copies added either side, then the pale fill glowing in
+ * `glowColor`.
+ */
+function fillGlowText(
+  ctx: CanvasRenderingContext2D,
+  label: string,
+  cx: number,
+  cy: number,
+  fontPx: number,
+  weight: 700 | 900,
+  glowColor: string,
+  channelOffset: number
+): void {
+  ctx.font = fxFont(weight, fontPx);
+  const text = layoutSpaced(ctx, label, fontPx * POPUP_SPACING);
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = Math.max(3, fontPx * 0.23);
+  ctx.strokeStyle = COLOR_FX_OUTLINE;
+  paintSpaced(ctx, text, cx, cy, 'stroke');
+  if (channelOffset > 0) {
+    const shift = channelOffset * fontPx;
+    const previous = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = COLOR_FX_NEON_MAGENTA;
+    paintSpaced(ctx, text, cx + shift, cy, 'fill');
+    ctx.fillStyle = COLOR_FX_NEON_CYAN;
+    paintSpaced(ctx, text, cx - shift, cy, 'fill');
+    ctx.globalCompositeOperation = previous;
+  }
+  ctx.shadowColor = glowColor;
+  ctx.shadowBlur = fontPx * POPUP_GLOW * shadowScale(ctx);
+  ctx.fillStyle = COLOR_FX_TEXT_FILL;
+  paintSpaced(ctx, text, cx, cy, 'fill');
+  ctx.shadowBlur = 0;
+}
+
+/**
+ * "+score" popups, floating up and fading out, each bouncing in at the
+ * size the frame gives: NICE! / GREAT! / AWESOME! above for a large enough
+ * claim, x2 (slow line) and CHAIN xN (claims in a row) below. `positionOf`
+ * gives the popup's center in cells (the centroid of the cells it was
+ * scored for). The group is kept inside the field.
  */
 export function drawPopups(
   ctx: CanvasRenderingContext2D,
@@ -120,52 +280,149 @@ export function drawPopups(
 ): void {
   if (popups.length === 0) return;
   ctx.save();
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = COLOR_FX_OUTLINE;
   for (const popup of popups) {
     const at = positionOf(popup);
+    const scorePx = POPUP_FONT_PX * popup.scale;
+    const notePx = POPUP_NOTE_FONT_PX * popup.scale;
+    const praisePx = POPUP_FONT_PX * PRAISE_FONT_SHARE * popup.scale;
+    const chainPx = POPUP_FONT_PX * CHAIN_FONT_SHARE * popup.scale;
+
+    // Rows relative to the score's center, top to bottom.
+    const praiseDy = popup.praise ? -(scorePx * 0.5 + praisePx * 0.62) : 0;
+    const noteDy = popup.note ? scorePx * 0.85 : 0;
+    const chainDy = popup.chain ? (popup.note ? noteDy + notePx * 0.5 : scorePx * 0.5) + chainPx * 0.85 : 0;
+    const top = popup.praise ? praiseDy - praisePx * 0.55 : -scorePx * 0.55;
+    const bottom = popup.chain ? chainDy + chainPx * 0.6 : popup.note ? noteDy + notePx * 0.6 : scorePx * 0.55;
+
     const x = clamp((at.x + 0.5) * RENDER_SCALE, 48, CANVAS_WIDTH - 48);
-    const y = clamp((at.y + 0.5) * RENDER_SCALE - popup.progress * POPUP_RISE_PX, 20, CANVAS_HEIGHT - 28);
+    let y = clamp((at.y + 0.5) * RENDER_SCALE - popup.progress * POPUP_RISE_PX, 20, CANVAS_HEIGHT - 28);
+    y = clamp(y, EDGE_PAD_PX - top, CANVAS_HEIGHT - EDGE_PAD_PX - bottom);
     ctx.globalAlpha = popup.progress < 0.7 ? 1 : Math.max(0, (1 - popup.progress) / 0.3);
-    ctx.font = `bold ${POPUP_FONT_PX}px monospace`;
-    ctx.lineWidth = 5;
-    ctx.strokeText(popup.text, x, y);
-    ctx.fillStyle = COLOR_FX_POPUP;
-    ctx.fillText(popup.text, x, y);
+
+    if (popup.praise) {
+      ctx.font = fxFont(900, praisePx);
+      const praise = layoutSpaced(ctx, popup.praise, praisePx * SPLIT_SPACING);
+      const half = praise.width / 2 + praisePx * 0.2;
+      const px = clamp(x, EDGE_PAD_PX + half, CANVAS_WIDTH - EDGE_PAD_PX - half);
+      strokeNeon(ctx, praise, px, y + praiseDy, praisePx, 0);
+      ctx.shadowBlur = 0;
+    }
+    fillGlowText(ctx, popup.text, x, y, scorePx, 700, COLOR_FX_NEON_CYAN, popup.channelOffset);
     if (popup.note) {
-      ctx.font = `bold ${POPUP_NOTE_FONT_PX}px monospace`;
-      ctx.lineWidth = 4;
-      const ny = y + POPUP_FONT_PX * 0.85;
-      ctx.strokeText(popup.note, x, ny);
-      ctx.fillStyle = COLOR_CLAIMED_SLOW;
-      ctx.fillText(popup.note, x, ny);
+      fillGlowText(ctx, popup.note, x, y + noteDy, notePx, 700, COLOR_FX_NEON_MAGENTA, popup.channelOffset);
+    }
+    if (popup.chain) {
+      fillGlowText(ctx, popup.chain, x, y + chainDy, chainPx, 700, COLOR_FX_NEON_MAGENTA, 0);
     }
   }
   ctx.restore();
 }
 
-/** SPLIT!, sized to SPLIT_WIDTH_SHARE of the field's width. */
-export function drawSplitBanner(ctx: CanvasRenderingContext2D, progress: number): void {
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.font = 'bold 100px monospace';
-  const naturalWidth = ctx.measureText(SPLIT_TEXT).width || 1;
-  // A quick pop-in over the first tenth, a fade over the last fifth.
+/** SPLIT!'s font size: letter spacing included, it spans SPLIT_WIDTH_SHARE of the field at pop 1. */
+function splitFontPx(ctx: CanvasRenderingContext2D, pop: number): number {
+  ctx.font = fxFont(900, 100);
+  const natural = layoutSpaced(ctx, SPLIT_TEXT, 100 * SPLIT_SPACING).width || 1;
+  return Math.round(((100 * CANVAS_WIDTH * SPLIT_WIDTH_SHARE) / natural) * pop);
+}
+
+// SPLIT! is three large blurred outlines, the heaviest thing on the field,
+// so it is drawn into an offscreen canvas and copied: once for the steady
+// banner, and once per tick (not per band) while it tears. Each slot is
+// redrawn when the size, the colour split, the pixel ratio or the loaded
+// fonts change.
+interface BannerImage {
+  canvas: HTMLCanvasElement;
+  key: string;
+  /** Logical height; the text's center is at height / 2. */
+  height: number;
+}
+const bannerImages: { steady: BannerImage | null; torn: BannerImage | null } = { steady: null, torn: null };
+
+function bannerImage(slot: 'steady' | 'torn', fontPx: number, channelPx: number, scale: number): BannerImage | null {
+  const key = `${fontPx}|${channelPx}|${scale}|${fxFontEpoch()}`;
+  const current = bannerImages[slot];
+  if (current?.key === key) return current;
+  if (typeof document === 'undefined') return null;
+  const height = Math.ceil(fontPx * 2.6);
+  const canvas = current?.canvas ?? document.createElement('canvas');
+  canvas.width = Math.ceil(CANVAS_WIDTH * scale);
+  canvas.height = Math.ceil(height * scale);
+  const off = canvas.getContext('2d');
+  if (!off) return null;
+  off.setTransform(scale, 0, 0, scale, 0, 0);
+  off.clearRect(0, 0, CANVAS_WIDTH, height);
+  off.textAlign = 'left';
+  off.textBaseline = 'middle';
+  off.lineJoin = 'round';
+  off.font = fxFont(900, fontPx);
+  const text = layoutSpaced(off, SPLIT_TEXT, fontPx * SPLIT_SPACING);
+  strokeNeon(off, text, CANVAS_WIDTH / 2, height / 2, fontPx, channelPx);
+  const image = { canvas, key, height };
+  bannerImages[slot] = image;
+  return image;
+}
+
+/**
+ * SPLIT! as a neon tube spanning SPLIT_WIDTH_SHARE of the field, popping in
+ * over its first tenth and fading over its last fifth. While the frame's
+ * glitch tears it, each band is cut out and drawn pushed sideways, with the
+ * magenta and cyan outlines drifting apart.
+ */
+export function drawSplitBanner(ctx: CanvasRenderingContext2D, banner: FxSplitBanner): void {
+  const { progress, glitch } = banner;
   const pop = progress < 0.1 ? 1.25 - 2.5 * progress : 1;
-  const fontPx = Math.round(((100 * CANVAS_WIDTH * SPLIT_WIDTH_SHARE) / naturalWidth) * pop);
-  ctx.font = `bold ${fontPx}px monospace`;
-  ctx.globalAlpha = progress < 0.8 ? 1 : Math.max(0, (1 - progress) / 0.2);
-  ctx.lineWidth = Math.max(6, fontPx * 0.12);
-  ctx.strokeStyle = COLOR_FX_OUTLINE;
-  ctx.strokeText(SPLIT_TEXT, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
-  ctx.shadowColor = COLOR_FX_SPLIT;
-  ctx.shadowBlur = 18;
-  ctx.fillStyle = COLOR_FX_SPLIT;
-  ctx.fillText(SPLIT_TEXT, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+  const fade = progress < 0.8 ? 1 : Math.max(0, (1 - progress) / 0.2);
+  const alpha = fade * glitch.alpha;
+  if (alpha <= 0) return;
+  const cy = CANVAS_HEIGHT / 2;
+
+  ctx.save();
+  const fontPx = splitFontPx(ctx, pop);
+  const steady = glitch.bands.length === 1 && glitch.bands[0].dx === 0 && glitch.channelOffset === 0;
+  const channelPx = Math.round(glitch.channelOffset * fontPx * 100) / 100;
+  const image = bannerImage(steady ? 'steady' : 'torn', fontPx, channelPx, shadowScale(ctx));
+  ctx.globalAlpha = alpha;
+  if (image) {
+    const top = cy - image.height / 2;
+    const ratio = image.canvas.height / image.height; // backing pixels per logical pixel
+    for (const band of glitch.bands) {
+      // The band's rows of the image (all of it for the steady banner), moved sideways.
+      const from = steady ? 0 : Math.max(0, image.height / 2 + band.from * fontPx);
+      const to = steady ? image.height : Math.min(image.height, image.height / 2 + band.to * fontPx);
+      if (to <= from) continue;
+      ctx.drawImage(
+        image.canvas,
+        0,
+        from * ratio,
+        image.canvas.width,
+        (to - from) * ratio,
+        band.dx * fontPx,
+        top + from,
+        CANVAS_WIDTH,
+        to - from
+      );
+    }
+  } else {
+    // No offscreen canvas: draw straight onto the field.
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.font = fxFont(900, fontPx);
+    const text = layoutSpaced(ctx, SPLIT_TEXT, fontPx * SPLIT_SPACING);
+    for (const band of glitch.bands) {
+      ctx.save();
+      if (!steady) {
+        ctx.beginPath();
+        ctx.rect(0, cy + band.from * fontPx, CANVAS_WIDTH, (band.to - band.from) * fontPx);
+        ctx.clip();
+      }
+      strokeNeon(ctx, text, CANVAS_WIDTH / 2 + band.dx * fontPx, cy, fontPx, channelPx);
+      ctx.restore();
+    }
+  }
   ctx.restore();
 }
 
@@ -186,10 +443,16 @@ export function drawFlash(ctx: CanvasRenderingContext2D, flash: FxFlash): void {
   ctx.restore();
 }
 
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  };
+}
+
 function withAlpha(hex: string, alpha: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const { r, g, b } = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
 }
 
