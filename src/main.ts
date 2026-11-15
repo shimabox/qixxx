@@ -645,7 +645,14 @@ function init(): void {
   // src/debug/panel.ts and the "no debug code in dist/" build check.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
     void import('./debug/panel').then(({ initDebugPanel }) => {
-      initDebugPanel(() => session, hudRow);
+      initDebugPanel(() => session, hudRow, {
+        params: fxParams,
+        fx,
+        hitStop,
+        playClaim: (claim) => sfx.playClaim(claim),
+        playSplitImpact: () => sfx.playSplitImpact(),
+        playMiss: () => sfx.handleEvents(['miss']),
+      });
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,
