@@ -328,6 +328,72 @@ export const SFX_EMBER_BLAZE_SPAWN_DURATION = 0.07;
 // no new audio machinery needed.
 export const SFX_EMBER_ENTERED_LINE_NOTES = [880, 660];
 export const SFX_EMBER_ENTERED_LINE_NOTE_DURATION = 0.05;
+// How quickly a one-shot reaches its peak (seconds). The default keeps the
+// older one-shots as they were; the claim, split and miss sounds hit their
+// peak almost at once so the moment itself is felt, not a swell after it.
+export const SFX_DEFAULT_ATTACK = 0.01;
+export const SFX_IMPACT_ATTACK = 0.004; // within 5ms
+// Area claim (audio/sfx.ts's playClaim()): a short bright hit, a low layer
+// for a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
+// rising sweep while the new area fills in. The hit and the low layer end
+// within 0.08s (their nodes stop SFX_TONE_STOP_TAIL later, already silent).
+export const SFX_CLAIM_HIT_FREQ = 1320;
+export const SFX_CLAIM_HIT_DURATION = 0.05;
+export const SFX_CLAIM_LOW_MID_FREQ = 220;
+export const SFX_CLAIM_LOW_LARGE_FREQ = 110;
+export const SFX_CLAIM_LOW_DURATION = 0.06;
+export const SFX_CLAIM_RISE_FREQ_START = 440;
+export const SFX_CLAIM_RISE_FREQ_END_FAST = 880;
+export const SFX_CLAIM_RISE_FREQ_END_SLOW = 1175; // a slow (double-score) line rises further
+export const SFX_CLAIM_RISE_DURATION = 0.2;
+// Split clear (playSplitImpact()): a low, short thump, then the split
+// arpeggio (SFX_SPLIT_CLEAR_NOTES) right after it.
+export const SFX_SPLIT_IMPACT_FREQ = 70;
+export const SFX_SPLIT_IMPACT_DURATION = 0.1;
+// Every one-shot oscillator is stopped this long after its envelope ends.
+export const SFX_TONE_STOP_TAIL = 0.02;
+
+// Impact feedback (src/fx/): the short pause ("hit stop"), the fill reveal,
+// the score popup, flashes, shakes and shards that answer an area claim, a
+// split and a miss. Every duration is in fixed ticks (TICK_RATE per second),
+// never rendered frames, so they last the same on any display. Shake
+// amplitudes are in canvas logical pixels (CANVAS_WIDTH x CANVAS_HEIGHT).
+// These are the starting values of src/fx/params.ts's fxParams, which the
+// debug panel can change at run time.
+export interface FxShakeSpec {
+  ticks: number;
+  amplitudePx: number;
+  axes: 'y' | 'xy';
+}
+// A claim's size is the occupancy it added (after - before): below MID is
+// small, from MID is mid, from LARGE is large.
+export const FX_CLAIM_SHARE_MID = 0.05;
+export const FX_CLAIM_SHARE_LARGE = 0.2;
+export const FX_HITSTOP_CLAIM_SMALL_TICKS = 3;
+export const FX_HITSTOP_CLAIM_MID_TICKS = 6;
+export const FX_HITSTOP_CLAIM_LARGE_TICKS = 10;
+export const FX_HITSTOP_SPLIT_TICKS = 20;
+export const FX_HITSTOP_MISS_TICKS = 12;
+export const FX_LINE_FLASH_TICKS = 6; // the closed line glows white, fading back
+export const FX_FILL_REVEAL_TICKS = 12; // newly claimed cells appear outward from the line
+export const FX_POPUP_TICKS = 40; // "+score" floats up and fades
+export const FX_SHAKE_SMALL: FxShakeSpec = { ticks: 6, amplitudePx: 2, axes: 'y' }; // large claim
+export const FX_SHAKE_MEDIUM: FxShakeSpec = { ticks: 10, amplitudePx: 4, axes: 'xy' }; // miss
+export const FX_SHAKE_LARGE: FxShakeSpec = { ticks: 16, amplitudePx: 6, axes: 'xy' }; // split
+export const FX_MISS_FLASH_TICKS = 4; // first half light, second half dark
+export const FX_SHARD_TICKS = 20; // the vanished line breaks into shards
+export const FX_SPLIT_BANNER_TICKS = 60; // "SPLIT!"
+export const FX_SPLIT_FLASH_TICKS = 12; // the closed line, extended to the field edges, flashes white
+export const FX_SPLIT_CONFIRM_LOCK_TICKS = 40; // confirm is not passed on after a split
+export const FX_MULTIPLIER_FLY_TICKS = 40; // the next multiplier travels to the HUD
+export const FX_MULTIPLIER_HIGHLIGHT_TICKS = 20; // then the HUD multiplier is highlighted
+export const FX_GAMEOVER_HOLD_TICKS = 32; // after a game-ending miss: modal waits, confirm is not passed on
+// Colors of the impact feedback layer (src/render/fxLayer.ts).
+export const COLOR_FX_FLASH_LIGHT = '#ffffff';
+export const COLOR_FX_FLASH_DARK = '#000000';
+export const COLOR_FX_OUTLINE = '#0a0e27'; // dark outline keeps popups/SPLIT! readable on any fill
+export const COLOR_FX_POPUP = '#ffffff';
+export const COLOR_FX_SPLIT = '#ffe066';
 
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
