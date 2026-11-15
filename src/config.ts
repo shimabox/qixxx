@@ -461,6 +461,10 @@ export const FX_TEXT_MIN_DISPLAY_PX = 11;
 // (public/fonts/), falling back to monospace until it has loaded or if it
 // cannot be loaded.
 export const FX_TEXT_FONT_FAMILY = '"Orbitron", monospace';
+// The Japanese sentences (directions, notices, status and error lines, the
+// miss reason): the device's own Japanese fonts — none is bundled — falling
+// back to monospace. English text keeps its fonts.
+export const JA_TEXT_FONT_FAMILY = '"Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", monospace';
 export const COLOR_FX_NEON_CYAN = '#37e6ff';
 export const COLOR_FX_NEON_MAGENTA = '#ff2bd6';
 export const COLOR_FX_NEON_CORE = '#ffffff';
