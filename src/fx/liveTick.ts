@@ -103,15 +103,17 @@ export interface FeedbackSource {
 
 /** The claim/split sounds (SfxEngine); the miss sound stays with its 'miss' GameEvent. */
 export interface ImpactSounds {
-  playClaim(claim: { share: number; speed: LineSpeed }): void;
+  /** `chain`: the claim's place in a row of claims (FxDirector.onClaim()), raising its pitch. */
+  playClaim(claim: { share: number; speed: LineSpeed; chain: number }): void;
   playSplitImpact(): void;
 }
 
 /**
  * The back half of a live tick, after GameSession.update(): turns the tick's
  * claim/miss notices into effects, a hit stop and the claim/split sounds. A
- * split replaces the claim sound with the split's. A miss that ended the
- * run on lives holds the GAME OVER modal (FxDirector.onMiss()).
+ * split replaces the claim sound with the split's, which does not change
+ * with the chain. A miss that ended the run on lives holds the GAME OVER
+ * modal (FxDirector.onMiss()).
  */
 export function applyImpactNotices(
   session: FeedbackSource,
@@ -121,12 +123,12 @@ export function applyImpactNotices(
 ): void {
   for (const notice of session.drainClaimFeedback()) {
     // After a split, getMultiplier() already reads the next stage's value.
-    const { hitStopTicks } = fx.onClaim(notice, { nextMultiplier: session.getMultiplier() });
+    const { hitStopTicks, chain } = fx.onClaim(notice, { nextMultiplier: session.getMultiplier() });
     hitStop.request(hitStopTicks);
     if (notice.split) {
       sounds.playSplitImpact();
     } else {
-      sounds.playClaim({ share: notice.occupancyAfter - notice.occupancyBefore, speed: notice.lineSpeed });
+      sounds.playClaim({ share: notice.occupancyAfter - notice.occupancyBefore, speed: notice.lineSpeed, chain });
     }
   }
   for (const notice of session.drainMissFeedback()) {

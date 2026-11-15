@@ -13,8 +13,11 @@ import { KeyboardInput } from '../input/keyboard';
 import { FxDirector } from './director';
 import { HitStop } from './hitStop';
 import { createDefaultFxParams } from './params';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate } from './liveTick';
+import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource } from './liveTick';
+import { ScoreRoll } from './scoreRoll';
+import type { ClaimFeedback } from '../core/feedback';
 import {
+  FX_SCORE_ROLL_TICKS,
   FX_GAMEOVER_HOLD_TICKS,
   FX_HITSTOP_CLAIM_LARGE_TICKS,
   FX_HITSTOP_MISS_TICKS,
@@ -66,6 +69,9 @@ class LiveHarness {
   readonly session: GameSession;
   /** Every input that reached session.update(). */
   readonly delivered: SessionInput[] = [];
+  /** The HUD score count-up, ticked and fed the way main.ts does. */
+  readonly roll = new ScoreRoll();
+  readonly sounds: Array<{ kind: 'claim'; chain: number } | { kind: 'split' }> = [];
   modalShown = false;
   stoppedTicks = 0;
 
@@ -75,6 +81,7 @@ class LiveHarness {
 
   tick(): void {
     const status = this.session.getStatus();
+    this.roll.tick();
     const input = beginLiveTick({
       fx: this.fx,
       hitStop: this.hitStop,
@@ -100,7 +107,11 @@ class LiveHarness {
     this.recorder.observe(this.session, input);
     this.session.drainEvents();
     this.session.drainDespawnedEmberPositions();
-    applyImpactNotices(this.session, this.fx, this.hitStop, { playClaim: () => {}, playSplitImpact: () => {} });
+    applyImpactNotices(this.session, this.fx, this.hitStop, {
+      playClaim: ({ chain }) => this.sounds.push({ kind: 'claim', chain }),
+      playSplitImpact: () => this.sounds.push({ kind: 'split' }),
+    });
+    this.roll.setTarget(this.session.getScore(), FX_SCORE_ROLL_TICKS);
   }
 
   ticks(n: number): void {
@@ -190,6 +201,85 @@ describe('hit stop on a live tick', () => {
     h.ticks(3);
     expect(h.recorder.getSamples()).toHaveLength(4);
     expect(h.session.getTotalTicks()).toBe(4);
+  });
+});
+
+describe('HUD score count-up on a live tick', () => {
+  it('the session has the real score from the claim tick; the HUD number reaches it 18 ticks later, through the stop', () => {
+    const h = new LiveHarness(clearFactory);
+    h.start();
+    h.hold('ArrowDown');
+    h.hold('Space');
+    h.ticks(4); // the claim tick
+    h.release('ArrowDown');
+    h.release('Space');
+    const score = h.session.getScore();
+    expect(score).toBeGreaterThan(0);
+    expect(h.hitStop.getRemaining()).toBe(FX_HITSTOP_CLAIM_LARGE_TICKS);
+    expect(h.roll.value()).toBe(0);
+    let previous = 0;
+    for (let t = 1; t <= FX_SCORE_ROLL_TICKS; t++) {
+      h.tick();
+      expect(h.session.getScore()).toBe(score); // what the modal, high score and share read
+      const shown = h.roll.value();
+      expect(Number.isInteger(shown)).toBe(true);
+      expect(shown).toBeGreaterThanOrEqual(previous);
+      if (t < FX_SCORE_ROLL_TICKS) expect(shown).toBeLessThan(score);
+      previous = shown;
+    }
+    expect(h.roll.value()).toBe(score);
+  });
+});
+
+describe('claim sounds and the chain', () => {
+  function notice(overrides: Partial<ClaimFeedback>): ClaimFeedback {
+    return {
+      claimedCells: 10,
+      occupancyBefore: 0.1,
+      occupancyAfter: 0.13,
+      lineSpeed: 'fast',
+      areaScore: 30,
+      multiplier: 1,
+      split: false,
+      stageCleared: false,
+      closedLine: [{ x: 3, y: 1 }],
+      ...overrides,
+    };
+  }
+
+  it('passes the chain to the claim sound, and plays the split sound (no chain) for a split', () => {
+    const queue: ClaimFeedback[][] = [[notice({}), notice({})], [notice({ split: true, stageCleared: true })]];
+    const source: FeedbackSource = {
+      drainClaimFeedback: () => queue.shift() ?? [],
+      drainMissFeedback: () => [],
+      getMultiplier: () => 2,
+      getStatus: () => 'playing',
+      getGameOverReason: () => null,
+    };
+    const fx = new FxDirector(createDefaultFxParams());
+    const hitStop = new HitStop();
+    const played: Array<{ kind: string; chain?: number; share?: number }> = [];
+    const sounds = {
+      playClaim: (c: { share: number; chain: number }) => played.push({ kind: 'claim', chain: c.chain, share: c.share }),
+      playSplitImpact: () => played.push({ kind: 'split' }),
+    };
+    applyImpactNotices(source, fx, hitStop, sounds);
+    fx.tick();
+    applyImpactNotices(source, fx, hitStop, sounds);
+    expect(played).toEqual([
+      { kind: 'claim', chain: 1, share: expect.closeTo(0.03, 10) },
+      { kind: 'claim', chain: 2, share: expect.closeTo(0.03, 10) },
+      { kind: 'split' },
+    ]);
+  });
+
+  it('a real run: the first claim of the run plays at chain 1', () => {
+    const h = new LiveHarness(clearFactory);
+    h.start();
+    h.hold('ArrowDown');
+    h.hold('Space');
+    h.ticks(4);
+    expect(h.sounds).toEqual([{ kind: 'claim', chain: 1 }]);
   });
 });
 

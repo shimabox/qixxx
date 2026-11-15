@@ -61,6 +61,18 @@ interface WindowWithWebkitAudio extends Window {
   webkitAudioContext?: AudioContextCtor;
 }
 
+/** Semitones the claim sound rises per step of a chain of claims. */
+const CHAIN_SEMITONES_PER_STEP = 2;
+
+/**
+ * The claim sound's pitch multiplier at `chain` (1 for the first claim of a
+ * row): two semitones higher per further claim, capped at `maxSteps` steps.
+ */
+export function claimChainPitch(chain: number, maxSteps: number): number {
+  const steps = Math.max(0, Math.min(Math.floor(chain) - 1, Math.floor(maxSteps)));
+  return Math.pow(2, (steps * CHAIN_SEMITONES_PER_STEP) / 12);
+}
+
 /** Where a falling one-shot (miss, ember-despawned) ends its glide from `freq`. */
 function descendFrom(freq: number): number {
   return Math.max(20, freq * 0.4);
@@ -285,14 +297,18 @@ export class SfxEngine {
    * under a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
    * sweep rising while the new area fills in (higher for a slow line).
    * `share` is the occupancy the claim added (0-1), sized the same way as
-   * the visual feedback (src/fx/params.ts).
+   * the visual feedback (src/fx/params.ts). `chain` is the claim's place in
+   * a row of claims (src/fx/director.ts): from the second, the hit and the
+   * sweep rise two semitones per step, up to chainPitchMaxSteps steps, so a
+   * run of claims climbs. The low layer keeps its pitch.
    */
-  playClaim({ share, speed }: { share: number; speed: LineSpeed }): void {
+  playClaim({ share, speed, chain = 1 }: { share: number; speed: LineSpeed; chain?: number }): void {
     if (this.muted) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;
-    this.playTone(SFX_CLAIM_HIT_FREQ, SFX_CLAIM_HIT_DURATION, 'triangle', 0.24, undefined, now, SFX_IMPACT_ATTACK);
+    const pitch = claimChainPitch(chain, fxParams.chainPitchMaxSteps);
+    this.playTone(SFX_CLAIM_HIT_FREQ * pitch, SFX_CLAIM_HIT_DURATION, 'triangle', 0.24, undefined, now, SFX_IMPACT_ATTACK);
     const size = classifyClaimShare(share, fxParams);
     if (size !== 'small') {
       const lowFreq = size === 'large' ? SFX_CLAIM_LOW_LARGE_FREQ : SFX_CLAIM_LOW_MID_FREQ;
@@ -300,11 +316,11 @@ export class SfxEngine {
     }
     const riseEnd = speed === 'slow' ? SFX_CLAIM_RISE_FREQ_END_SLOW : SFX_CLAIM_RISE_FREQ_END_FAST;
     this.playTone(
-      SFX_CLAIM_RISE_FREQ_START,
+      SFX_CLAIM_RISE_FREQ_START * pitch,
       SFX_CLAIM_RISE_DURATION,
       'triangle',
       0.14,
-      riseEnd,
+      riseEnd * pitch,
       now + SFX_CLAIM_HIT_DURATION
     );
   }

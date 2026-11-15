@@ -6,7 +6,7 @@
 // many times resume() is invoked (e.g. once per keydown/pointerdown, per
 // main.ts).
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { SfxEngine } from './sfx';
+import { SfxEngine, claimChainPitch } from './sfx';
 
 class MockGainNode {
   gain = {
@@ -446,6 +446,55 @@ describe('SfxEngine — claim and split sounds', () => {
     expect(endTime(gains[1])).toBeLessThanOrEqual(0.12);
     expect(arpeggio.map(startFreq)).toEqual([784, 988, 1175, 1568, 1976]);
     expect(startTime(arpeggio[0])).toBeCloseTo(endTime(gains[1]));
+  });
+
+  it('raises the hit and the sweep two semitones per chain step, up to 6 steps; the low layer keeps its pitch', () => {
+    const play = (chain?: number) => {
+      const rec = installRecordingAudioContext();
+      new SfxEngine().playClaim(chain === undefined ? { share: 0.1, speed: 'fast' } : { share: 0.1, speed: 'fast', chain });
+      const [hit, low, rise] = rec.oscillators;
+      return {
+        hit: startFreq(hit),
+        low: startFreq(low),
+        riseFrom: startFreq(rise),
+        riseTo: rise.frequency.exponentialRampToValueAtTime.mock.calls[0][0] as number,
+      };
+    };
+    const first = play(1);
+    expect(play()).toEqual(first); // no chain given = the first claim
+    expect(first.hit).toBe(1047);
+    for (let chain = 2; chain <= 7; chain++) {
+      const ratio = Math.pow(2, (2 * (chain - 1)) / 12);
+      const sound = play(chain);
+      expect(sound.hit).toBeCloseTo(first.hit * ratio, 6);
+      expect(sound.riseFrom).toBeCloseTo(first.riseFrom * ratio, 6);
+      expect(sound.riseTo).toBeCloseTo(first.riseTo * ratio, 6);
+      expect(sound.low).toBe(first.low);
+      expect(sound.hit).toBeGreaterThan(play(chain - 1).hit);
+    }
+    // Six steps (chain 7) is the top.
+    expect(play(8)).toEqual(play(7));
+    expect(play(30)).toEqual(play(7));
+  });
+
+  it('claimChainPitch: 1 for the first claim, +2 semitones a step, capped', () => {
+    expect(claimChainPitch(1, 6)).toBe(1);
+    expect(claimChainPitch(0, 6)).toBe(1);
+    expect(claimChainPitch(2, 6)).toBeCloseTo(Math.pow(2, 2 / 12), 12);
+    expect(claimChainPitch(7, 6)).toBeCloseTo(Math.pow(2, 12 / 12), 12);
+    expect(claimChainPitch(20, 6)).toBe(claimChainPitch(7, 6));
+    expect(claimChainPitch(5, 2)).toBe(claimChainPitch(3, 2));
+  });
+
+  it('the split sound does not change with the chain', () => {
+    const freqs = () => {
+      const rec = installRecordingAudioContext();
+      new SfxEngine().playSplitImpact();
+      return rec.oscillators.map(startFreq);
+    };
+    const before = freqs();
+    new SfxEngine().playClaim({ share: 0.1, speed: 'fast', chain: 5 });
+    expect(freqs()).toEqual(before);
   });
 
   it('plays neither while muted', () => {
