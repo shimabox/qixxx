@@ -49,6 +49,12 @@ function miss(overrides: Partial<MissFeedback> = {}): MissFeedback {
   };
 }
 
+/** `n` cells straight down from (20, 1), turning right halfway. */
+function longLine(n: number): Array<{ x: number; y: number }> {
+  const half = Math.floor(n / 2);
+  return Array.from({ length: n }, (_, i) => (i < half ? { x: 20, y: 1 + i } : { x: 21 + i - half, y: half }));
+}
+
 function ticks(fx: FxDirector, n: number): void {
   for (let i = 0; i < n; i++) fx.tick();
 }
@@ -163,7 +169,7 @@ describe('FxDirector — claim effects', () => {
     expect(frame.shake).toEqual({ x: FX_SHAKE_LARGE.amplitudePx, y: -FX_SHAKE_LARGE.amplitudePx });
     expect(frame.lineGlows.map((g) => g.extendToEdges)).toEqual([false, true]);
     expect(frame.fillReveal).not.toBeNull();
-    expect(frame.splitBanner).toEqual({ progress: 0 });
+    expect(frame.splitBanner).toEqual(expect.objectContaining({ progress: 0, age: 0 }));
     expect(frame.multiplierFly?.text).toBe('x2');
     expect(fx.isSplitBannerActive()).toBe(true);
   });
@@ -340,8 +346,17 @@ describe('FxDirector — reduced motion', () => {
       expect(f.shake).toEqual({ x: 0, y: 0 });
       expect(f.flash).toEqual({ kind: 'none' });
     }
-    // Everything else is identical.
-    const strip = (f: FxFrame) => ({ ...f, shake: null, flash: null });
+    // Everything else is identical, except the text's tearing and colour
+    // split, which reduced motion also turns off (tested below and in
+    // directorFeel.test.ts).
+    const strip = (f: FxFrame) => ({
+      ...f,
+      shake: null,
+      flash: null,
+      popups: f.popups.map((p) => ({ ...p, channelOffset: null })),
+      splitBanner: f.splitBanner ? { ...f.splitBanner, glitch: null } : null,
+      multiplierFly: f.multiplierFly ? { ...f.multiplierFly, channelOffset: null } : null,
+    });
     expect(reducedFrames.map(strip)).toEqual(normalFrames.map(strip));
     expect(reducedFrames[0].popups.length).toBeGreaterThan(0);
     expect(reducedFrames[0].shards.length).toBeGreaterThan(0);
@@ -377,6 +392,9 @@ describe('FxDirector — determinism', () => {
     record(9);
     fx.onClaim(claim(0.08, { split: true, stageCleared: true }), { nextMultiplier: 4 });
     record(30);
+    fx.onClaim(claim(0.35, { closedLine: longLine(60) }), NEXT);
+    fx.onClaim(claim(0.22), NEXT);
+    record(20);
     fx.resetBoard();
     record(40);
     fx.onMiss(miss(), { gameOver: true });

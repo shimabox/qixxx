@@ -1,6 +1,7 @@
 // Impact feedback director: turns the core's claim/miss notices
 // (core/feedback.ts) into short, timed effects — the hit stop length, the
-// closed line's glow, the fill reveal, the "+score" popup, flashes, shakes,
+// closed line's glow, the fill reveal, the "+score" popup with its praise
+// word and chain count, the sparks from the closed line, flashes, shakes,
 // the vanished line's shards, the SPLIT! banner and the multiplier that
 // travels to the HUD — plus the two input holds that go with them (confirm
 // is not passed on right after a split, and the GAME OVER modal waits a
@@ -13,7 +14,8 @@
 // The renderer reads the result through getFrame().
 import type { ClaimFeedback, MissFeedback } from '../core/feedback';
 import type { Point } from '../core/field';
-import { FxParams, FxShakeSpec, classifyClaimShare } from './params';
+import { FxParams, FxShakeSpec, ClaimPraise, classifyClaimShare, praiseForClaimShare } from './params';
+import { BannerGlitch, bannerGlitch, popupBounceScale, popupChannelOffset } from './textGlitch';
 
 export interface FxLineGlow {
   cells: readonly Point[];
@@ -45,6 +47,27 @@ export interface FxPopup {
   note: string | null;
   /** 0 when it appears, toward 1 as it rises and fades. */
   progress: number;
+  /** Ticks since it appeared (0 on the tick it appears). */
+  age: number;
+  /** Size multiplier: the bounce it appears with (src/fx/textGlitch.ts). */
+  scale: number;
+  /** Colour split of the score text, relative to its font size (0 once settled, and with reduced motion). */
+  channelOffset: number;
+  /** NICE! / GREAT! / AWESOME! above the score for a large enough claim, or null. */
+  praise: ClaimPraise | null;
+  /** 'CHAIN xN' under the score from the second claim in a row, or null. */
+  chain: string | null;
+}
+
+export interface FxSpark {
+  /** Center, in cells (fractional while it flies). */
+  x: number;
+  y: number;
+  /** Side of its square, in cells: 1 when it starts, falling to 0. */
+  size: number;
+  alpha: number;
+  /** 0 when it starts (white), toward 1 (cyan). */
+  progress: number;
 }
 
 export interface FxShard {
@@ -57,6 +80,23 @@ export interface FxShard {
   alpha: number;
 }
 
+export interface FxSplitBanner {
+  progress: number;
+  /** Ticks since it appeared (0 on the tick it appears). */
+  age: number;
+  /** How the text is torn this tick (src/fx/textGlitch.ts). */
+  glitch: BannerGlitch;
+}
+
+export interface FxMultiplierFly {
+  text: string;
+  progress: number;
+  /** Ticks since it set off (0 on the first tick). */
+  age: number;
+  /** Colour split of its glow, relative to its font size (0 once settled, and with reduced motion). */
+  channelOffset: number;
+}
+
 export interface FxFrame {
   /** Canvas logical-pixel offset to shake the field by. */
   shake: { x: number; y: number };
@@ -65,10 +105,11 @@ export interface FxFrame {
   fillReveal: FxFillReveal | null;
   popups: FxPopup[];
   shards: FxShard[];
+  sparks: FxSpark[];
   /** SPLIT! banner, while shown. */
-  splitBanner: { progress: number } | null;
+  splitBanner: FxSplitBanner | null;
   /** The next stage's multiplier travelling from the field center to the HUD, while it travels. */
-  multiplierFly: { text: string; progress: number } | null;
+  multiplierFly: FxMultiplierFly | null;
   /** After it arrives: 1 falling toward 0 while the HUD multiplier is highlighted; 0 otherwise. */
   multiplierHighlight: number;
 }
@@ -93,6 +134,8 @@ interface PopupEffect extends Timed {
   anchor: Point;
   text: string;
   note: string | null;
+  praise: ClaimPraise | null;
+  chain: number;
 }
 
 interface ShardPiece {
@@ -105,6 +148,18 @@ interface ShardPiece {
 
 interface ShardEffect extends Timed {
   pieces: ShardPiece[];
+}
+
+interface SparkPiece {
+  x: number;
+  y: number;
+  dirX: number;
+  dirY: number;
+}
+
+interface SparkEffect extends Timed {
+  distanceCells: number;
+  pieces: SparkPiece[];
 }
 
 interface FlashEffect extends Timed {
@@ -134,19 +189,29 @@ export class FxDirector {
   private revealSeq = 0;
   private popups: PopupEffect[] = [];
   private shards: ShardEffect | null = null;
+  private sparks: SparkEffect[] = [];
   private flash: FlashEffect | null = null;
   private shake: ShakeEffect | null = null;
   private banner: Timed | null = null;
   private multiplier: MultiplierEffect | null = null;
   private splitLockTicks = 0;
   private gameOverHoldTicks = 0;
+  // Claims in a row: the director's own tick count (every tick(), stopped
+  // ticks included), the tick of the last claim, and the chain so far.
+  private ticks = 0;
+  private lastClaimTick: number | null = null;
+  private chain = 0;
 
   constructor(params: FxParams, options: { reducedMotion?: boolean } = {}) {
     this.params = params;
     this.reducedMotion = options.reducedMotion ?? false;
   }
 
-  /** With reduced motion on, the field never shakes and the screen never flashes; everything else is unchanged. */
+  /**
+   * With reduced motion on, the field never shakes, the screen never
+   * flashes, and the text neither tears apart nor splits its colours;
+   * everything else is unchanged.
+   */
   setReducedMotion(value: boolean): void {
     this.reducedMotion = value;
   }
@@ -157,14 +222,26 @@ export class FxDirector {
 
   /**
    * Starts the effects of one accepted claim and returns how long to hit
-   * stop. A split replaces the stop, the shake and (in main.ts) the sound
-   * with the split's own and shows no popup, but the closed line still glows
-   * and the new cells are still revealed.
+   * stop and the chain. A split replaces the stop, the shake and (in
+   * main.ts) the sound with the split's own and shows no popup, but the
+   * closed line still glows and sparks and the new cells are still revealed.
+   *
+   * The chain counts claims in a row: a claim within chainWindowTicks of the
+   * previous one adds one, any other claim starts again at 1. It is shown
+   * under the popup from 2 and raises the claim sound; it never affects the
+   * score, the multiplier or the run.
    */
-  onClaim(feedback: ClaimFeedback, context: { nextMultiplier: number }): { hitStopTicks: number } {
+  onClaim(feedback: ClaimFeedback, context: { nextMultiplier: number }): { hitStopTicks: number; chain: number } {
     const p = this.params;
     const line = feedback.closedLine.map((c) => ({ x: c.x, y: c.y }));
     this.glows.push({ age: 0, duration: p.lineFlashTicks, cells: line, extendToEdges: false });
+    const sparks = buildSparks(line, p);
+    if (sparks) this.sparks.push(sparks);
+
+    const inWindow = this.lastClaimTick !== null && this.ticks - this.lastClaimTick <= p.chainWindowTicks;
+    this.chain = inWindow ? this.chain + 1 : 1;
+    this.lastClaimTick = this.ticks;
+    const chain = this.chain;
 
     // A reveal still running is simply replaced: the renderer draws every
     // claimed cell in full except the ones the current reveal is holding back.
@@ -182,9 +259,10 @@ export class FxDirector {
         text: `x${context.nextMultiplier}`,
       };
       this.splitLockTicks = Math.max(this.splitLockTicks, p.splitConfirmLockTicks);
-      return { hitStopTicks: p.hitStopSplitTicks };
+      return { hitStopTicks: p.hitStopSplitTicks, chain };
     }
 
+    const share = feedback.occupancyAfter - feedback.occupancyBefore;
     if (feedback.areaScore > 0) {
       this.popups.push({
         age: 0,
@@ -193,23 +271,27 @@ export class FxDirector {
         anchor: line.length > 0 ? { ...line[Math.floor(line.length / 2)] } : { x: 0, y: 0 },
         text: `+${feedback.areaScore}`,
         note: feedback.lineSpeed === 'slow' ? 'x2' : null,
+        praise: praiseForClaimShare(share, p),
+        chain,
       });
     }
 
-    const size = classifyClaimShare(feedback.occupancyAfter - feedback.occupancyBefore, p);
+    const size = classifyClaimShare(share, p);
     if (size === 'large') this.startShake(p.shakeSmall);
     const hitStopTicks =
       size === 'large' ? p.hitStopClaimLargeTicks : size === 'mid' ? p.hitStopClaimMidTicks : p.hitStopClaimSmallTicks;
-    return { hitStopTicks };
+    return { hitStopTicks, chain };
   }
 
   /**
    * Starts the effects of one miss and returns how long to hit stop. When
    * the miss ended the run, the GAME OVER modal is held back (and confirm is
    * not passed on) for FX_GAMEOVER_HOLD_TICKS, so the miss itself is seen.
+   * A miss ends the chain.
    */
   onMiss(feedback: MissFeedback, context: { gameOver: boolean }): { hitStopTicks: number } {
     const p = this.params;
+    this.endChain();
     this.flash = { age: 0, duration: p.missFlashTicks, center: { x: feedback.position.x, y: feedback.position.y } };
     this.startShake(p.shakeMedium);
     this.shards = feedback.line.length > 0 ? buildShards(feedback.line, feedback.position, p.shardTicks) : null;
@@ -221,10 +303,12 @@ export class FxDirector {
 
   /** Ages every effect by one fixed tick. */
   tick(): void {
+    this.ticks++;
     this.glows = this.glows.filter(age);
     if (this.reveal && !age(this.reveal)) this.reveal = null;
     this.popups = this.popups.filter(age);
     if (this.shards && !age(this.shards)) this.shards = null;
+    this.sparks = this.sparks.filter(age);
     if (this.flash && !age(this.flash)) this.flash = null;
     if (this.shake && !age(this.shake)) this.shake = null;
     if (this.banner && !age(this.banner)) this.banner = null;
@@ -233,7 +317,7 @@ export class FxDirector {
     if (this.gameOverHoldTicks > 0) this.gameOverHoldTicks--;
   }
 
-  /** Drops every effect and hold (back to Title, entering a replay). */
+  /** Drops every effect and hold and ends the chain (back to Title, entering a replay). */
   reset(): void {
     this.resetBoard();
     this.banner = null;
@@ -244,17 +328,19 @@ export class FxDirector {
 
   /**
    * Drops the effects tied to the board that is being replaced (the next
-   * stage starting): glows, reveal, popups, shards, flash and shake. The
-   * SPLIT! banner and the travelling multiplier keep running over the new
-   * board for the rest of their time.
+   * stage starting): glows, reveal, popups, sparks, shards, flash and shake;
+   * the chain ends too. The SPLIT! banner and the travelling multiplier keep
+   * running over the new board for the rest of their time.
    */
   resetBoard(): void {
     this.glows = [];
     this.reveal = null;
     this.popups = [];
     this.shards = null;
+    this.sparks = [];
     this.flash = null;
     this.shake = null;
+    this.endChain();
   }
 
   /** True while confirm must not reach the core: right after a split, and while a game-ending miss is held. */
@@ -271,8 +357,15 @@ export class FxDirector {
     return this.banner !== null;
   }
 
+  /** Claims in a row so far; 0 after a miss, a new stage or a reset. */
+  getChain(): number {
+    return this.chain;
+  }
+
   /** The current state for drawing. A fresh object every call; never mutated afterward. */
   getFrame(): FxFrame {
+    const p = this.params;
+    const reduced = this.reducedMotion;
     return {
       shake: this.shakeOffset(),
       flash: this.flashState(),
@@ -290,18 +383,40 @@ export class FxDirector {
         text: pop.text,
         note: pop.note,
         progress: pop.age / pop.duration,
+        age: pop.age,
+        scale: popupBounceScale(pop.age, p.popupBounceScale, p.popupBounceTicks),
+        channelOffset: popupChannelOffset(pop.age, reduced, p.textGlitchPopupTicks),
+        praise: pop.praise,
+        chain: pop.chain >= 2 ? `CHAIN x${pop.chain}` : null,
       })),
       shards: this.shards ? shardFrame(this.shards) : [],
-      splitBanner: this.banner ? { progress: this.banner.age / this.banner.duration } : null,
+      sparks: this.sparks.flatMap(sparkFrame),
+      splitBanner: this.banner
+        ? {
+            progress: this.banner.age / this.banner.duration,
+            age: this.banner.age,
+            glitch: bannerGlitch(this.banner.age, reduced, p.textGlitchBannerTicks),
+          }
+        : null,
       multiplierFly:
         this.multiplier && this.multiplier.age < this.multiplier.flyTicks
-          ? { text: this.multiplier.text, progress: Math.min(1, (this.multiplier.age + 1) / this.multiplier.flyTicks) }
+          ? {
+              text: this.multiplier.text,
+              progress: Math.min(1, (this.multiplier.age + 1) / this.multiplier.flyTicks),
+              age: this.multiplier.age,
+              channelOffset: popupChannelOffset(this.multiplier.age, reduced, p.textGlitchPopupTicks),
+            }
           : null,
       multiplierHighlight:
         this.multiplier && this.multiplier.age >= this.multiplier.flyTicks
           ? 1 - (this.multiplier.age - this.multiplier.flyTicks) / (this.multiplier.duration - this.multiplier.flyTicks)
           : 0,
     };
+  }
+
+  private endChain(): void {
+    this.chain = 0;
+    this.lastClaimTick = null;
   }
 
   private startShake(spec: FxShakeSpec): void {
@@ -339,6 +454,17 @@ function age(t: Timed): boolean {
   return t.age < t.duration;
 }
 
+/** Unit vector across the line at `line[i]` (perpendicular to the line there). */
+function acrossLine(line: readonly Point[], i: number): { x: number; y: number } {
+  const prev = line[Math.max(0, i - 1)];
+  const next = line[Math.min(line.length - 1, i + 1)];
+  let tx = next.x - prev.x;
+  let ty = next.y - prev.y;
+  if (tx === 0 && ty === 0) ty = 1;
+  const len = Math.hypot(tx, ty);
+  return { x: -ty / len, y: tx / len };
+}
+
 /**
  * The line's cells as shards: the cell nearest the contact breaks first and
  * the break runs along the line from there (toward the root, and toward the
@@ -358,21 +484,14 @@ function buildShards(line: readonly Point[], contact: Point, duration: number): 
   const maxRank = Math.max(contactIndex, line.length - 1 - contactIndex);
   const maxDelay = Math.floor(duration * SHARD_STAGGER_SHARE);
   const pieces = line.map((c, i) => {
-    const prev = line[Math.max(0, i - 1)];
-    const next = line[Math.min(line.length - 1, i + 1)];
-    let tx = next.x - prev.x;
-    let ty = next.y - prev.y;
-    if (tx === 0 && ty === 0) ty = 1;
-    const len = Math.hypot(tx, ty);
-    tx /= len;
-    ty /= len;
+    const across = acrossLine(line, i);
     const side = i % 2 === 0 ? 1 : -1;
     const rank = Math.abs(i - contactIndex);
     return {
       x: c.x,
       y: c.y,
-      dirX: -ty * side,
-      dirY: tx * side,
+      dirX: across.x * side,
+      dirY: across.y * side,
       delay: maxRank > 0 ? Math.round((rank / maxRank) * maxDelay) : 0,
     };
   });
@@ -391,4 +510,35 @@ function shardFrame(effect: ShardEffect): FxShard[] {
       alpha: 1 - t,
     };
   });
+}
+
+/**
+ * Sparks from the closed line: up to sparkMax cells picked at even steps
+ * along it, one spark each, flying across the line — one side, then the
+ * other, by the spark's place in the line. Only the line decides them.
+ */
+function buildSparks(line: readonly Point[], p: FxParams): SparkEffect | null {
+  const count = Math.min(line.length, Math.max(0, Math.floor(p.sparkMax)));
+  if (count === 0 || p.sparkTicks <= 0) return null;
+  const pieces: SparkPiece[] = [];
+  for (let k = 0; k < count; k++) {
+    const i = Math.floor(((k + 0.5) * line.length) / count);
+    const across = acrossLine(line, i);
+    const side = k % 2 === 0 ? 1 : -1;
+    pieces.push({ x: line[i].x, y: line[i].y, dirX: across.x * side, dirY: across.y * side });
+  }
+  return { age: 0, duration: p.sparkTicks, distanceCells: p.sparkDistanceCells, pieces };
+}
+
+function sparkFrame(effect: SparkEffect): FxSpark[] {
+  const t = effect.age / effect.duration;
+  // Fast at first, slowing as it fades.
+  const travel = effect.distanceCells * (1 - (1 - t) * (1 - t));
+  return effect.pieces.map((piece) => ({
+    x: piece.x + 0.5 + piece.dirX * travel,
+    y: piece.y + 0.5 + piece.dirY * travel,
+    size: 1 - t,
+    alpha: 1 - t,
+    progress: t,
+  }));
 }

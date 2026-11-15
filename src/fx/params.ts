@@ -1,5 +1,6 @@
 // The run-time tunable numbers of the impact feedback (hit stop, fill reveal,
-// popup, flashes, shakes, shards, split banner). Starts from src/config.ts's
+// popup, flashes, shakes, shards, split banner, the text glitch and bounce,
+// sparks, claim chains and the HUD score count-up). Starts from src/config.ts's
 // FX_* constants; the dev-only debug panel changes `fxParams` in place, and
 // FxDirector reads it on every new effect, so a change applies from the next
 // claim/split/miss. Nothing here touches src/core/ or the simulation.
@@ -25,6 +26,17 @@ import {
   FX_MULTIPLIER_FLY_TICKS,
   FX_MULTIPLIER_HIGHLIGHT_TICKS,
   FX_GAMEOVER_HOLD_TICKS,
+  FX_CLAIM_SHARE_HUGE,
+  FX_TEXT_GLITCH_BANNER_TICKS,
+  FX_TEXT_GLITCH_POPUP_TICKS,
+  FX_POPUP_BOUNCE_SCALE,
+  FX_POPUP_BOUNCE_TICKS,
+  FX_SPARK_MAX,
+  FX_SPARK_TICKS,
+  FX_SPARK_DISTANCE_CELLS,
+  FX_CHAIN_WINDOW_TICKS,
+  FX_CHAIN_PITCH_MAX_STEPS,
+  FX_SCORE_ROLL_TICKS,
   FxShakeSpec,
 } from '../config';
 
@@ -52,6 +64,17 @@ export interface FxParams {
   multiplierFlyTicks: number;
   multiplierHighlightTicks: number;
   gameOverHoldTicks: number;
+  claimShareHuge: number;
+  textGlitchBannerTicks: number;
+  textGlitchPopupTicks: number;
+  popupBounceScale: number;
+  popupBounceTicks: number;
+  sparkMax: number;
+  sparkTicks: number;
+  sparkDistanceCells: number;
+  chainWindowTicks: number;
+  chainPitchMaxSteps: number;
+  scoreRollTicks: number;
 }
 
 /** A fresh copy of the config.ts starting values. */
@@ -78,6 +101,17 @@ export function createDefaultFxParams(): FxParams {
     multiplierFlyTicks: FX_MULTIPLIER_FLY_TICKS,
     multiplierHighlightTicks: FX_MULTIPLIER_HIGHLIGHT_TICKS,
     gameOverHoldTicks: FX_GAMEOVER_HOLD_TICKS,
+    claimShareHuge: FX_CLAIM_SHARE_HUGE,
+    textGlitchBannerTicks: FX_TEXT_GLITCH_BANNER_TICKS,
+    textGlitchPopupTicks: FX_TEXT_GLITCH_POPUP_TICKS,
+    popupBounceScale: FX_POPUP_BOUNCE_SCALE,
+    popupBounceTicks: FX_POPUP_BOUNCE_TICKS,
+    sparkMax: FX_SPARK_MAX,
+    sparkTicks: FX_SPARK_TICKS,
+    sparkDistanceCells: FX_SPARK_DISTANCE_CELLS,
+    chainWindowTicks: FX_CHAIN_WINDOW_TICKS,
+    chainPitchMaxSteps: FX_CHAIN_PITCH_MAX_STEPS,
+    scoreRollTicks: FX_SCORE_ROLL_TICKS,
   };
 }
 
@@ -91,4 +125,17 @@ export function classifyClaimShare(share: number, params: Pick<FxParams, 'claimS
   if (share >= params.claimShareLarge) return 'large';
   if (share >= params.claimShareMid) return 'mid';
   return 'small';
+}
+
+export type ClaimPraise = 'NICE!' | 'GREAT!' | 'AWESOME!';
+
+/** The word a claim of this added occupancy (0-1) is praised with, or null below claimShareMid. */
+export function praiseForClaimShare(
+  share: number,
+  params: Pick<FxParams, 'claimShareMid' | 'claimShareLarge' | 'claimShareHuge'>
+): ClaimPraise | null {
+  if (share >= params.claimShareHuge) return 'AWESOME!';
+  if (share >= params.claimShareLarge) return 'GREAT!';
+  if (share >= params.claimShareMid) return 'NICE!';
+  return null;
 }
