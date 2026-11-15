@@ -449,6 +449,11 @@ export const RETRY_OFFER_WAIT_MAX_TICKS = 90;
 // GAME OVER: confirm from the keyboard, the field and the touch buttons is
 // dropped for this many ticks from the modal appearing.
 export const RETRY_CONFIRM_GUARD_TICKS = 24;
+// A field shorter than COMPACT CSS px gets the GAME OVER modal's tighter
+// spacing, and one shorter than TINY (a phone held sideways) its tiny layout
+// (src/ui/gameOverModal.ts's setDensity()).
+export const GAMEOVER_MODAL_COMPACT_BELOW_PX = 400;
+export const GAMEOVER_MODAL_TINY_BELOW_PX = 200;
 // The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
 // this many CSS px on screen, however far the field is scaled down.
 export const FX_TEXT_MIN_DISPLAY_PX = 11;

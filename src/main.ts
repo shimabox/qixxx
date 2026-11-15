@@ -1,5 +1,4 @@
 import { GameSession, SessionInput } from './core/session';
-import { InputRecorder } from './core/inputRecorder';
 import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
@@ -23,7 +22,8 @@ import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate } from './fx/liveTick';
+import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
+import { stepLiveSession, LiveRunTracker } from './retryFlow';
 import { ScoreRoll } from './fx/scoreRoll';
 import { loadFxFonts } from './render/fxFonts';
 import {
@@ -55,6 +55,8 @@ import {
   HUD_GAUGE_FILL_COLOR,
   HUD_GAUGE_NEAR_COLOR,
   HUD_GAUGE_GOAL_COLOR,
+  GAMEOVER_MODAL_COMPACT_BELOW_PX,
+  GAMEOVER_MODAL_TINY_BELOW_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -579,28 +581,23 @@ let runMode: RunMode = 'normal';
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
-// RANKING: records every
-// PLAYING-tick input of the *current* run. Read exactly once per run, at the
-// gameover edge in renderFrame(), where its contents are frozen into a
-// RunSubmissionSnapshot handed to src/ui/ranking.ts — that module never
-// touches this recorder (or the live session) itself, so a submission can
-// never accidentally describe the *next* run. See update()'s own
-// seed-requeuing/recorder-reset comments below.
-const inputRecorder = new InputRecorder();
+// RANKING: the live run's recorded PLAYING-tick inputs, its successful area
+// claims and its per-run id (src/retryFlow.ts's LiveRunTracker). Read exactly
+// once per run, at the gameover edge in renderFrame(), where its contents are
+// frozen into a RunSubmissionSnapshot handed to src/ui/ranking.ts — that
+// module never touches the recorder (or the live session) itself, so a
+// submission can never accidentally describe the *next* run. The id moves on
+// at the one boundary where a brand-new run begins (GameOver -> Title), so an
+// /api/ranking response that arrives after the player has already moved on
+// is recognized as belonging to a run that no longer exists and discarded —
+// see src/ui/ranking.ts's decideSubmissionOffer().
+const runTracker = new LiveRunTracker();
 
-// Successful area claims in the live run so far. Reset together with the
-// recorder; frozen into the gameover snapshot so src/ui/ranking.ts can tell a
-// run that exceeds MAX_VERIFIED_CLAIMS (which the server's audit would only
-// reject days later, silently) before ever offering to submit it.
-let runClaims = 0;
-
-// Monotonic per-run identifier. Bumped at the one boundary
-// where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
-// resetToFreshRun()), so an /api/ranking response that arrives after the
-// player has already moved on can be recognized as belonging to a run that
-// no longer exists and discarded — see src/ui/ranking.ts's
-// decideSubmissionOffer().
-let runId = 1;
+// What the GAME OVER modal's RETRY / TITLE button asked for. Passed to the
+// core as confirm on every live tick until the run leaves GAME OVER — past
+// the confirm holds the keyboard and the field are under, and past the
+// core's own release gate dropping the first ones.
+let modalAction: 'retry' | 'title' | null = null;
 
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
@@ -707,11 +704,14 @@ function init(): void {
   hudLine2.style.display = 'none';
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
-  gameOverModal = initGameOverModal(canvasWrap);
+  gameOverModal = initGameOverModal(canvasWrap, {
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
+  });
   rankingUI = initRankingUI({
     anchor: canvasWrap,
     getSession: () => session,
-    getRunId: () => runId,
+    getRunId: () => runTracker.getRunId(),
     getRulesetVersion: () => RULESET_VERSION,
     getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
     onReplayStart: enterReplayMode,
@@ -830,6 +830,25 @@ function updateTouchLayout(): void {
     hudRow.appendChild(creditLink);
     hudRow.appendChild(muteButton);
   }
+}
+
+// The modal's buttons: only meaningful while the live run is on GAME OVER.
+function requestModalAction(action: 'retry' | 'title'): void {
+  if (viewMode !== 'live' || session.getStatus() !== 'gameover') return;
+  modalAction = action;
+}
+
+// What holds a GAME OVER confirm from the keyboard, the field and the touch
+// buttons this tick (src/fx/liveTick.ts's GameOverConfirmGate): the guard
+// after the modal appears and the ranking offer for the run that just ended.
+function currentRetryHold(): RetryHold {
+  const checkPending = rankingUI.isSubmissionCheckPending();
+  return {
+    guardTicks: fxParams.retryConfirmGuardTicks,
+    checkPending,
+    checkWaitMaxTicks: fxParams.retryOfferWaitMaxTicks,
+    formShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
+  };
 }
 
 /** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
@@ -1214,6 +1233,11 @@ function fitCanvasToViewport(): void {
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+  // A small field gets the GAME OVER modal's tighter spacing, so the whole
+  // modal stays on the field.
+  gameOverModal.setDensity(
+    cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
+  );
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
@@ -1275,14 +1299,21 @@ function updateLive(): void {
   // HUD score's count-up keeps going through a stop, like the effects.
   hudScoreRoll.tick();
   multiplierEmphasis.tick();
-  const input = beginLiveTick({
+  const polled = beginLiveTick({
     fx,
     hitStop,
     gate: gameOverConfirmGate,
     status: session.getStatus(),
     readInput: () => keyboard.getInput(),
+    retryHold: currentRetryHold,
   });
-  if (!input) return;
+  if (!polled) return;
+
+  const statusBeforeThisTick = session.getStatus();
+  // The modal's RETRY / TITLE request reaches the core as confirm on every
+  // GAME OVER tick until the run leaves it (see `modalAction`).
+  if (statusBeforeThisTick !== 'gameover') modalAction = null;
+  const input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
 
   lastInput = input;
 
@@ -1295,36 +1326,31 @@ function updateLive(): void {
   // times while the GAME OVER screen sits idle is cheap. Never touches a
   // 'seeded' (`?seed=`) run, whose fixed seed must keep reproducing the same
   // board on every retry, exactly as before this feature existed.
-  const statusBeforeThisTick = session.getStatus();
   if (runMode === 'normal' && statusBeforeThisTick === 'gameover') {
     session.setNextSeed(generateNormalRunSeed());
   }
 
   const stageBeforeThisTick = session.getStage();
-  session.update(input);
-
-  // InputRecorder: reset the
-  // instant a fresh run actually starts (gameover -> title, i.e.
-  // resetToFreshRun() just fired inside the update() call above) — without
-  // this, the recorder's own "have we already seen this totalTicks value"
-  // guard would silently refuse to record the new run's early ticks (their
-  // totalTicks values are smaller than the previous run's final one).
-  // observe() itself is always safe to call unconditionally afterward: it's
-  // a no-op on any tick that didn't actually advance a *new* playing tick
-  // (title/stageclear/gameover ticks, or this same reset tick).
-  if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
-    inputRecorder.reset();
-    runClaims = 0;
-    // A brand-new run starts here — see `runId`'s own comment.
-    runId++;
-    // Back to Title: every impact effect and hold is dropped.
-    hitStop.clear();
-    fx.reset();
-    renderer.resetBoard();
-    multiplierEmphasis.reset();
-    // The best this new run is chasing (the high score already includes the
-    // run that just ended).
-    runBestAtStart = session.getHighScore();
+  // One session update — or, when this confirm ends GAME OVER with anything
+  // but the TITLE button, two in a row: GAME OVER -> Title -> stage 1, so
+  // the Title screen is never drawn (src/retryFlow.ts).
+  const step = stepLiveSession(session, input, {
+    retry: modalAction !== 'title',
+    // A fresh run begins (GAME OVER -> Title, resetToFreshRun() just ran):
+    // the recorder, claims and run id (see `runTracker`), every impact effect
+    // and hold, and the best this run is chasing (the high score already
+    // includes the run that just ended).
+    onFreshRun: () => {
+      runTracker.startFreshRun();
+      hitStop.clear();
+      fx.reset();
+      renderer.resetBoard();
+      multiplierEmphasis.reset();
+      runBestAtStart = session.getHighScore();
+    },
+  });
+  if (step.freshRun) {
+    modalAction = null;
   } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
     // The next stage's board replaces this one: drop the effects tied to the
     // old board. SPLIT! and the travelling multiplier keep running.
@@ -1332,11 +1358,14 @@ function updateLive(): void {
     fx.resetBoard();
     renderer.resetBoard();
   }
-  inputRecorder.observe(session, input);
 
   const events = session.drainEvents();
-  for (const ev of events) if (ev === 'area-claimed') runClaims++;
+  // Records this tick's input if it played a tick (a no-op on title,
+  // stageclear and gameover ticks, and on the fresh-run tick itself) and
+  // counts its claims.
+  runTracker.observe(session, input, events);
   sfx.handleEvents(events);
+
   // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
   applyImpactNotices(session, fx, hitStop, sfx);
   // The HUD's SCORE number follows the real score: counting up after points
@@ -1457,27 +1486,32 @@ function renderFrame(): void {
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
-  // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
-  // TITLE"/any-key resets the run to 'title'). Re-read here (rather than
-  // reused from updateHud()'s internals) since that call may have skipped
-  // its own re-read via the lastHud* cache when nothing displayed changed.
+  // hide it exactly once when it stops being 'gameover' (RETRY, TITLE, or a
+  // key / a tap starting the next run).
   //
   // After a game-ending miss the modal waits FX_GAMEOVER_HOLD_TICKS so the
   // miss itself is seen first, then appears on the first frame after that.
-  // GameOverConfirmGate (src/fx/liveTick.ts) keeps confirm from reaching the
-  // core until this frame has shown it, so nothing can skip the modal.
+  // GameOverConfirmGate (src/fx/liveTick.ts) drops every confirm from the
+  // keyboard and the field until this frame has shown it and for
+  // RETRY_CONFIRM_GUARD_TICKS after, so nothing can skip the modal.
   if (status === 'gameover') {
     if (!gameOverModalShown && !fx.isGameOverHeld()) {
       gameOverModalShown = true;
       gameOverConfirmGate.markModalShown();
+      const score = session.getScore();
+      // NEW RECORD: only for a run that may save its high score (a normal
+      // run with no debug override at any point), against the best it
+      // started from.
+      const recordsHighScore = shouldPersistHighScore(runMode) && !session.isRunTainted();
       gameOverModal.show({
-        score: activeSession.getScore(),
-        stage: activeSession.getStage(),
-        hiScore: activeSession.getHighScore(),
+        score,
+        stage: session.getStage(),
+        hiScore: session.getHighScore(),
         // TIME UP!: distinguishes a
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
-        reason: activeSession.getGameOverReason() ?? undefined,
+        reason: session.getGameOverReason() ?? undefined,
+        newRecordDelta: recordsHighScore && score > runBestAtStart ? score - runBestAtStart : undefined,
       });
       // Ranking submission offer: a no-op if this run isn't POST-eligible
       // (`?seed=`/tainted, see
@@ -1487,16 +1521,19 @@ function renderFrame(): void {
       // `session` (not `activeSession`) deliberately, to make it explicit
       // this is the *live* run's final state and never a replay's.
       rankingUI.offerSubmission({
-        runId,
+        runId: runTracker.getRunId(),
         seed: session.getSeed(),
-        rle: inputRecorder.encode(),
-        score: session.getScore(),
+        rle: runTracker.recorder.encode(),
+        score,
         stage: session.getStage(),
         runMode,
         tainted: session.isRunTainted(),
-        claims: runClaims,
+        claims: runTracker.getClaims(),
       });
     }
+    // The hint says what the keys do: retry, or wait for the submission panel
+    // to be closed.
+    if (gameOverModalShown) gameOverModal.setSubmissionHold(currentRetryHold().formShown);
   } else {
     gameOverConfirmGate.reset();
     if (gameOverModalShown) {

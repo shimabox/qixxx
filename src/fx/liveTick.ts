@@ -18,22 +18,43 @@ export interface LiveTickFx {
 }
 
 /**
- * Keeps a GAME OVER confirm from reaching the core before the GAME OVER
- * modal has actually been drawn, so a key pressed while the run is ending can
- * never skip the modal (and with it the score and the ranking offer) by
- * jumping straight back to Title.
+ * What, besides the impact holds, keeps a GAME OVER confirm from the
+ * keyboard, the field and the touch buttons away from the core.
+ */
+export interface RetryHold {
+  /** Confirms are dropped for this many ticks from the modal appearing (RETRY_CONFIRM_GUARD_TICKS). */
+  guardTicks: number;
+  /** The ranking check (/api/ranking) is still in flight (RankingUI.isSubmissionCheckPending()). */
+  checkPending: boolean;
+  /** The longest the check may hold confirms, counted from the modal appearing (RETRY_OFFER_WAIT_MAX_TICKS). */
+  checkWaitMaxTicks: number;
+  /** The submission panel is on screen (RankingUI.isSubmissionBlockingRetry() beyond the check). */
+  formShown: boolean;
+}
+
+const NO_RETRY_HOLD: RetryHold = { guardTicks: 0, checkPending: false, checkWaitMaxTicks: 0, formShown: false };
+
+/**
+ * Decides which GAME OVER confirm may reach the core — where a confirm now
+ * starts the next run at once (src/retryFlow.ts), so a stray one must not.
  *
- * A confirm read after any game-ending hold but before the modal is on
- * screen is kept (one at most) and handed over on the first tick after the
- * modal was drawn.
+ * Every confirm is dropped, never kept for later: while the game-ending miss
+ * plays out, until the modal has been drawn, for `guardTicks` ticks after
+ * that (a player still hammering the touch buttons, every one of which is a
+ * confirm, would otherwise retry before seeing the modal), while the ranking
+ * check is in flight (for at most `checkWaitMaxTicks` from the modal
+ * appearing, so a reply that never comes cannot lock the keys), and while the
+ * submission panel is on screen. The modal's own RETRY / TITLE buttons do not
+ * go through here (src/main.ts).
  */
 export class GameOverConfirmGate {
   private modalShown = false;
-  private pendingConfirm = false;
+  private ticksSinceModal = 0;
 
   /** The render layer calls this on the frame the GAME OVER modal is shown. */
   markModalShown(): void {
     this.modalShown = true;
+    this.ticksSinceModal = 0;
   }
 
   isModalShown(): boolean {
@@ -43,26 +64,22 @@ export class GameOverConfirmGate {
   /** Called when the run leaves GAME OVER (or the live view is reset). */
   reset(): void {
     this.modalShown = false;
-    this.pendingConfirm = false;
+    this.ticksSinceModal = 0;
   }
 
   /** Applies the gate to `input` read on a tick that starts in `status`. */
-  filter(input: SessionInput, status: SessionStatus, fx: LiveTickFx): SessionInput {
+  filter(input: SessionInput, status: SessionStatus, fx: LiveTickFx, hold: RetryHold = NO_RETRY_HOLD): SessionInput {
     if (status !== 'gameover') {
       return fx.isConfirmLocked() && input.confirm ? { ...input, confirm: false } : input;
     }
-    if (fx.isGameOverHeld() || fx.isConfirmLocked()) {
-      // Pressed while the game-ending miss is still playing out: dropped.
-      return input.confirm ? { ...input, confirm: false } : input;
-    }
-    if (!this.modalShown) {
-      if (input.confirm) this.pendingConfirm = true;
-      return input.confirm ? { ...input, confirm: false } : input;
-    }
-    if (this.pendingConfirm) {
-      this.pendingConfirm = false;
-      return { ...input, confirm: true };
-    }
+    const drop = input.confirm ? { ...input, confirm: false } : input;
+    // Pressed while the game-ending miss is still playing out, or before the
+    // modal is on screen: dropped.
+    if (fx.isGameOverHeld() || fx.isConfirmLocked() || !this.modalShown) return drop;
+    this.ticksSinceModal++;
+    if (this.ticksSinceModal <= hold.guardTicks) return drop;
+    if (hold.checkPending && this.ticksSinceModal <= hold.checkWaitMaxTicks) return drop;
+    if (hold.formShown) return drop;
     return input;
   }
 }
@@ -75,6 +92,8 @@ export interface LiveTickDeps {
   status: SessionStatus;
   /** Polls input; must not be called on a stopped tick (it consumes the confirm edge). */
   readInput: () => SessionInput;
+  /** The GAME OVER retry holds (see GameOverConfirmGate); none when omitted. */
+  retryHold?: () => RetryHold;
 }
 
 /**
@@ -89,7 +108,7 @@ export interface LiveTickDeps {
 export function beginLiveTick(deps: LiveTickDeps): SessionInput | null {
   deps.fx.tick();
   if (deps.hitStop.consume()) return null;
-  return deps.gate.filter(deps.readInput(), deps.status, deps.fx);
+  return deps.gate.filter(deps.readInput(), deps.status, deps.fx, deps.retryHold?.());
 }
 
 /** The parts of GameSession the impact feedback reads after a tick. */

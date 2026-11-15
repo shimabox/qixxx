@@ -13,7 +13,7 @@ import { KeyboardInput } from '../input/keyboard';
 import { FxDirector } from './director';
 import { HitStop } from './hitStop';
 import { createDefaultFxParams } from './params';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource } from './liveTick';
+import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource, RetryHold } from './liveTick';
 import { ScoreRoll } from './scoreRoll';
 import type { ClaimFeedback } from '../core/feedback';
 import {
@@ -24,6 +24,8 @@ import {
   FX_HITSTOP_SPLIT_TICKS,
   FX_SPLIT_BANNER_TICKS,
   FX_SPLIT_CONFIRM_LOCK_TICKS,
+  RETRY_CONFIRM_GUARD_TICKS,
+  RETRY_OFFER_WAIT_MAX_TICKS,
 } from '../config';
 
 type Carry = { score: number; lives: number; multiplier: number };
@@ -74,6 +76,13 @@ class LiveHarness {
   readonly sounds: Array<{ kind: 'claim'; chain: number } | { kind: 'split' }> = [];
   modalShown = false;
   stoppedTicks = 0;
+  /** The GAME OVER retry holds main.ts passes (src/ui/ranking.ts and fxParams). */
+  retryHold: RetryHold = {
+    guardTicks: RETRY_CONFIRM_GUARD_TICKS,
+    checkPending: false,
+    checkWaitMaxTicks: RETRY_OFFER_WAIT_MAX_TICKS,
+    formShown: false,
+  };
 
   constructor(gameFactory: Factory, timeLimitTicks?: number) {
     this.session = new GameSession({ gameFactory, captureFeedback: true, timeLimitTicks });
@@ -88,6 +97,7 @@ class LiveHarness {
       gate: this.gate,
       status,
       readInput: () => this.keyboard.getInput(),
+      retryHold: () => this.retryHold,
     });
     if (!input) {
       this.stoppedTicks++;
@@ -387,7 +397,7 @@ describe('GAME OVER after a game-ending miss', () => {
     expect(h.confirmsDelivered()).toBe(confirmsBefore);
   });
 
-  it('keeps the confirm pressed on the tick the hold ends until the modal is drawn, then delivers it once', () => {
+  it('drops a confirm pressed on the tick the hold ends: it does not reach the core after the modal is drawn either', () => {
     const h = missOnLastLife();
     h.ticks(FX_GAMEOVER_HOLD_TICKS - 1);
     h.pressConfirm();
@@ -395,12 +405,13 @@ describe('GAME OVER after a game-ending miss', () => {
     expect(h.session.getStatus()).toBe('gameover');
     h.render();
     expect(h.modalShown).toBe(true);
+    const confirmsBefore = h.confirmsDelivered();
+    h.ticks(RETRY_CONFIRM_GUARD_TICKS + 10);
+    expect(h.confirmsDelivered()).toBe(confirmsBefore);
     expect(h.session.getStatus()).toBe('gameover');
-    h.tick(); // the first tick after the modal was drawn
-    expect(h.session.getStatus()).toBe('title');
   });
 
-  it('with many ticks per frame: confirm on every tick still cannot leave GAME OVER before the modal is drawn', () => {
+  it('with many ticks per frame: confirm on every tick cannot leave GAME OVER before the modal is drawn, and none is kept', () => {
     const h = missOnLastLife();
     for (let t = 1; t <= FX_GAMEOVER_HOLD_TICKS + 30; t++) {
       h.pressConfirm();
@@ -411,27 +422,78 @@ describe('GAME OVER after a game-ending miss', () => {
     const confirmsBefore = h.confirmsDelivered();
     h.render();
     expect(h.modalShown).toBe(true);
+    h.ticks(RETRY_CONFIRM_GUARD_TICKS + 5);
+    expect(h.confirmsDelivered()).toBe(confirmsBefore);
+    expect(h.session.getStatus()).toBe('gameover');
+  });
+});
+
+describe('GAME OVER retry guard', () => {
+  function modalUp(): LiveHarness {
+    const h = new LiveHarness(clearFactory, 3);
+    h.start();
+    h.ticks(3); // a 3-tick time limit
+    expect(h.session.getStatus()).toBe('gameover');
+    h.render();
+    expect(h.modalShown).toBe(true);
+    return h;
+  }
+
+  it('drops every confirm for 24 ticks from the modal appearing, then delivers the next one', () => {
+    const h = modalUp();
+    const confirmsBefore = h.confirmsDelivered();
+    for (let t = 1; t <= RETRY_CONFIRM_GUARD_TICKS; t++) {
+      h.pressConfirm();
+      h.tick();
+      expect(h.session.getStatus()).toBe('gameover');
+    }
+    expect(h.confirmsDelivered()).toBe(confirmsBefore);
+    h.pressConfirm();
     h.tick();
     expect(h.confirmsDelivered()).toBe(confirmsBefore + 1);
     expect(h.session.getStatus()).toBe('title');
   });
 
-  it('delivers a confirm kept between the hold and the modal exactly once', () => {
-    const h = missOnLastLife();
-    h.ticks(FX_GAMEOVER_HOLD_TICKS);
+  it('holds keys while the ranking check is in flight, for at most 90 ticks from the modal', () => {
+    const h = modalUp();
+    h.retryHold = { ...h.retryHold, checkPending: true };
+    for (let t = 1; t <= RETRY_OFFER_WAIT_MAX_TICKS; t++) {
+      h.pressConfirm();
+      h.tick();
+    }
+    expect(h.session.getStatus()).toBe('gameover');
+    h.pressConfirm();
+    h.tick(); // tick 91: the check no longer holds the keys
+    expect(h.session.getStatus()).toBe('title');
+  });
+
+  it('a check that answers early releases the keys at once (after the guard)', () => {
+    const h = modalUp();
+    h.retryHold = { ...h.retryHold, checkPending: true };
+    h.ticks(RETRY_CONFIRM_GUARD_TICKS + 5);
+    h.retryHold = { ...h.retryHold, checkPending: false };
     h.pressConfirm();
     h.tick();
+    expect(h.session.getStatus()).toBe('title');
+  });
+
+  it('holds keys for as long as the submission panel is on screen, without a limit', () => {
+    const h = modalUp();
+    h.retryHold = { ...h.retryHold, formShown: true };
+    for (let t = 1; t <= RETRY_OFFER_WAIT_MAX_TICKS * 3; t++) {
+      h.pressConfirm();
+      h.tick();
+    }
+    expect(h.session.getStatus()).toBe('gameover');
+    h.retryHold = { ...h.retryHold, formShown: false };
     h.pressConfirm();
-    h.tick(); // two presses before the frame: still one kept confirm
-    h.render();
-    const confirmsBefore = h.confirmsDelivered();
-    h.ticks(5);
-    expect(h.confirmsDelivered()).toBe(confirmsBefore + 1);
+    h.tick();
+    expect(h.session.getStatus()).toBe('title');
   });
 });
 
 describe('GAME OVER on TIME UP', () => {
-  it('adds no hold, but still keeps a confirm until the modal is drawn and then delivers it once', () => {
+  it('adds no hold; a confirm before the modal is dropped, one after the guard is delivered', () => {
     const h = new LiveHarness(clearFactory, 3);
     h.start();
     h.ticks(3); // a 3-tick time limit
@@ -446,6 +508,9 @@ describe('GAME OVER on TIME UP', () => {
     const confirmsBefore = h.confirmsDelivered();
     h.render();
     expect(h.modalShown).toBe(true);
+    h.ticks(RETRY_CONFIRM_GUARD_TICKS + 1);
+    expect(h.confirmsDelivered()).toBe(confirmsBefore);
+    h.pressConfirm();
     h.tick();
     expect(h.confirmsDelivered()).toBe(confirmsBefore + 1);
     expect(h.session.getStatus()).toBe('title');
