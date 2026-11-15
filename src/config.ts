@@ -214,7 +214,7 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // pitch from SFX_TIME_WARNING_HIGH_FROM_SEC. Nothing plays at 0: that tick is
 // the TIME UP gameover itself.
 // The beeps sit well above the Igniter approach beep (500 Hz) and apart from
-// the area-claimed chime (660 Hz), so neither can be mistaken for them.
+// the area-claim hit (SFX_CLAIM_HIT_FREQ), so neither can be mistaken for them.
 export const SFX_TIME_WARNING_SECOND_ALARM_SEC = 15;
 export const SFX_TIME_WARNING_BEEP_FROM_SEC = 10;
 export const SFX_TIME_WARNING_HIGH_FROM_SEC = 5;
@@ -298,10 +298,10 @@ export const SFX_MASTER_GAIN = 0.25;
 export const SFX_DRAW_GAIN = 0.05;
 export const SFX_DRAW_FREQ_FAST = 220;
 export const SFX_DRAW_FREQ_SLOW = 130;
-export const SFX_AREA_CLAIMED_FREQ = 660;
-export const SFX_AREA_CLAIMED_DURATION = 0.12;
+// The miss: a falling sawtooth that peaks at once (SFX_IMPACT_ATTACK). Its
+// envelope plus SFX_TONE_STOP_TAIL stays within 0.35s.
 export const SFX_MISS_FREQ = 90;
-export const SFX_MISS_DURATION = 0.35;
+export const SFX_MISS_DURATION = 0.33;
 export const SFX_STAGE_CLEAR_NOTES = [523, 659, 784, 1047]; // C5 E5 G5 C6 arpeggio
 export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.14;
 export const SFX_SPLIT_CLEAR_NOTES = [784, 988, 1175, 1568, 1976]; // brighter/longer — a "special" clear
@@ -337,7 +337,7 @@ export const SFX_IMPACT_ATTACK = 0.004; // within 5ms
 // for a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
 // rising sweep while the new area fills in. The hit and the low layer end
 // within 0.08s (their nodes stop SFX_TONE_STOP_TAIL later, already silent).
-export const SFX_CLAIM_HIT_FREQ = 1320;
+export const SFX_CLAIM_HIT_FREQ = 1047; // C6, between the 880 / 1320 Hz time warning beeps
 export const SFX_CLAIM_HIT_DURATION = 0.05;
 export const SFX_CLAIM_LOW_MID_FREQ = 220;
 export const SFX_CLAIM_LOW_LARGE_FREQ = 110;
