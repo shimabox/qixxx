@@ -106,6 +106,8 @@ export class Renderer {
   // Center (in cells) of each reveal's new cells, for its "+score" popup.
   private revealCentroids = new Map<number, { x: number; y: number }>();
 
+  private fxTextMinFontPx = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     // devicePixelRatio support (docs/plan.md §5.3): the internal resolution
@@ -169,6 +171,17 @@ export class Renderer {
    */
   spawnEmberDespawnEffect(position: Point): void {
     this.emberDespawnEffects.push({ position: { ...position }, startFrame: this.frameCount });
+  }
+
+  /**
+   * The smallest canvas font size for the effects' text (+score, x2, the
+   * praise word, CHAIN xN): main.ts sets FX_TEXT_MIN_DISPLAY_PX divided by
+   * the field's display scale (on-screen width / CANVAS_WIDTH), so on a
+   * phone, where the field is drawn at ~0.6x, the text never shows smaller
+   * than that many CSS px. Drawing only — see fxLayer.ts's popupFontSizes().
+   */
+  setFxTextMinFontPx(px: number): void {
+    this.fxTextMinFontPx = Number.isFinite(px) && px > 0 ? px : 0;
   }
 
   /**
@@ -247,7 +260,7 @@ export class Renderer {
       this.drawMarker(markerPosition, !hasLineCells);
     }
     if (fx) {
-      drawPopups(this.ctx, fx.popups, (popup) => this.popupPosition(popup));
+      drawPopups(this.ctx, fx.popups, (popup) => this.popupPosition(popup), this.fxTextMinFontPx);
       this.pruneCentroids(fx.popups);
       if (fx.splitBanner) drawSplitBanner(this.ctx, fx.splitBanner);
       drawFlash(this.ctx, fx.flash);

@@ -506,6 +506,9 @@ const stageResultCounter = new StageResultCounter();
 // True on a field small enough (a phone held sideways) that the clear
 // screen drops its blank lines to stay on it — see fitCanvasToViewport().
 let tinyField = false;
+// The field's on-screen width / CANVAS_WIDTH, for the effects' smallest
+// text size (Renderer.setFxTextMinFontPx()). Updated on every resize.
+let fieldDisplayScale = 1;
 let hudScore: HTMLSpanElement;
 // The HUD's lives marks. Line height 0: the marks come from a fallback font
 // whose taller metrics would otherwise make the HUD line 1px taller, and with
@@ -1248,6 +1251,7 @@ function fitCanvasToViewport(): void {
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+  fieldDisplayScale = cssWidth / CANVAS_WIDTH;
   // A small field gets the GAME OVER modal's tighter spacing, so the whole
   // modal stays on the field.
   tinyField = cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX;
@@ -1444,6 +1448,8 @@ function renderFrame(): void {
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
   // Impact feedback is live play only: a replay is drawn exactly as before.
   const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
+  // Read every frame, so the debug panel's value applies at once.
+  renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
 
   renderer.render(
     game.getField(),
