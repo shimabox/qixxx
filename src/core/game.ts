@@ -15,6 +15,7 @@ import { Igniter, shouldSpawnIgniter } from './fuse';
 import { checkCollision } from './collision';
 import { scoreAreaClaim, scoreStageClearBonus, DEFAULT_SCORE_MULTIPLIER } from './scoring';
 import { EventQueue, GameEvent } from './events';
+import type { ClaimFeedback, MissCause, MissFeedback } from './feedback';
 import {
   MARKER_MOVE_TICKS_FAST,
   MARKER_MOVE_TICKS_SLOW,
@@ -144,6 +145,13 @@ export interface GameOptions {
    * (see maybeSpawnEmbers()). Defaults to EMBER_MAX_CONCURRENT_STAGE1.
    */
   maxConcurrentEmbers?: number;
+  /**
+   * When true, every accepted claim and every miss also queues a read-only
+   * notice (core/feedback.ts) for drainClaimFeedback()/drainMissFeedback().
+   * Defaults to false: no notice is built and no line is copied, and both
+   * drains return an empty array. Never changes the simulation itself.
+   */
+  captureFeedback?: boolean;
 }
 
 export class Game {
@@ -191,6 +199,11 @@ export class Game {
   // union. See drainDespawnedEmberPositions() below and GameSession's
   // forwarding of the same.
   private despawnedEmberPositions = new EventQueue<Point>();
+  // Claim/miss notices for the presentation layer (core/feedback.ts). Both
+  // stay null unless GameOptions.captureFeedback is set, so a Game built
+  // without it allocates nothing for them.
+  private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
+  private readonly missFeedback: EventQueue<MissFeedback> | null;
 
   // Ember spawn-generation counter (docs/plan.md §14 M6-1): incremented once
   // every time maybeSpawnEmbers()'s cooldown elapses and a spawn cycle
@@ -248,6 +261,8 @@ export class Game {
     this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
     this.score = options.score ?? 0;
     this.lives = options.lives ?? INITIAL_LIVES;
+    this.claimFeedback = options.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
+    this.missFeedback = options.captureFeedback ? new EventQueue<MissFeedback>() : null;
 
     // Snapshot this stage's own defaults (docs/plan.md §6 M10 "RESET は
     // ステージ既定値に戻す") before any debug override can touch them.
@@ -358,6 +373,28 @@ export class Game {
    */
   drainDespawnedEmberPositions(): Point[] {
     return this.despawnedEmberPositions.drain();
+  }
+
+  /** True when this Game was built with `captureFeedback: true` (see GameOptions). */
+  isCapturingFeedback(): boolean {
+    return this.claimFeedback !== null;
+  }
+
+  /**
+   * Drains (returns and clears) every claim notice queued since the last
+   * call (core/feedback.ts). Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainClaimFeedback(): ClaimFeedback[] {
+    return this.claimFeedback ? this.claimFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every miss notice queued since the last call
+   * (core/feedback.ts). Always empty unless built with `captureFeedback: true`.
+   */
+  drainMissFeedback(): MissFeedback[] {
+    return this.missFeedback ? this.missFeedback.drain() : [];
   }
 
   /**
@@ -553,13 +590,12 @@ export class Game {
     this.despawnStrandedEmbers();
     this.maybeSpawnEmbers();
 
-    if (
-      !inGraceAtTickStart &&
-      this.marker.isDrawing() &&
-      this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionBeforeMove))
-    ) {
-      this.handleMiss();
-      missedThisTick = true;
+    if (!inGraceAtTickStart && this.marker.isDrawing()) {
+      const hitWisp = this.findWispTouching(markerPositionBeforeMove);
+      if (hitWisp) {
+        this.handleMiss('wisp', hitWisp);
+        missedThisTick = true;
+      }
     }
 
     const holdingDirection = input.dx !== 0 || input.dy !== 0;
@@ -580,8 +616,10 @@ export class Game {
         const claimResult: ClaimResult = claimArea(this.field, result.closedLine, wispPositions, lineSpeed);
         this.despawnIgniter();
         if (claimResult.accepted) {
+          const occupancyBefore = this.occupancy;
           this.occupancy = claimResult.occupancy;
-          this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
+          const areaScore = scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
+          this.score += areaScore;
           this.despawnStrandedEmbers();
           this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
@@ -597,6 +635,19 @@ export class Game {
             this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
             this.status = 'stageclear';
             this.events.push('stage-clear');
+          }
+          if (this.claimFeedback) {
+            this.claimFeedback.push({
+              claimedCells: claimResult.claimedCells,
+              occupancyBefore,
+              occupancyAfter: this.occupancy,
+              lineSpeed,
+              areaScore,
+              multiplier: this.multiplier,
+              split: claimResult.split,
+              stageCleared: this.status === 'stageclear',
+              closedLine: result.closedLine.map((p) => ({ x: p.x, y: p.y })),
+            });
           }
         }
       }
@@ -616,7 +667,7 @@ export class Game {
 
     const igniterCaughtMarker = this.status === 'playing' && this.updateIgniter(holdingDirection);
     if (igniterCaughtMarker && !inGraceAtTickStart && !missedThisTick) {
-      this.handleMiss();
+      this.handleMiss('igniter', null);
       missedThisTick = true;
     }
 
@@ -626,16 +677,35 @@ export class Game {
       // both checks below instead of calling getPosition() (a fresh
       // allocation) once per Wisp and again once per Ember.
       const markerPositionAfterMove = this.marker.getPosition();
-      if (
-        this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionAfterMove)) ||
-        this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))
-      ) {
-        this.handleMiss();
+      // Wisps first, then Embers — the same order (and the same
+      // short-circuit) as the single `wisps.some(...) || embers.some(...)`
+      // check this replaced; it is only split up so the miss can name what
+      // it was.
+      const hitWisp = this.findWispTouching(markerPositionAfterMove);
+      if (hitWisp) {
+        this.handleMiss('wisp', hitWisp);
+        missedThisTick = true;
+      } else if (this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))) {
+        this.handleMiss('ember', null);
         missedThisTick = true;
       }
     }
 
     return result;
+  }
+
+  /**
+   * The first Wisp (in `wisps` order) whose trail touches the line or the
+   * marker at `markerPosition`, or null. Visits Wisps in the same order and
+   * stops at the same one as `wisps.some(...)` would.
+   */
+  private findWispTouching(markerPosition: Point): Wisp | null {
+    for (const wisp of this.wisps) {
+      if (checkCollision(this.field, wisp.getTrailRef(), markerPosition)) {
+        return wisp;
+      }
+    }
+    return null;
   }
 
   /**
@@ -829,8 +899,19 @@ export class Game {
    * vanishes and retract is re-enabled, a life is lost, the score
    * multiplier resets to 1, and a grace period starts during which no
    * further miss can be triggered (so one sustained contact = one life).
+   *
+   * `cause`/`hitWisp` only describe the miss for the optional feedback
+   * notice (core/feedback.ts); they never change what the miss does.
    */
-  private handleMiss(): void {
+  private handleMiss(cause: MissCause, hitWisp: Wisp | null): void {
+    if (this.missFeedback) {
+      // Read before cancelLine() below snaps the marker back and clears the line.
+      this.missFeedback.push({
+        cause,
+        position: hitWisp ? hitWisp.getPosition() : this.marker.getPosition(),
+        line: this.marker.getLine(),
+      });
+    }
     this.events.push('miss');
     this.marker.cancelLine(this.field);
     this.despawnIgniter();

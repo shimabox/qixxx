@@ -12,6 +12,7 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
+import type { ClaimFeedback, MissFeedback } from './feedback';
 import { mulberry32, deriveStageSeed } from './rng';
 import {
   INITIAL_LIVES,
@@ -97,6 +98,15 @@ export interface SessionOptions {
    * from this constructor-time option.
    */
   timeLimitTicks?: number;
+  /**
+   * When true, every stage's Game is built with `captureFeedback: true` and
+   * its claim/miss notices (core/feedback.ts) are forwarded through
+   * drainClaimFeedback()/drainMissFeedback(). Defaults to false, in which
+   * case nothing extra is built, copied or forwarded and both drains return
+   * an empty array. Never changes the simulation. A custom `gameFactory`
+   * builds its own Game and so decides for itself whether to capture.
+   */
+  captureFeedback?: boolean;
 }
 
 export class GameSession {
@@ -126,6 +136,12 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
+  // Forwarded claim/miss notices (SessionOptions.captureFeedback), buffered
+  // here for the same stage-transition reason as `eventQueue`. Null when
+  // capture is off, so a non-capturing session allocates nothing for them.
+  private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
+  private readonly missFeedback: EventQueue<MissFeedback> | null;
+  private readonly captureFeedback: boolean;
   // Not readonly: a 'normal'
   // run's seed is now replaced on every retry, at the resetToFreshRun()
   // boundary — see `nextSeed`/setNextSeed() below for why that boundary
@@ -217,6 +233,9 @@ export class GameSession {
     this.highScore = options.highScore ?? 0;
     this.gameFactory = options.gameFactory;
     this.baseTimeLimitTicks = options.timeLimitTicks ?? TIME_LIMIT_TICKS;
+    this.captureFeedback = options.captureFeedback ?? false;
+    this.claimFeedback = this.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
+    this.missFeedback = this.captureFeedback ? new EventQueue<MissFeedback>() : null;
     this.resetToFreshRun();
   }
 
@@ -502,6 +521,24 @@ export class GameSession {
   }
 
   /**
+   * Drains (returns and clears) every claim notice (core/feedback.ts) the
+   * currently- and previously-playing stages queued since the last call.
+   * Always empty unless built with `captureFeedback: true`.
+   */
+  drainClaimFeedback(): ClaimFeedback[] {
+    return this.claimFeedback ? this.claimFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every miss notice (core/feedback.ts) the
+   * currently- and previously-playing stages queued since the last call.
+   * Always empty unless built with `captureFeedback: true`.
+   */
+  drainMissFeedback(): MissFeedback[] {
+    return this.missFeedback ? this.missFeedback.drain() : [];
+  }
+
+  /**
    * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4) to
    * the current stage's Game, and remembers them so every subsequent stage
    * (via advanceStage() -> buildStageGame()) starts with the same overrides
@@ -557,6 +594,14 @@ export class GameSession {
     }
     for (const pos of this.game.drainDespawnedEmberPositions()) {
       this.despawnedEmberPositions.push(pos);
+    }
+    if (this.claimFeedback && this.missFeedback) {
+      for (const notice of this.game.drainClaimFeedback()) {
+        this.claimFeedback.push(notice);
+      }
+      for (const notice of this.game.drainMissFeedback()) {
+        this.missFeedback.push(notice);
+      }
     }
 
     // Mirror the stage's own multiplier (it only ever moves to
@@ -637,6 +682,7 @@ export class GameSession {
       score: carry.score,
       lives: carry.lives,
       multiplier: carry.multiplier,
+      captureFeedback: this.captureFeedback,
     });
   }
 
