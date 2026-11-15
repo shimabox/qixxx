@@ -673,7 +673,11 @@ test.describe('name-input submission flow', () => {
     // landing on it is swallowed by stopKeyPropagation / the
     // interactive-element filter, so move focus off it first.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    // The finished submission's panel holds the keys until it is closed; then
+    // the modal's TITLE button goes back to Title (a key would start the next
+    // run instead).
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  999000  STAGE 9  FAKE0')).toBeVisible();
@@ -907,7 +911,11 @@ test.describe('name-input submission flow', () => {
     // window lands on the button and is swallowed by stopKeyPropagation /
     // the interactive-element filter, so Title is never reached.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space');
+    // The open panel holds the keys and covers the modal: SKIP closes it (run
+    // A's snapshot is dropped, exactly as leaving GAME OVER drops it), then
+    // TITLE goes back to Title.
+    await page.getByRole('button', { name: 'SKIP' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await reachGameoverDeterministically(page);
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
@@ -1168,7 +1176,9 @@ test.describe('name-input submission flow', () => {
 
     // Leave the finished run behind while the GET is still outstanding.
     await expect.poll(() => rankingGets).toBeGreaterThanOrEqual(1);
-    await page.keyboard.press('Space'); // GAME OVER -> Title (a brand-new run id)
+    // GAME OVER -> Title (a brand-new run id). The modal's TITLE button: the
+    // keys are held while the ranking check is in flight.
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
 
     // ...and it really does come back on the Title a finished run returns to.
@@ -1947,7 +1957,11 @@ test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audi
     // landing on it is swallowed by stopKeyPropagation / the
     // interactive-element filter, so move focus off it first.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    // The finished submission's panel holds the keys until it is closed; then
+    // the modal's TITLE button goes back to Title (a key would start the next
+    // run instead).
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
     const row = page.locator('#ranking-list-body > *').filter({ hasText: 'LIVEPOST' });

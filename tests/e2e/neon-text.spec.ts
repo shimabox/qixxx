@@ -221,7 +221,7 @@ test.describe('neon text', () => {
       await page.clock.runFor(FRAME_MS);
     }
     expect(sawMidway).toBe(true);
-    await expect(page.locator('#hud')).toContainText(`SCORE: ${score}`);
+    await expect(page.locator('#hud')).toContainText(`SCORE ${score}`);
   });
 
   test('mid-count, the GAME OVER modal and the HUD HI show the real score', async ({ page }) => {
@@ -235,7 +235,7 @@ test.describe('neon text', () => {
     });
     const hi = await page.evaluate(() => window.__game__!.session.getHighScore());
     expect(hi).toBe(score);
-    await expect(page.locator('#hud')).toContainText(`HI: ${hi}`);
+    await expect(page.locator('#hud')).toContainText(`HI ${hi}`);
     expect((await hudScore(page)).value).toBeLessThan(score);
 
     await advanceUntil(page, async () => page.locator('#gameover-modal').isVisible(), 1_000, FRAME_MS);
