@@ -10,15 +10,23 @@ export interface StageClearTextSource {
   getGame(): { getLastClearWasSplit(): boolean };
 }
 
-/**
- * `STAGE n CLEAR!`, plus `(SPLIT CLEAR!)` on its own line when the stage was
- * cleared by a split.
- *
- * `withPrompt` appends the "press any key" line. Live play waits for that
- * input; a replay moves on by itself, so it must not ask for one.
- */
-export function stageClearText(source: StageClearTextSource, options: { withPrompt: boolean }): string {
-  const splitNote = source.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
+export interface StageClearTextOptions {
+  /**
+   * Appends the "press any key" line. Live play waits for that input; a
+   * replay moves on by itself, so it must not ask for one.
+   */
+  withPrompt: boolean;
+  /**
+   * Adds `(SPLIT CLEAR!)` on its own line when the stage was cleared by a
+   * split. Replay viewing keeps it; live play leaves it out, because the
+   * split is already announced by the SPLIT! banner drawn on the field.
+   */
+  withSplitNote: boolean;
+}
+
+/** `STAGE n CLEAR!`, plus the optional split note and prompt (see StageClearTextOptions). */
+export function stageClearText(source: StageClearTextSource, options: StageClearTextOptions): string {
+  const splitNote = options.withSplitNote && source.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
   const prompt = options.withPrompt ? '\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE' : '';
   return `STAGE ${source.getStage()} CLEAR!${splitNote}${prompt}`;
 }

@@ -20,6 +20,10 @@ import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
+import { FxDirector, FxFrame } from './fx/director';
+import { fxParams } from './fx/params';
+import { HitStop } from './fx/hitStop';
+import { applyImpactNotices, beginLiveTick, GameOverConfirmGate } from './fx/liveTick';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -36,6 +40,8 @@ import {
   RULESET_VERSION,
   REPLAY_FORMAT_VERSION,
   REPLAY_STAGE_CLEAR_HOLD_TICKS,
+  COLOR_FX_SPLIT,
+  COLOR_FX_OUTLINE,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -46,6 +52,10 @@ declare global {
     __game__?: {
       session: GameSession;
       sfx: SfxEngine;
+      /** Impact feedback director of the live run (src/fx/director.ts). */
+      fx: FxDirector;
+      /** The live run's hit stop (src/fx/hitStop.ts). */
+      hitStop: HitStop;
       /** Auto-advance transitions around replay skips — see replayAutoAdvanceLog. */
       getReplayAutoAdvanceLog: () => boolean[];
     };
@@ -308,6 +318,31 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
   return button;
 }
 
+// Get or create the travelling-multiplier element (see `multiplierFly`).
+// Fixed-positioned so it can cross from the canvas to the HUD row; moved
+// every rendered frame by renderMultiplierFx().
+function getMultiplierFlyElement(): HTMLDivElement {
+  let el = document.getElementById('fx-multiplier') as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fx-multiplier';
+    el.style.position = 'fixed';
+    el.style.left = '0';
+    el.style.top = '0';
+    el.style.display = 'none';
+    el.style.font = HUD_FONT;
+    el.style.fontWeight = 'bold';
+    el.style.color = COLOR_FX_SPLIT;
+    el.style.textShadow = `0 0 8px ${COLOR_FX_SPLIT}, 0 0 2px ${COLOR_FX_OUTLINE}`;
+    el.style.pointerEvents = 'none';
+    el.style.userSelect = 'none';
+    el.style.whiteSpace = 'nowrap';
+    el.style.zIndex = '20';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
 // Game state
 let session: GameSession;
 let renderer: Renderer;
@@ -351,6 +386,21 @@ const replayAutoAdvanceLog: boolean[] = [];
 const replayStageClearHold = new ReplayStageClearHold(REPLAY_STAGE_CLEAR_HOLD_TICKS);
 // TIME countdown warning sounds for the live run — see src/timeWarningCue.ts.
 const timeWarningCueTracker = new TimeWarningCueTracker();
+// Impact feedback of the live run (src/fx/): the hit stop that briefly
+// freezes the simulation on a claim, split or miss; the director that times
+// every visual effect and the confirm holds that go with them; and the gate
+// that keeps a GAME OVER confirm from reaching the core before the modal has
+// been drawn. Replay viewing uses none of them.
+const hitStop = new HitStop();
+let fx: FxDirector;
+const gameOverConfirmGate = new GameOverConfirmGate();
+// The HUD's `xN` multiplier, as its own span so the multiplier travelling in
+// after a split can land on it and highlight it (see renderMultiplierFx()).
+let hudMultiplier: HTMLSpanElement;
+// The next stage's multiplier travelling from the field center to the HUD.
+// The HUD sits outside the canvas, so this one effect is a DOM element.
+let multiplierFly: HTMLDivElement;
+let lastMultiplierHighlight = 0;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -489,14 +539,23 @@ function init(): void {
     // so main.ts never needs to swap `session` mid-page-load.
     runMode = 'seeded';
     seededRunSeed = explicitSeedParam;
-    session = new GameSession({ seed: explicitSeedParam, highScore });
+    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true });
   } else {
     // Normal mode's initial Title board is seeded here, at construction —
     // stage 1's board is already fully built by the time Title is ever
     // shown (see GameSession's own module doc comment), so there's no later
     // "Title -> Playing" moment this could instead hook into.
-    session = new GameSession({ seed: generateNormalRunSeed(), highScore });
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true });
   }
+  // captureFeedback only adds read-only claim/miss notices for the impact
+  // feedback below; the run itself (and so its replay) is unchanged.
+
+  // Reduced motion (the OS/browser setting): no shake and no flash. Read at
+  // start-up and followed when it changes.
+  const reducedMotionQuery =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  fx = new FxDirector(fxParams, { reducedMotion: reducedMotionQuery?.matches ?? false });
+  reducedMotionQuery?.addEventListener('change', (event) => fx.setReducedMotion(event.matches));
 
   gameRoot = getGameRootElement();
   hudRow = getHudRowElement(gameRoot);
@@ -519,6 +578,9 @@ function init(): void {
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
   hudLine3 = getHudLineElement(hud, 'hud-line3');
+  hudMultiplier = document.createElement('span');
+  hudMultiplier.id = 'hud-multiplier';
+  multiplierFly = getMultiplierFlyElement();
   // Matches `hudTwoLineMode`'s own `false` initial value (module scope)
   // until the real, geometry-based decision runs — see updateHudMode() —
   // from the fitCanvasToViewport() call below (which needs the credit
@@ -573,7 +635,7 @@ function init(): void {
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
 
-  window.__game__ = { session, sfx, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
+  window.__game__ = { session, sfx, fx, hitStop, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
   // shipped to players. The `import.meta.env.DEV` check is a compile-time
@@ -659,6 +721,12 @@ function enterReplayMode(engine: ReplayEngine): void {
   sfx.setDrawing(false, null);
   gameOverModal.hide();
   gameOverModalShown = false;
+  // The live run's impact feedback does not carry into the replay.
+  hitStop.clear();
+  fx.reset();
+  gameOverConfirmGate.reset();
+  renderer.resetBoard();
+  renderMultiplierFx(null);
   // Force the next renderFrame() to rewrite the HUD/screen text (they were
   // last written for the live session and must not be left stale).
   lastHudStage = -1;
@@ -672,6 +740,9 @@ function exitReplayMode(): void {
   replayStageClearHold.reset();
   // The live run's countdown is tracked afresh after a replay.
   timeWarningCueTracker.reset();
+  // The live board is back on screen: the fill reveal must not compare it
+  // with the replay's last frame.
+  renderer.resetBoard();
   lastHudStage = -1;
   lastScreenText = null;
 }
@@ -875,16 +946,56 @@ function updateHud(): void {
   // on the line that *used* to carry TIME would otherwise persist.
   hudLine1.style.color = '';
   hudLine3.style.color = '';
+  // The `xN` multiplier at the end of the line is its own span (see
+  // `hudMultiplier`); the line's text is unchanged by it.
+  hudMultiplier.textContent = `x${multiplier}`;
   if (hudTwoLineMode) {
     hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
-    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
+    hudLine2.appendChild(hudMultiplier);
     hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
     if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
   } else {
     hudLine1.textContent =
       `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
-      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
+      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
+    hudLine1.appendChild(hudMultiplier);
     if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
+  }
+}
+
+// Moves the travelling multiplier (after a split) from the canvas center to
+// the HUD's `xN`, then highlights that `xN` — both driven by the director's
+// tick-based progress, so the timing does not depend on the frame rate.
+function renderMultiplierFx(frame: FxFrame | null): void {
+  const fly = frame?.multiplierFly ?? null;
+  if (!fly) {
+    if (multiplierFly.style.display !== 'none') multiplierFly.style.display = 'none';
+  } else {
+    const from = canvas.getBoundingClientRect();
+    const toRect = hudMultiplier.isConnected ? hudMultiplier.getBoundingClientRect() : hud.getBoundingClientRect();
+    const fromX = from.left + from.width / 2;
+    const fromY = from.top + from.height / 2;
+    const toX = toRect.left + toRect.width / 2;
+    const toY = toRect.top + toRect.height / 2;
+    const t = 1 - Math.pow(1 - fly.progress, 3); // ease out
+    const scale = 2.5 - 1.5 * t;
+    multiplierFly.textContent = fly.text;
+    multiplierFly.style.display = 'block';
+    multiplierFly.style.transform =
+      `translate(${fromX + (toX - fromX) * t}px, ${fromY + (toY - fromY) * t}px) translate(-50%, -50%) scale(${scale})`;
+  }
+
+  const highlight = frame?.multiplierHighlight ?? 0;
+  if (highlight !== lastMultiplierHighlight) {
+    lastMultiplierHighlight = highlight;
+    if (highlight > 0) {
+      hudMultiplier.style.color = COLOR_FX_SPLIT;
+      hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
+    } else {
+      hudMultiplier.style.color = '';
+      hudMultiplier.style.textShadow = '';
+    }
   }
 }
 
@@ -929,10 +1040,15 @@ function fitCanvasToViewport(): void {
 
 // Update logic (fixed timestep)
 function update(): void {
-  // Polled exactly once per tick regardless of mode (KeyboardInput.getInput()
-  // consumes the edge-triggered `confirm` pulse on read — calling it twice
-  // in the same tick would silently swallow a real confirm press).
-  const input = keyboard.getInput();
+  if (viewMode !== 'replay') {
+    updateLive();
+    return;
+  }
+
+  // Polled exactly once per tick (KeyboardInput.getInput() consumes the
+  // edge-triggered `confirm` pulse on read — calling it twice in the same
+  // tick would silently swallow a real confirm press).
+  keyboard.getInput();
 
   // REPLAY VIEWING uses an entirely separate path to isolate side effects.
   // Keyboard input is polled
@@ -940,34 +1056,48 @@ function update(): void {
   // once the player exits back to live play) but never read into core,
   // InputRecorder never observes, highscore is never persisted, sfx never
   // plays.
-  if (viewMode === 'replay') {
-    if (replayEngine && replayAutoAdvance) {
-      const replaySession = replayEngine.getSession();
-      // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
-      // the next stage's first tick in one call, so calling it every tick
-      // replaces a cleared stage before a single frame can show it. While the
-      // hold lasts the replay session is simply left alone — not even a
-      // no-op update() — so its tick count (and with it the HUD's TIME),
-      // score, RNG state and position in the recorded input all stand still,
-      // and the tick that ends the hold makes the very same stepTick() call
-      // an unheld playback would have made. Never reached while a skip is in
-      // charge of the engine (replayAutoAdvance is false then), so the hold
-      // can't count down behind a skip either.
-      const holding = replayStageClearHold.shouldHold({
-        status: replaySession.getStatus(),
-        finished: replayEngine.isFinished(),
-      });
-      if (holding) return;
-      const advanced = replayEngine.stepTick();
-      // Drain (not forward anywhere) every tick, same as a live run —
-      // GameSession's own doc comments warn these queues grow unbounded
-      // otherwise.
-      replaySession.drainEvents();
-      replaySession.drainDespawnedEmberPositions();
-      if (!advanced) replayAutoAdvance = false;
-    }
-    return;
+  if (replayEngine && replayAutoAdvance) {
+    const replaySession = replayEngine.getSession();
+    // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
+    // the next stage's first tick in one call, so calling it every tick
+    // replaces a cleared stage before a single frame can show it. While the
+    // hold lasts the replay session is simply left alone — not even a
+    // no-op update() — so its tick count (and with it the HUD's TIME),
+    // score, RNG state and position in the recorded input all stand still,
+    // and the tick that ends the hold makes the very same stepTick() call
+    // an unheld playback would have made. Never reached while a skip is in
+    // charge of the engine (replayAutoAdvance is false then), so the hold
+    // can't count down behind a skip either.
+    const holding = replayStageClearHold.shouldHold({
+      status: replaySession.getStatus(),
+      finished: replayEngine.isFinished(),
+    });
+    if (holding) return;
+    const advanced = replayEngine.stepTick();
+    // Drain (not forward anywhere) every tick, same as a live run —
+    // GameSession's own doc comments warn these queues grow unbounded
+    // otherwise.
+    replaySession.drainEvents();
+    replaySession.drainDespawnedEmberPositions();
+    if (!advanced) replayAutoAdvance = false;
   }
+}
+
+// One live-play tick.
+function updateLive(): void {
+  // Impact feedback first (src/fx/liveTick.ts): the effects age even while
+  // a hit stop holds the run, and a stopped tick ends right here — no input
+  // poll (so a confirm pressed meanwhile is read once, on the first tick
+  // after the stop), no session.update(), no input recording and no time
+  // warning, so the run's tick count and recorded samples stand still.
+  const input = beginLiveTick({
+    fx,
+    hitStop,
+    gate: gameOverConfirmGate,
+    status: session.getStatus(),
+    readInput: () => keyboard.getInput(),
+  });
+  if (!input) return;
 
   lastInput = input;
 
@@ -985,6 +1115,7 @@ function update(): void {
     session.setNextSeed(generateNormalRunSeed());
   }
 
+  const stageBeforeThisTick = session.getStage();
   session.update(input);
 
   // InputRecorder: reset the
@@ -1001,12 +1132,24 @@ function update(): void {
     runClaims = 0;
     // A brand-new run starts here — see `runId`'s own comment.
     runId++;
+    // Back to Title: every impact effect and hold is dropped.
+    hitStop.clear();
+    fx.reset();
+    renderer.resetBoard();
+  } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
+    // The next stage's board replaces this one: drop the effects tied to the
+    // old board. SPLIT! and the travelling multiplier keep running.
+    hitStop.clear();
+    fx.resetBoard();
+    renderer.resetBoard();
   }
   inputRecorder.observe(session, input);
 
   const events = session.drainEvents();
   for (const ev of events) if (ev === 'area-claimed') runClaims++;
   sfx.handleEvents(events);
+  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
+  applyImpactNotices(session, fx, hitStop, sfx);
   // TIME countdown warning: decided here, once per live tick, from the
   // remaining time this tick's session.update() left behind. The replay
   // branch above returns before reaching this, which is what keeps replays
@@ -1045,6 +1188,8 @@ function renderFrame(): void {
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
   // period lasts; otherwise always visible.
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
+  // Impact feedback is live play only: a replay is drawn exactly as before.
+  const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
 
   renderer.render(
     game.getField(),
@@ -1052,8 +1197,10 @@ function renderFrame(): void {
     game.getWisps().map((wisp) => wisp.getTrailRef()),
     game.getEmbers(),
     game.getIgniterPosition(),
-    markerVisible
+    markerVisible,
+    fxFrame ?? undefined
   );
+  renderMultiplierFx(fxFrame);
 
   const status = activeSession.getStatus();
 
@@ -1098,7 +1245,7 @@ function renderFrame(): void {
       // since anywhere else it would only flash for a single frame: a skip
       // (replayAutoAdvance false) can yield between chunks on a StageClear,
       // and a recording whose input stops on one is never held.
-      text = stageClearText(activeSession, { withPrompt: false });
+      text = stageClearText(activeSession, { withPrompt: false, withSplitNote: true });
     }
     if (text !== lastScreenText) {
       lastScreenText = text;
@@ -1120,9 +1267,15 @@ function renderFrame(): void {
   // TITLE"/any-key resets the run to 'title'). Re-read here (rather than
   // reused from updateHud()'s internals) since that call may have skipped
   // its own re-read via the lastHud* cache when nothing displayed changed.
+  //
+  // After a game-ending miss the modal waits FX_GAMEOVER_HOLD_TICKS so the
+  // miss itself is seen first, then appears on the first frame after that.
+  // GameOverConfirmGate (src/fx/liveTick.ts) keeps confirm from reaching the
+  // core until this frame has shown it, so nothing can skip the modal.
   if (status === 'gameover') {
-    if (!gameOverModalShown) {
+    if (!gameOverModalShown && !fx.isGameOverHeld()) {
       gameOverModalShown = true;
+      gameOverConfirmGate.markModalShown();
       gameOverModal.show({
         score: activeSession.getScore(),
         stage: activeSession.getStage(),
@@ -1150,10 +1303,13 @@ function renderFrame(): void {
         claims: runClaims,
       });
     }
-  } else if (gameOverModalShown) {
-    gameOverModalShown = false;
-    gameOverModal.hide();
-    rankingUI.hideAll();
+  } else {
+    gameOverConfirmGate.reset();
+    if (gameOverModalShown) {
+      gameOverModalShown = false;
+      gameOverModal.hide();
+      rankingUI.hideAll();
+    }
   }
 
   if (status === 'playing') {
@@ -1177,7 +1333,11 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
     case 'title':
       return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
     case 'stageclear':
-      return stageClearText(session, { withPrompt: true });
+      // While SPLIT! is on the field the clear text waits, so the two never
+      // overlap; the split itself is announced by the banner, not by a
+      // (SPLIT CLEAR!) line.
+      if (fx.isSplitBannerActive()) return '';
+      return stageClearText(session, { withPrompt: true, withSplitNote: false });
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
       // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's
