@@ -741,6 +741,10 @@ function init(): void {
       // Bounded so it can never grow without limit.
       if (replayAutoAdvanceLog.length < 20) replayAutoAdvanceLog.push(autoAdvance);
     },
+    // The submission panel covers the modal: its own RETRY / TITLE ask for
+    // the same transition as the modal's buttons.
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
   });
   rankingUI.mountTitleButton();
   // The board's entry score for the HUD's goal slot: asked for once now, and
@@ -1250,6 +1254,9 @@ function fitCanvasToViewport(): void {
   gameOverModal.setDensity(
     tinyField ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
   );
+  // The ranking submission panel, over the modal, packs tighter on the same
+  // small fields.
+  rankingUI.setSubmitPanelCompact(tinyField);
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
