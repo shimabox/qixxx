@@ -457,6 +457,16 @@ export const GAMEOVER_MODAL_TINY_BELOW_PX = 200;
 // The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
 // this many CSS px on screen, however far the field is scaled down.
 export const FX_TEXT_MIN_DISPLAY_PX = 11;
+// The miss reason (WISP HIT YOUR LINE, STOPPED TOO LONG, ...): shown next to
+// the contact for TICKS ticks from the miss — through the miss hit stop and
+// after it — fading out over its last FADE_TICKS, and never drawn smaller
+// than MIN_DISPLAY_PX CSS px on screen. A reading text, so it does not move.
+export const FX_MISS_REASON_TICKS = 60;
+export const FX_MISS_REASON_FADE_TICKS = 12;
+export const FX_MISS_REASON_MIN_DISPLAY_PX = 13;
+// Its colour: the warning red, lighter so it reads on the dark field, edged
+// in COLOR_FX_OUTLINE so it reads on a claimed area as well.
+export const COLOR_FX_MISS_REASON = '#ff6b6b';
 // The effects' text: a geometric display face bundled with the game
 // (public/fonts/), falling back to monospace until it has loaded or if it
 // cannot be loaded.

@@ -132,14 +132,17 @@ export interface ImpactSounds {
  * claim/miss notices into effects, a hit stop and the claim/split sounds. A
  * split replaces the claim sound with the split's, which does not change
  * with the chain. A miss that ended the run on lives holds the GAME OVER
- * modal (FxDirector.onMiss()). Returns the tick's claim notices, for the
- * STAGE CLEAR result (src/stageResult.ts).
+ * modal (FxDirector.onMiss()). `missReason` gives a miss's one-line reason
+ * (src/fx/missReason.ts), shown next to the contact; none when omitted.
+ * Returns the tick's claim notices, for the STAGE CLEAR result
+ * (src/stageResult.ts).
  */
 export function applyImpactNotices(
   session: FeedbackSource,
   fx: Pick<FxDirector, 'onClaim' | 'onMiss'>,
   hitStop: HitStop,
-  sounds: ImpactSounds
+  sounds: ImpactSounds,
+  missReason?: (notice: MissFeedback) => string | null
 ): ClaimFeedback[] {
   const claims = session.drainClaimFeedback();
   for (const notice of claims) {
@@ -154,7 +157,7 @@ export function applyImpactNotices(
   }
   for (const notice of session.drainMissFeedback()) {
     const gameOver = session.getStatus() === 'gameover' && session.getGameOverReason() === 'life';
-    hitStop.request(fx.onMiss(notice, { gameOver }).hitStopTicks);
+    hitStop.request(fx.onMiss(notice, { gameOver, reason: missReason?.(notice) ?? null }).hitStopTicks);
   }
   return claims;
 }

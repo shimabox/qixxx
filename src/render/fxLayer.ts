@@ -13,10 +13,10 @@
 // that size. How the text tears and splits its colours comes from the frame
 // (src/fx/textGlitch.ts); nothing here decides timing.
 import type { Point } from '../core/field';
-import type { FxFlash, FxLineGlow, FxPopup, FxShard, FxSpark, FxSplitBanner } from '../fx/director';
+import type { FxFlash, FxLineGlow, FxMissReason, FxPopup, FxShard, FxSpark, FxSplitBanner } from '../fx/director';
 import { fxFont, fxFontEpoch } from './fxFonts';
 import { praiseText } from '../fx/params';
-import { t } from '../i18n';
+import { sentenceFontFamily, t } from '../i18n';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -29,6 +29,7 @@ import {
   COLOR_FX_NEON_MAGENTA,
   COLOR_FX_NEON_CORE,
   COLOR_FX_TEXT_FILL,
+  COLOR_FX_MISS_REASON,
 } from '../config';
 
 const GRID_W = CANVAS_WIDTH / RENDER_SCALE;
@@ -460,6 +461,59 @@ export function drawSplitBanner(ctx: CanvasRenderingContext2D, banner: FxSplitBa
       ctx.restore();
     }
   }
+  ctx.restore();
+}
+
+/** The miss reason's canvas font size on a field shown at full size. */
+export const MISS_REASON_FONT_PX = 16;
+// How far the reason sits from the contact cell's center, in cells: clear of
+// the marker and the burst around it.
+const MISS_REASON_GAP_CELLS = 2.5;
+
+/** The miss reason's canvas font size: its own, raised to `minFontPx` (FX_MISS_REASON_MIN_DISPLAY_PX / the display scale). */
+export function missReasonFontPx(minFontPx = 0): number {
+  return Math.max(MISS_REASON_FONT_PX, minFontPx);
+}
+
+/**
+ * The last miss's reason, next to the contact: above it (below it when that
+ * would leave the top of the field), moved sideways so the whole text stays on
+ * the field. Warning-coloured with a dark edge, so it reads on the dark field
+ * and on a claimed area alike; it never moves, since it is there to be read.
+ * English uses the effects' face, Japanese the device's Japanese font, both
+ * bold. Drawn as one string. `minFontPx`: see missReasonFontPx().
+ */
+export function drawMissReason(ctx: CanvasRenderingContext2D, reason: FxMissReason, minFontPx = 0): void {
+  if (reason.alpha <= 0 || reason.text === '') return;
+  const fontPx = missReasonFontPx(minFontPx);
+  const family = sentenceFontFamily();
+  ctx.save();
+  ctx.font = family ? `700 ${fontPx}px ${family}` : fxFont(700, fontPx);
+  const spaced = ctx as LetterSpacingContext;
+  if (typeof spaced.letterSpacing === 'string') spaced.letterSpacing = '0px';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  const edge = Math.max(3, fontPx * 0.25);
+  const width = ctx.measureText(reason.text).width;
+  const halfW = width / 2 + edge / 2;
+  const halfH = fontPx / 2 + edge / 2;
+  const contact = cellCenter(reason.anchor);
+  const gap = MISS_REASON_GAP_CELLS * RENDER_SCALE + halfH;
+  let cy = contact.y - gap;
+  if (cy - halfH < EDGE_PAD_PX) cy = contact.y + gap;
+  cy = clamp(cy, EDGE_PAD_PX + halfH, CANVAS_HEIGHT - EDGE_PAD_PX - halfH);
+  const cx = clamp(contact.x, EDGE_PAD_PX + halfW, CANVAS_WIDTH - EDGE_PAD_PX - halfW);
+  const left = cx - width / 2;
+  ctx.globalAlpha = reason.alpha;
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = edge;
+  ctx.strokeStyle = COLOR_FX_OUTLINE;
+  ctx.strokeText(reason.text, left, cy);
+  ctx.shadowColor = COLOR_FX_MISS_REASON;
+  ctx.shadowBlur = fontPx * 0.3 * shadowScale(ctx);
+  ctx.fillStyle = COLOR_FX_MISS_REASON;
+  ctx.fillText(reason.text, left, cy);
   ctx.restore();
 }
 

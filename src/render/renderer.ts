@@ -1,7 +1,7 @@
 import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
 import type { Ember } from '../core/patrol';
 import type { FxFrame, FxFillReveal, FxPopup } from '../fx/director';
-import { drawFlash, drawLineGlows, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
+import { drawFlash, drawLineGlows, drawMissReason, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -107,6 +107,7 @@ export class Renderer {
   private revealCentroids = new Map<number, { x: number; y: number }>();
 
   private fxTextMinFontPx = 0;
+  private missReasonMinFontPx = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -182,6 +183,11 @@ export class Renderer {
    */
   setFxTextMinFontPx(px: number): void {
     this.fxTextMinFontPx = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /** The same for the miss reason (FX_MISS_REASON_MIN_DISPLAY_PX / the display scale) — see fxLayer.ts's missReasonFontPx(). */
+  setMissReasonMinFontPx(px: number): void {
+    this.missReasonMinFontPx = Number.isFinite(px) && px > 0 ? px : 0;
   }
 
   /**
@@ -268,6 +274,9 @@ export class Renderer {
     if (shaking) {
       this.ctx.restore();
     }
+    // The miss reason: over the flash so the burst never washes it out, and
+    // outside the shake, since it is there to be read.
+    if (fx?.missReason) drawMissReason(this.ctx, fx.missReason, this.missReasonMinFontPx);
   }
 
   private popupPosition(popup: FxPopup): { x: number; y: number } {

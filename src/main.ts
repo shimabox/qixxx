@@ -21,6 +21,8 @@ import { StageResultTally, StageResultCounter, stageResultScreen } from './stage
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
+import { missReasonKey } from './fx/missReason';
+import type { MissFeedback } from './core/feedback';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
@@ -1419,8 +1421,11 @@ function updateLive(): void {
   runTracker.observe(session, input, events);
   sfx.handleEvents(events);
 
-  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
-  for (const notice of applyImpactNotices(session, fx, hitStop, sfx)) stageResultTally.add(notice);
+  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds,
+  // and a miss's reason, told apart by the Embers of this same tick (a Blaze
+  // or a plain Ember on the contact cell).
+  const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
+  for (const notice of applyImpactNotices(session, fx, hitStop, sfx, missReason)) stageResultTally.add(notice);
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
@@ -1468,6 +1473,7 @@ function renderFrame(): void {
   const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
+  renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
 
   renderer.render(
     game.getField(),

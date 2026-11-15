@@ -2,8 +2,8 @@
 // (core/feedback.ts) into short, timed effects — the hit stop length, the
 // closed line's glow, the fill reveal, the "+score" popup with its praise
 // word and chain count, the sparks from the closed line, flashes, shakes,
-// the vanished line's shards, the SPLIT! banner and the multiplier that
-// travels to the HUD — plus the two input holds that go with them (confirm
+// the vanished line's shards, the SPLIT! banner, the multiplier that
+// travels to the HUD and the miss's one-line reason — plus the two input holds that go with them (confirm
 // is not passed on right after a split, and the GAME OVER modal waits a
 // moment after a game-ending miss).
 //
@@ -17,6 +17,7 @@ import type { Point } from '../core/field';
 import { FxParams, FxShakeSpec, ClaimPraise, classifyClaimShare, praiseForClaimShare } from './params';
 import { BannerGlitch, bannerGlitch, popupBounceScale, popupChannelOffset } from './textGlitch';
 import { t } from '../i18n';
+import { FX_MISS_REASON_FADE_TICKS } from '../config';
 
 export interface FxLineGlow {
   cells: readonly Point[];
@@ -98,6 +99,15 @@ export interface FxMultiplierFly {
   channelOffset: number;
 }
 
+/** The one-line cause of the last miss, next to its contact. */
+export interface FxMissReason {
+  text: string;
+  /** The contact cell (MissFeedback.position). */
+  anchor: Point;
+  /** 1 while shown, falling toward 0 over its last FX_MISS_REASON_FADE_TICKS. */
+  alpha: number;
+}
+
 export interface FxFrame {
   /** Canvas logical-pixel offset to shake the field by. */
   shake: { x: number; y: number };
@@ -113,6 +123,8 @@ export interface FxFrame {
   multiplierFly: FxMultiplierFly | null;
   /** After it arrives: 1 falling toward 0 while the HUD multiplier is highlighted; 0 otherwise. */
   multiplierHighlight: number;
+  /** The last miss's reason, while shown (reduced motion too). */
+  missReason: FxMissReason | null;
 }
 
 interface Timed {
@@ -177,6 +189,11 @@ interface MultiplierEffect extends Timed {
   flyTicks: number;
 }
 
+interface MissReasonEffect extends Timed {
+  text: string;
+  anchor: Point;
+}
+
 // Shards break off one after another: the last one starts this share of the
 // shard time after the first, then every shard drifts this many cells.
 const SHARD_STAGGER_SHARE = 0.4;
@@ -195,6 +212,7 @@ export class FxDirector {
   private shake: ShakeEffect | null = null;
   private banner: Timed | null = null;
   private multiplier: MultiplierEffect | null = null;
+  private missReason: MissReasonEffect | null = null;
   private splitLockTicks = 0;
   private gameOverHoldTicks = 0;
   // Claims in a row: the director's own tick count (every tick(), stopped
@@ -289,10 +307,18 @@ export class FxDirector {
    * the miss ended the run, the GAME OVER modal is held back (and confirm is
    * not passed on) for FX_GAMEOVER_HOLD_TICKS, so the miss itself is seen.
    * A miss ends the chain.
+   *
+   * `reason` (the text of src/fx/missReason.ts's key) is shown next to the
+   * contact for missReasonTicks — through the hit stop and after it, and with
+   * reduced motion too — replacing the previous miss's; none without it.
    */
-  onMiss(feedback: MissFeedback, context: { gameOver: boolean }): { hitStopTicks: number } {
+  onMiss(feedback: MissFeedback, context: { gameOver: boolean; reason?: string | null }): { hitStopTicks: number } {
     const p = this.params;
     this.endChain();
+    this.missReason =
+      context.reason && p.missReasonTicks > 0
+        ? { age: 0, duration: p.missReasonTicks, text: context.reason, anchor: { x: feedback.position.x, y: feedback.position.y } }
+        : null;
     this.flash = { age: 0, duration: p.missFlashTicks, center: { x: feedback.position.x, y: feedback.position.y } };
     this.startShake(p.shakeMedium);
     this.shards = feedback.line.length > 0 ? buildShards(feedback.line, feedback.position, p.shardTicks) : null;
@@ -314,6 +340,7 @@ export class FxDirector {
     if (this.shake && !age(this.shake)) this.shake = null;
     if (this.banner && !age(this.banner)) this.banner = null;
     if (this.multiplier && !age(this.multiplier)) this.multiplier = null;
+    if (this.missReason && !age(this.missReason)) this.missReason = null;
     if (this.splitLockTicks > 0) this.splitLockTicks--;
     if (this.gameOverHoldTicks > 0) this.gameOverHoldTicks--;
   }
@@ -329,11 +356,12 @@ export class FxDirector {
 
   /**
    * Drops the effects tied to the board that is being replaced (the next
-   * stage starting): glows, reveal, popups, sparks, shards, flash and shake;
-   * the chain ends too. The SPLIT! banner and the travelling multiplier keep
-   * running over the new board for the rest of their time.
+   * stage starting): glows, reveal, popups, sparks, shards, flash, shake and
+   * the miss reason; the chain ends too. The SPLIT! banner and the travelling
+   * multiplier keep running over the new board for the rest of their time.
    */
   resetBoard(): void {
+    this.missReason = null;
     this.glows = [];
     this.reveal = null;
     this.popups = [];
@@ -417,6 +445,13 @@ export class FxDirector {
         this.multiplier && this.multiplier.age >= this.multiplier.flyTicks
           ? 1 - (this.multiplier.age - this.multiplier.flyTicks) / (this.multiplier.duration - this.multiplier.flyTicks)
           : 0,
+      missReason: this.missReason
+        ? {
+            text: this.missReason.text,
+            anchor: this.missReason.anchor,
+            alpha: Math.min(1, (this.missReason.duration - this.missReason.age) / FX_MISS_REASON_FADE_TICKS),
+          }
+        : null,
     };
   }
 
