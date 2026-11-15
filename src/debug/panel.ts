@@ -16,6 +16,7 @@ import type { FxDirector } from '../fx/director';
 import type { HitStop } from '../fx/hitStop';
 import type { FxParams } from '../fx/params';
 import { TICK_RATE, SPLIT_MULTIPLIER_CAP } from '../config';
+import { t } from '../i18n';
 
 /**
  * What the panel's FX section works on: the live fxParams it tunes, and the
@@ -238,6 +239,8 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     RETRY_OFFER_WAIT_MAX_TICKS: p.retryOfferWaitMaxTicks,
     RETRY_CONFIRM_GUARD_TICKS: p.retryConfirmGuardTicks,
     FX_TEXT_MIN_DISPLAY_PX: p.fxTextMinDisplayPx,
+    FX_MISS_REASON_TICKS: p.missReasonTicks,
+    FX_MISS_REASON_MIN_DISPLAY_PX: p.missReasonMinDisplayPx,
   };
 }
 
@@ -282,6 +285,8 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'retryOfferWaitMaxTicks', label: 'Retry: ranking check wait (t)', range: { min: 0, max: 600, step: 1 } },
   { key: 'retryConfirmGuardTicks', label: 'Retry: confirm guard (t)', range: FX_TICKS_RANGE },
   { key: 'fxTextMinDisplayPx', label: 'Effect text min (CSS px)', range: { min: 0, max: 32, step: 1 } },
+  { key: 'missReasonTicks', label: 'Miss reason (t)', range: { min: 0, max: 300, step: 1 } },
+  { key: 'missReasonMinDisplayPx', label: 'Miss reason min (CSS px)', range: { min: 0, max: 32, step: 1 } },
 ];
 const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
   { key: 'shakeSmall', label: 'Shake S' },
@@ -380,7 +385,8 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       position: line.length > 0 ? line[line.length - 1] : session.getGame().getMarker().getPosition(),
       line,
     };
-    hooks.hitStop.request(hooks.fx.onMiss(notice, { gameOver: false }).hitStopTicks);
+    // With its reason, so the reason's length and size can be tuned from here.
+    hooks.hitStop.request(hooks.fx.onMiss(notice, { gameOver: false, reason: t('miss.wisp') }).hitStopTicks);
     hooks.playMiss();
   });
   section.appendChild(buttons);
