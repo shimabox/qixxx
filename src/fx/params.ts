@@ -1,8 +1,9 @@
 // The run-time tunable numbers of the impact feedback (hit stop, fill reveal,
 // popup, flashes, shakes, shards, split banner, the text glitch and bounce,
 // sparks, claim chains and the HUD score count-up), plus the HUD multiplier
-// emphasis, the STAGE CLEAR result count-up, the GAME OVER retry waits and the
-// effects' smallest on-screen text size. Starts from src/config.ts's
+// emphasis, the STAGE CLEAR result count-up, the GAME OVER retry waits, the
+// effects' smallest on-screen text size and the miss reason's length and
+// smallest on-screen size. Starts from src/config.ts's
 // FX_* constants; the dev-only debug panel changes `fxParams` in place, and
 // FxDirector reads it on every new effect, so a change applies from the next
 // claim/split/miss. Nothing here touches src/core/ or the simulation.
@@ -44,8 +45,11 @@ import {
   RETRY_OFFER_WAIT_MAX_TICKS,
   RETRY_CONFIRM_GUARD_TICKS,
   FX_TEXT_MIN_DISPLAY_PX,
+  FX_MISS_REASON_TICKS,
+  FX_MISS_REASON_MIN_DISPLAY_PX,
   FxShakeSpec,
 } from '../config';
+import { t, type MessageKey } from '../i18n';
 
 export type { FxShakeSpec };
 
@@ -92,6 +96,10 @@ export interface FxParams {
   retryConfirmGuardTicks: number;
   /** The effects' text is drawn at least this many CSS px tall on screen. */
   fxTextMinDisplayPx: number;
+  /** The miss reason is shown this many ticks from the miss. */
+  missReasonTicks: number;
+  /** The miss reason is drawn at least this many CSS px tall on screen. */
+  missReasonMinDisplayPx: number;
 }
 
 /** A fresh copy of the config.ts starting values. */
@@ -134,6 +142,8 @@ export function createDefaultFxParams(): FxParams {
     retryOfferWaitMaxTicks: RETRY_OFFER_WAIT_MAX_TICKS,
     retryConfirmGuardTicks: RETRY_CONFIRM_GUARD_TICKS,
     fxTextMinDisplayPx: FX_TEXT_MIN_DISPLAY_PX,
+    missReasonTicks: FX_MISS_REASON_TICKS,
+    missReasonMinDisplayPx: FX_MISS_REASON_MIN_DISPLAY_PX,
   };
 }
 
@@ -149,7 +159,19 @@ export function classifyClaimShare(share: number, params: Pick<FxParams, 'claimS
   return 'small';
 }
 
+/** Which praise a claim earns. An identifier: the word drawn for it comes from the text table (praiseText()). */
 export type ClaimPraise = 'NICE!' | 'GREAT!' | 'AWESOME!';
+
+const PRAISE_TEXT_KEYS = {
+  'NICE!': 'fx.praiseNice',
+  'GREAT!': 'fx.praiseGreat',
+  'AWESOME!': 'fx.praiseAwesome',
+} as const satisfies Record<ClaimPraise, MessageKey>;
+
+/** The word drawn for `praise`. */
+export function praiseText(praise: ClaimPraise): string {
+  return t(PRAISE_TEXT_KEYS[praise]);
+}
 
 /** The word a claim of this added occupancy (0-1) is praised with, or null below claimShareMid. */
 export function praiseForClaimShare(

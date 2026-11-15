@@ -3,6 +3,7 @@
 // Kept as a standalone, DOM-free module (like src/runMode.ts) so the exact
 // strings have direct unit test coverage: the live wording is asserted on by
 // the E2E suite, and src/main.ts itself has no dedicated test file.
+import { t } from './i18n';
 
 /** The part of a GameSession this wording is built from — the live session and a replay's own session both satisfy it. */
 export interface StageClearTextSource {
@@ -26,7 +27,7 @@ export interface StageClearTextOptions {
 
 /** `STAGE n CLEAR!`, plus the optional split note and prompt (see StageClearTextOptions). */
 export function stageClearText(source: StageClearTextSource, options: StageClearTextOptions): string {
-  const splitNote = options.withSplitNote && source.getGame().getLastClearWasSplit() ? '\n(SPLIT CLEAR!)' : '';
-  const prompt = options.withPrompt ? '\n\nPRESS ANY KEY OR TAP FOR NEXT STAGE' : '';
-  return `STAGE ${source.getStage()} CLEAR!${splitNote}${prompt}`;
+  const splitNote = options.withSplitNote && source.getGame().getLastClearWasSplit() ? `\n${t('stageClear.splitNote')}` : '';
+  const prompt = options.withPrompt ? `\n\n${t('stageClear.next')}` : '';
+  return `${t('stageClear.heading', source.getStage())}${splitNote}${prompt}`;
 }

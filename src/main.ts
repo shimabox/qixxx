@@ -17,10 +17,12 @@ import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
 import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
-import { StageResultTally, StageResultCounter, stageResultText } from './stageResult';
+import { StageResultTally, StageResultCounter, stageResultScreen } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
+import { missReasonKey } from './fx/missReason';
+import type { MissFeedback } from './core/feedback';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
@@ -61,6 +63,9 @@ import {
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
+import { detectLocale, getLocale, setLocale, t } from './i18n';
+import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
+import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -332,7 +337,7 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
     // vw-based clamp(), so this button's natural width never depends on
     // window size either.
-    button.textContent = 'UNMUTE';
+    button.textContent = t('mute.unmute');
     button.style.minWidth = `${button.getBoundingClientRect().width}px`;
   }
   return button;
@@ -644,6 +649,11 @@ function formatTicks(ticks: number): string {
 // an SPA embedded context but a full-page app. Should remounting become
 // necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
+  // The page language, before any UI is built: `?lang=ja` / `?lang=en`, else
+  // the browser's first language (src/i18n/). Fixed for the page load.
+  setLocale(detectLocale(window.location.search, navigator.languages ?? []));
+  document.documentElement.lang = getLocale();
+
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
@@ -685,6 +695,11 @@ function init(): void {
   // merge of the two input sources with no extra glue code.
   new TouchControls(window, document.body);
   attachTapToConfirm(canvas);
+  // English-only text keeps the Latin monospace on a Japanese page, so the
+  // HUD and the field keep their size (src/ui/sentenceFont.ts).
+  markEnglishOnly(gameRoot);
+  const touchControls = document.getElementById('touch-controls');
+  if (touchControls) markEnglishOnly(touchControls);
 
   // Initially appended to #hud-row in this order (hud, creditLink, then
   // muteButton). Bottom mode retains that visual order; side mode fixes the
@@ -707,6 +722,7 @@ function init(): void {
   hudLives.id = 'hud-lives';
   hudLives.style.lineHeight = '0';
   multiplierFly = getMultiplierFlyElement();
+  markEnglishOnly(multiplierFly);
   // The effects' display face: requested now so it is ready by the first
   // claim; the effects fall back to monospace until then (or if it fails).
   loadFxFonts();
@@ -815,7 +831,7 @@ function toggleMute(): void {
 }
 
 function updateMuteButtonLabel(): void {
-  muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+  muteButton.textContent = sfx.isMuted() ? t('mute.unmute') : t('mute.mute');
 }
 
 function updateTouchLayout(): void {
@@ -977,6 +993,10 @@ function measureRequiredSingleLineWidth(): number {
   probe.style.whiteSpace = 'nowrap';
   probe.style.font = window.getComputedStyle(hud).font;
   probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  // Measured in the HUD's own language: on a Japanese page, <body> would hand
+  // the probe `lang="ja"`, whose generic monospace may be another face with
+  // another width than the HUD's (src/ui/sentenceFont.ts).
+  markEnglishOnly(probe);
   document.body.appendChild(probe);
   const width = probe.getBoundingClientRect().width;
   document.body.removeChild(probe);
@@ -1122,7 +1142,7 @@ function updateHud(): void {
   );
   // The `xN` multiplier and the SCORE number are their own spans (see
   // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
-  hudMultiplier.textContent = `x${multiplier}`;
+  hudMultiplier.textContent = t('hud.multiplier', multiplier);
   hudScore.textContent = String(score);
   hudLives.textContent = livesText(lives, INITIAL_LIVES);
   const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
@@ -1401,8 +1421,11 @@ function updateLive(): void {
   runTracker.observe(session, input, events);
   sfx.handleEvents(events);
 
-  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
-  for (const notice of applyImpactNotices(session, fx, hitStop, sfx)) stageResultTally.add(notice);
+  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds,
+  // and a miss's reason, told apart by the Embers of this same tick (a Blaze
+  // or a plain Ember on the contact cell).
+  const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
+  for (const notice of applyImpactNotices(session, fx, hitStop, sfx, missReason)) stageResultTally.add(notice);
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
@@ -1450,6 +1473,7 @@ function renderFrame(): void {
   const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
+  renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
 
   renderer.render(
     game.getField(),
@@ -1497,7 +1521,7 @@ function renderFrame(): void {
     const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
     let text = '';
     if (status === 'gameover') {
-      text = `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`;
+      text = `${t('replay.endHeading')}\n\n${t('replay.endScore', activeSession.getScore())}\n${t('replay.endStage', activeSession.getStage(), finalStage)}`;
     } else if (status === 'stageclear' && replayAutoAdvance && replayEngine && !replayEngine.isFinished()) {
       // Shown for as long as update() holds the cleared stage, with no
       // "press any key" line: playback moves on by itself. The extra
@@ -1589,26 +1613,46 @@ function renderFrame(): void {
     }
   } else {
     const text = screenText(status);
-    if (text !== lastScreenText) {
-      lastScreenText = text;
-      screen.textContent = text;
+    const key = screenTextString(text);
+    if (key !== lastScreenText) {
+      lastScreenText = key;
+      writeScreen(text);
     }
   }
 }
 
-function screenText(status: ReturnType<GameSession['getStatus']>): string {
+// Writes the Title / STAGE CLEAR overlay. English: one text, exactly
+// `body + hint`. Japanese: the hint (a sentence) gets its own span in the
+// device's Japanese font, a little smaller since each letter is wider, so the
+// result rows above it stay in the monospace face and keep lining up; the
+// overlay's whole text still reads `body + hint`.
+function writeScreen(text: ScreenText): void {
+  if (getLocale() === 'en' || text.hint === '') {
+    screen.textContent = screenTextString(text);
+    return;
+  }
+  screen.textContent = text.body;
+  const hint = document.createElement('span');
+  hint.id = 'screen-hint';
+  hint.textContent = text.hint;
+  hint.style.fontSize = '0.85em';
+  applySentenceFont(hint);
+  screen.appendChild(hint);
+}
+
+function screenText(status: ReturnType<GameSession['getStatus']>): ScreenText {
   switch (status) {
     case 'title':
-      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
+      return titleScreenText(session.getHighScore());
     case 'stageclear':
       // While SPLIT! is on the field the clear text waits, so the two never
       // overlap; the split itself is announced by the banner, not by a
       // (SPLIT CLEAR!) line.
-      if (fx.isSplitBannerActive()) return '';
+      if (fx.isSplitBannerActive()) return EMPTY_SCREEN_TEXT;
       // What the stage scored, counted up (src/stageResult.ts). The cleared
       // stage's Game is still the session's, so its multiplier is the one
       // the stage was played at; the session's is already the next stage's.
-      return stageResultText({
+      return stageResultScreen({
         stage: session.getStage(),
         values: stageResultCounter.values({
           area: stageResultTally.getArea(),
@@ -1626,9 +1670,9 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       // too would just sit invisibly behind it. Returning '' avoids that
       // dead/duplicate node entirely (see the module comment in
       // src/ui/gameOverModal.ts's hint line).
-      return '';
+      return EMPTY_SCREEN_TEXT;
     case 'playing':
-      return '';
+      return EMPTY_SCREEN_TEXT;
   }
 }
 

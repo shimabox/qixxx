@@ -47,23 +47,25 @@ import {
   TOUCH_SIDE_COLUMN_PADDING,
   TOUCH_SIDE_MIN_FIELD_WIDTH,
 } from '../config';
+import { t } from '../i18n';
 
 interface ButtonSpec {
   code: string;
-  label: string;
+  /** Read when the button is built (after the page language is set). */
+  label: () => string;
   gridArea: string;
 }
 
 const DPAD_BUTTONS: ButtonSpec[] = [
-  { code: MOVE_KEYS.up[0], label: '▲', gridArea: 'up' },
-  { code: MOVE_KEYS.left[0], label: '◀', gridArea: 'left' },
-  { code: MOVE_KEYS.right[0], label: '▶', gridArea: 'right' },
-  { code: MOVE_KEYS.down[0], label: '▼', gridArea: 'down' },
+  { code: MOVE_KEYS.up[0], label: () => '▲', gridArea: 'up' },
+  { code: MOVE_KEYS.left[0], label: () => '◀', gridArea: 'left' },
+  { code: MOVE_KEYS.right[0], label: () => '▶', gridArea: 'right' },
+  { code: MOVE_KEYS.down[0], label: () => '▼', gridArea: 'down' },
 ];
 
 const ACTION_BUTTONS: ButtonSpec[] = [
-  { code: DRAW_SLOW_KEYS[0], label: 'SLOW', gridArea: 'slow' },
-  { code: DRAW_FAST_KEYS[0], label: 'FAST', gridArea: 'fast' },
+  { code: DRAW_SLOW_KEYS[0], label: () => t('touch.slow'), gridArea: 'slow' },
+  { code: DRAW_FAST_KEYS[0], label: () => t('touch.fast'), gridArea: 'fast' },
 ];
 
 // Side length (CSS px) of the square box the FAST/SLOW buttons are
@@ -388,7 +390,7 @@ export class TouchControls {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.code = spec.code;
-    button.textContent = spec.label;
+    button.textContent = spec.label();
     button.style.width = `${TOUCH_BUTTON_SIZE}px`;
     button.style.height = `${TOUCH_BUTTON_SIZE}px`;
     button.style.borderRadius = '50%';

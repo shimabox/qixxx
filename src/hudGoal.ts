@@ -2,6 +2,7 @@
 // no storage — so every case has direct unit test coverage
 // (src/hudGoal.test.ts).
 import { RANKING_BOARD_SIZE } from './config';
+import { t } from './i18n';
 
 export interface HudGoalInput {
   /**
@@ -34,12 +35,12 @@ export interface HudGoalInput {
  * With no best yet (0), any point is past it.
  */
 export function hudGoalText(input: HudGoalInput): string {
-  if (input.mode === 'hi') return `HI ${input.hiScore}`;
+  if (input.mode === 'hi') return t('hud.hi', input.hiScore);
   const { score, bestAtStart, rankInThreshold } = input;
   // No best to chase yet (a first play, before any point): show the plain HI.
-  if (bestAtStart === 0 && score === 0) return `HI ${input.hiScore}`;
-  if (score <= bestAtStart) return `TO BEST ${bestAtStart - score}`;
-  if (rankInThreshold === null) return 'NEW BEST!';
-  if (score <= rankInThreshold) return `TO #${RANKING_BOARD_SIZE} ${rankInThreshold - score}`;
-  return `TOP ${RANKING_BOARD_SIZE}!`;
+  if (bestAtStart === 0 && score === 0) return t('hud.hi', input.hiScore);
+  if (score <= bestAtStart) return t('goal.toBest', bestAtStart - score);
+  if (rankInThreshold === null) return t('goal.newBest');
+  if (score <= rankInThreshold) return t('goal.toRank', RANKING_BOARD_SIZE, rankInThreshold - score);
+  return t('goal.top', RANKING_BOARD_SIZE);
 }

@@ -3,6 +3,8 @@
 // appears. Pure and tick-driven — no DOM, no clock — so the totals and the
 // count-up have direct unit test coverage (src/stageResult.test.ts). Replay
 // viewing keeps its own plain clear text (src/stageClearText.ts).
+import { t } from './i18n';
+import { ScreenText, screenTextString } from './screenText';
 
 /** The parts of a claim notice (core/feedback.ts's ClaimFeedback) the result adds up. */
 export interface StageResultNotice {
@@ -143,18 +145,28 @@ export interface StageResultTextInput {
  * `x1 > x2` when a split raised it.
  */
 export function stageResultText(input: StageResultTextInput): string {
+  return screenTextString(stageResultScreen(input));
+}
+
+/** stageResultText() split into the heading and rows (`body`) and the prompt under them (`hint`). */
+export function stageResultScreen(input: StageResultTextInput): ScreenText {
   const { values } = input;
   const next =
-    input.multiplierNext !== input.multiplierBefore ? `x${input.multiplierBefore} > x${input.multiplierNext}` : `x${input.multiplierNext}`;
+    input.multiplierNext !== input.multiplierBefore
+      ? `${t('hud.multiplier', input.multiplierBefore)} > ${t('hud.multiplier', input.multiplierNext)}`
+      : t('hud.multiplier', input.multiplierNext);
   const cells = [String(values.area), String(values.bonus), String(values.total), next];
   const width = Math.max(8, ...cells.map((c) => c.length + 1));
   const row = (label: string, value: string) => `${label.padEnd(5)}${value.padStart(width)}`;
   const gap = input.tight ? '\n' : '\n\n';
-  return [
-    `STAGE ${input.stage} CLEAR!`,
-    gap,
-    [row('AREA', cells[0]), row('BONUS', cells[1]), row('TOTAL', cells[2]), row('NEXT', cells[3])].join('\n'),
-    gap,
-    'PRESS ANY KEY OR TAP FOR NEXT STAGE',
-  ].join('');
+  const rows = [
+    row(t('stageResult.area'), cells[0]),
+    row(t('stageResult.bonus'), cells[1]),
+    row(t('stageResult.total'), cells[2]),
+    row(t('stageResult.next'), cells[3]),
+  ];
+  return {
+    body: [t('stageClear.heading', input.stage), gap, rows.join('\n'), gap].join(''),
+    hint: t('stageClear.next'),
+  };
 }

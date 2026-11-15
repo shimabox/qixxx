@@ -14,6 +14,8 @@ import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS, RANKING_BOARD_SIZE } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
+import { t } from '../i18n';
+import { applySentenceFont } from './sentenceFont';
 
 export interface RankingEntry {
   id: string;
@@ -43,7 +45,7 @@ export function limitRankingName(value: string): string {
  * and deliberately NOT rendered: the public board
  * treats pending and verified rows as one real-time ranking. Verification
  * is disclosed once, as a rule of the board, by the static notice under the
- * list (BOARD_NOTICE: "entries found invalid may be removed") rather than by
+ * list (boardNotice(): "entries found invalid may be removed") rather than by
  * marking individual rows as suspect. The X handle is linked either way —
  * the audit verifies the SCORE, never handle ownership, so a row's audit
  * state was never a reason to withhold the link (the self-reported-handles
@@ -61,9 +63,12 @@ export interface DisplayRankingEntry extends RankingEntry {
  * The board-wide notice under the ranking list. Neutral about the audit on
  * purpose: the server may store scores for a later audit or, with
  * RANKING_AUDIT_MODE=disabled, rank them as submitted, and GET /api/ranking
- * does not say which — so the notice has to be true either way.
+ * does not say which — so the notice has to be true either way. In the page
+ * language (the text table's `ranking.notice`).
  */
-export const BOARD_NOTICE = 'X handles are self-reported — ownership is not verified. Scores may be checked after posting, and entries found invalid may be removed.';
+export function boardNotice(): string {
+  return t('ranking.notice');
+}
 
 /**
  * The submission form's line for an accepted POST, chosen from the `status`
@@ -73,7 +78,7 @@ export const BOARD_NOTICE = 'X handles are self-reported — ownership is not ve
  * the audit.
  */
 export function acceptedSubmissionText(status: unknown): string {
-  return status === 'verified' ? 'SUBMITTED.' : 'SUBMITTED — PENDING VERIFICATION.';
+  return status === 'verified' ? t('submit.accepted') : t('submit.acceptedPending');
 }
 
 /**
@@ -494,7 +499,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // ---- Top-10 list overlay ----
   const listOverlay = styledOverlay();
   const listHeading = document.createElement('div');
-  listHeading.textContent = 'RANKING';
+  listHeading.textContent = t('ranking.heading');
   listHeading.style.fontSize = '1.2em';
   listHeading.style.fontWeight = 'bold';
   listOverlay.appendChild(listHeading);
@@ -507,7 +512,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // (RANKING_AUDIT_MODE): the board never says which, by design.
   // Appended BELOW the list (see the end of this block), as a footnote: up
   // between the heading and the rows it read as the panel's headline.
-  disclaimer.textContent = BOARD_NOTICE;
+  disclaimer.textContent = boardNotice();
+  applySentenceFont(disclaimer);
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
@@ -524,7 +530,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listBody.style.width = '100%';
   listOverlay.appendChild(listBody);
   listOverlay.appendChild(disclaimer);
-  const listCloseButton = styledButton('CLOSE');
+  const listCloseButton = styledButton(t('ranking.close'));
   listCloseButton.addEventListener('click', () => hideList());
   listOverlay.appendChild(listCloseButton);
   anchor.appendChild(listOverlay);
@@ -571,6 +577,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     listBody.textContent = '';
     const line = document.createElement('div');
     line.textContent = text;
+    applySentenceFont(line);
     listBody.appendChild(line);
   }
 
@@ -582,7 +589,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed()) return;
     browsingGeneration++;
     const requestGeneration = browsingGeneration;
-    showListStatus('LOADING...');
+    showListStatus(t('ranking.loading'));
     listOverlay.style.display = 'flex';
 
     let entries: DisplayRankingEntry[] | null = null;
@@ -606,14 +613,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     if (entries === null) {
-      showListStatus('FAILED TO LOAD RANKING');
+      showListStatus(t('ranking.loadFailed'));
       return;
     }
 
     listBody.textContent = '';
     if (entries.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'NO ENTRIES YET';
+      empty.textContent = t('ranking.empty');
+      applySentenceFont(empty);
       listBody.appendChild(empty);
       return;
     }
@@ -637,7 +645,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // trusted literal/number, or appended as its own text node below
       // (entry.name) — never concatenated into one interpolated string that
       // could blur the line between "our text" and "their text".
-      rankLine.textContent = `#${index + 1}  ${entry.score}  STAGE ${entry.stage}  `;
+      rankLine.textContent = t('ranking.row', index + 1, entry.score, entry.stage);
       // A handle-only row puts the handle in the name slot — as the link
       // itself, so the profile stays one click away and the handle is not
       // printed twice (the meta line below then carries only the date).
@@ -682,7 +690,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       right.style.gap = '6px';
       right.style.flex = '0 0 auto';
 
-      const replayButton = styledButton('REPLAY');
+      const replayButton = styledButton(t('ranking.replay'));
       replayButton.disabled = !entry.replayAvailable;
       if (!entry.replayAvailable) {
         replayButton.style.opacity = '0.4';
@@ -723,7 +731,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     if (gone) {
-      showTransientMessage('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.');
+      showTransientMessage(t('replay.unsupported'));
       return;
     }
     if (!payload || !isReplayPayloadPlayable(payload, options.getRulesetVersion(), options.getReplayFormatVersion())) {
@@ -732,7 +740,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // otherwise resimulate a new-ruleset replay with its old core and
       // silently render a wrong run. Checked here rather than trusting the
       // server's filter alone, because the stale party is this bundle.
-      showTransientMessage(payload ? 'THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.' : 'FAILED TO LOAD REPLAY.');
+      showTransientMessage(payload ? t('replay.unsupported') : t('replay.loadFailed'));
       return;
     }
 
@@ -740,7 +748,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // that don't decode used to throw out of this handler as an unhandled
     // rejection, leaving the player staring at an unchanged list.
     let engine: ReplayEngine;
-    showListStatus('LOADING REPLAY...');
+    showListStatus(t('replay.loading'));
     const signal = beginReplayWork();
     try {
       engine = await ReplayEngine.create(payload.seed, base64ToBytes(payload.rleBase64), { signal });
@@ -751,7 +759,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       if (err instanceof ReplayAbortedError) return;
       clearListStatus();
       if (browsingAllowed() && browsingGeneration === requestGeneration) {
-        showTransientMessage('THIS REPLAY COULD NOT BE PLAYED BACK.');
+        showTransientMessage(t('replay.playbackFailed'));
       }
       return;
     }
@@ -771,8 +779,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // ---- Transient message (network/replay-unavailable errors) ----
   const messageOverlay = styledOverlay();
   const messageText = document.createElement('div');
+  applySentenceFont(messageText);
   messageOverlay.appendChild(messageText);
-  const messageCloseButton = styledButton('OK');
+  const messageCloseButton = styledButton(t('ranking.ok'));
   messageCloseButton.addEventListener('click', () => hideTransientMessage());
   messageOverlay.appendChild(messageCloseButton);
   anchor.appendChild(messageOverlay);
@@ -790,14 +799,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const submitOverlay = styledOverlay();
   submitOverlay.id = 'ranking-submit-panel';
   const submitHeading = document.createElement('div');
-  submitHeading.textContent = 'YOU MADE THE TOP 10!';
+  submitHeading.textContent = t('submit.heading');
   submitHeading.style.fontSize = '1em';
   submitHeading.style.fontWeight = 'bold';
   submitOverlay.appendChild(submitHeading);
 
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
-  nameInput.placeholder = 'NAME';
+  nameInput.placeholder = t('submit.namePlaceholder');
   nameInput.style.font = HUD_FONT;
   nameInput.style.fontSize = '0.8em';
   nameInput.style.padding = '4px 8px';
@@ -822,14 +831,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleCheckbox.type = 'checkbox';
   stopKeyPropagation(handleCheckbox);
   const handleLabelText = document.createElement('span');
-  handleLabelText.textContent = 'USE X HANDLE INSTEAD';
+  handleLabelText.textContent = t('submit.useHandle');
+  applySentenceFont(handleLabelText);
   handleRow.appendChild(handleCheckbox);
   handleRow.appendChild(handleLabelText);
   submitOverlay.appendChild(handleRow);
 
   const handleInput = document.createElement('input');
   handleInput.type = 'text';
-  handleInput.placeholder = '@handle';
+  handleInput.placeholder = t('submit.handlePlaceholder');
   handleInput.maxLength = 16;
   handleInput.style.font = HUD_FONT;
   handleInput.style.fontSize = '0.8em';
@@ -858,6 +868,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   retainedValueHint.style.maxWidth = '100%';
   retainedValueHint.style.overflowWrap = 'anywhere';
   retainedValueHint.style.display = 'none';
+  applySentenceFont(retainedValueHint);
   submitOverlay.appendChild(retainedValueHint);
 
   /**
@@ -869,14 +880,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
    * back to the screen.
    */
   function syncRetainedValueHint(): void {
-    const hidden = handleCheckbox.checked ? { label: 'NAME', value: nameInput.value } : { label: 'X HANDLE', value: handleInput.value };
+    const hidden = handleCheckbox.checked
+      ? { label: t('submit.nameLabel'), value: nameInput.value }
+      : { label: t('submit.handleLabel'), value: handleInput.value };
     const active = handleCheckbox.checked ? handleInput.value : nameInput.value;
     if (hidden.value === '' || hidden.value === active) {
       retainedValueHint.style.display = 'none';
       retainedValueHint.textContent = '';
       return;
     }
-    retainedValueHint.textContent = `${hidden.label} KEPT: ${hidden.value}`;
+    retainedValueHint.textContent = t('submit.kept', hidden.label, hidden.value);
     retainedValueHint.style.display = 'block';
   }
 
@@ -920,13 +933,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const submitStatus = document.createElement('div');
   submitStatus.style.fontSize = '0.75em';
   submitStatus.style.minHeight = '1.2em';
+  applySentenceFont(submitStatus);
   submitOverlay.appendChild(submitStatus);
 
   const submitButtonRow = document.createElement('div');
   submitButtonRow.style.display = 'flex';
   submitButtonRow.style.gap = '10px';
-  const skipButton = styledButton('SKIP');
-  const postButton = styledButton('SUBMIT');
+  const skipButton = styledButton(t('submit.skip'));
+  const postButton = styledButton(t('submit.submit'));
   submitButtonRow.appendChild(skipButton);
   submitButtonRow.appendChild(postButton);
   submitOverlay.appendChild(submitButtonRow);
@@ -937,9 +951,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const submitNavRow = document.createElement('div');
   submitNavRow.style.display = 'flex';
   submitNavRow.style.gap = '10px';
-  const submitRetryButton = styledButton('RETRY');
+  const submitRetryButton = styledButton(t('submit.retry'));
   submitRetryButton.id = 'ranking-submit-retry-button';
-  const submitTitleButton = styledButton('TITLE');
+  const submitTitleButton = styledButton(t('submit.title'));
   submitTitleButton.id = 'ranking-submit-title-button';
   for (const button of [submitRetryButton, submitTitleButton]) {
     button.style.fontSize = '0.7em';
@@ -1008,9 +1022,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // No snapshot means the run this form belonged to is already gone (the
     // player returned to Title mid-form) — never fall back to live state.
     if (!snapshot || snapshot.seed === undefined) {
-      submitStatus.textContent = 'THIS RUN IS NO LONGER AVAILABLE TO SUBMIT.';
+      submitStatus.textContent = t('submit.unavailable');
       postButton.style.display = 'none';
-      skipButton.textContent = 'OK';
+      skipButton.textContent = t('submit.ok');
       return;
     }
     const seed = snapshot.seed;
@@ -1020,14 +1034,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     const name = usingHandle ? '' : nameInput.value;
     const xHandle = usingHandle ? handleInput.value : '';
     if (!name.trim() && !xHandle.trim()) {
-      submitStatus.textContent = 'ENTER A NAME OR X HANDLE.';
+      submitStatus.textContent = t('submit.needName');
       return;
     }
 
     submittingFor = snapshot;
     postButton.disabled = true;
     syncSubmitNavButtons();
-    submitStatus.textContent = 'SUBMITTING...';
+    submitStatus.textContent = t('submit.submitting');
 
     /**
      * True once this POST's reply no longer belongs to whatever the form is
@@ -1096,19 +1110,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       if (data.accepted) {
         submitStatus.textContent = acceptedSubmissionText(data.status);
       } else if (data.reason === 'out-of-range') {
-        submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
+        submitStatus.textContent = t('submit.notInContention');
       } else if (retryLater) {
         // A 429 means one of two temporary queues is full: the verification
         // backlog (the server answers `accepted:false` for that one) or the
         // per-IP submission rate limit (which answers with an error and no
         // `accepted` field at all). The backlog may clear quickly, while the
         // fixed rate-limit window can take up to an hour to reset.
-        submitStatus.textContent =
-          data.accepted === false
-            ? 'VERIFICATION QUEUE IS FULL RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.'
-            : 'TOO MANY SUBMISSIONS THIS HOUR — WAIT FOR THE RATE LIMIT TO RESET, THEN SUBMIT AGAIN.';
+        submitStatus.textContent = data.accepted === false ? t('submit.queueFull') : t('submit.rateLimited');
       } else {
-        submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
+        submitStatus.textContent = data.error ? t('submit.notAcceptedWith', data.error) : t('submit.notAccepted');
       }
       // Retryable outcomes leave SUBMIT exactly where it is.
       //
@@ -1126,10 +1137,10 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         return;
       }
       postButton.style.display = 'none';
-      skipButton.textContent = 'OK';
+      skipButton.textContent = t('submit.ok');
     } catch {
       if (responseIsStale()) return;
-      submitStatus.textContent = 'SUBMIT FAILED — YOU CAN TRY AGAIN.';
+      submitStatus.textContent = t('submit.failed');
       postButton.disabled = false;
     } finally {
       // Only release the in-flight marker if it is still ours: a newer
@@ -1204,9 +1215,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         nameInput.style.display = 'none';
         handleRow.style.display = 'none';
         handleInput.style.display = 'none';
-        submitStatus.textContent = `TOO MANY AREA CLAIMS TO VERIFY (${snapshot.claims} > ${MAX_VERIFIED_CLAIMS}) — THIS RUN CANNOT BE RANKED.`;
+        submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
         postButton.style.display = 'none';
-        skipButton.textContent = 'OK';
+        skipButton.textContent = t('submit.ok');
         syncSubmitNavButtons();
         submitOverlay.style.display = 'flex';
         return;
@@ -1232,7 +1243,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       submitStatus.textContent = '';
       postButton.style.display = 'inline-block';
       postButton.disabled = false;
-      skipButton.textContent = 'SKIP';
+      skipButton.textContent = t('submit.skip');
       syncSubmitNavButtons();
       submitOverlay.style.display = 'flex';
     })();
@@ -1290,8 +1301,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   replayButtonRow.style.display = 'flex';
   replayButtonRow.style.gap = '8px';
   replayButtonRow.style.pointerEvents = 'auto'; // the bar itself is click-transparent (see replayControls)
-  const skipToFinalButton = styledButton('SKIP TO FINAL STAGE');
-  const exitReplayButton = styledButton('EXIT');
+  const skipToFinalButton = styledButton(t('replay.skipToFinal'));
+  const exitReplayButton = styledButton(t('replay.exit'));
   replayButtonRow.appendChild(skipToFinalButton);
   replayButtonRow.appendChild(exitReplayButton);
   replayControls.appendChild(replayStageLabel);
@@ -1311,15 +1322,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function replayStageText(engine: ReplayEngine): string {
     const finalStage = engine.getResult().stage;
     const currentStage = Math.min(engine.getSession().getStage(), finalStage);
-    const counter = `STAGE ${currentStage} / ${finalStage}`;
+    const counter = t('replay.counter', currentStage, finalStage);
     // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
     // recorded input simply runs out mid-play (a truncated or
     // differently-configured recording — main.ts's own end-of-replay overlay
     // has always had to allow for it) also stops here, but nobody died: it
     // gets the neutral end wording instead.
-    if (engine.getSession().getStatus() === 'gameover') return `REPLAY END - ${counter} (GAME OVER HERE)`;
-    if (engine.isFinished()) return `REPLAY END - ${counter}`;
-    return currentStage >= finalStage ? `REPLAY - ${counter} (FINAL STAGE)` : `REPLAY - ${counter}`;
+    if (engine.getSession().getStatus() === 'gameover') return t('replay.statusEndGameOver', counter);
+    if (engine.isFinished()) return t('replay.statusEnd', counter);
+    return currentStage >= finalStage ? t('replay.statusFinal', counter) : t('replay.status', counter);
   }
 
   /**
@@ -1359,7 +1370,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function mountReplayControls(): void {
     lastReplayStageText = null;
-    replayStageLabel.textContent = 'REPLAY';
+    replayStageLabel.textContent = t('replay.label');
     // Starts hidden and is revealed by the first frame's sync if this replay
     // actually has a later stage to skip to — never flashed for a frame at a
     // single-stage run.
@@ -1389,7 +1400,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function endSkipUi(): void {
     skipping = false;
     skipToFinalButton.disabled = false;
-    skipToFinalButton.textContent = 'SKIP TO FINAL STAGE';
+    skipToFinalButton.textContent = t('replay.skipToFinal');
   }
 
   skipToFinalButton.addEventListener('click', () => {
@@ -1400,7 +1411,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // progress indicator, which only means anything because the skip now
     // yields to the event loop instead of blocking it.
     skipToFinalButton.disabled = true;
-    skipToFinalButton.textContent = 'SKIPPING...';
+    skipToFinalButton.textContent = t('replay.skipping');
     // Suspend normal playback for the duration. Both the skip loop and
     // main.ts's per-frame driver call stepTick() on the SAME engine, and the
     // skip yields between chunks — so without this they interleave and
@@ -1459,7 +1470,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     stopKeyPropagation(button);
     button.id = 'ranking-button';
     button.type = 'button';
-    button.textContent = 'RANKING';
+    button.textContent = t('ranking.button');
     // Mounted into `anchor` (canvas-wrap) and absolutely positioned to
     // preserve the HUD row's single-line width budget, which main.ts
     // calculates in measureNonHudRowWidth()/wouldSingleLineFit(). Adding a

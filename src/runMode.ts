@@ -10,6 +10,7 @@
 // which is DOM-only orchestration with no dedicated test file — specifically
 // so this mode-selection logic has direct unit test coverage without
 // needing a jsdom environment.
+import { t } from './i18n';
 
 /**
  * - 'normal': an ordinary, unseeded run. Reads/writes `qixxx.highScore` normally.
@@ -29,5 +30,5 @@ export function shouldPersistHighScore(mode: RunMode): boolean {
  * board is never confused for the normal, day-to-day one.
  */
 export function resolveHudModePrefix(mode: RunMode, params: { seededRunSeed: number | undefined }): string {
-  return mode === 'seeded' ? `SEED ${params.seededRunSeed}  ` : '';
+  return mode === 'seeded' ? `${t('hud.seed', params.seededRunSeed)}  ` : '';
 }

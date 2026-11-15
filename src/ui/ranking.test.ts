@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   acceptedSubmissionText,
-  BOARD_NOTICE,
+  boardNotice,
   decideSubmissionOffer,
   isSnapshotEligible,
   isReplayPayloadPlayable,
@@ -38,11 +38,11 @@ describe('acceptedSubmissionText', () => {
   });
 });
 
-describe('BOARD_NOTICE', () => {
+describe('boardNotice', () => {
   it('discloses both board rules without claiming every score is verified', () => {
-    expect(BOARD_NOTICE).toContain('X handles are self-reported');
-    expect(BOARD_NOTICE).toContain('may be removed');
-    expect(BOARD_NOTICE).not.toMatch(/scores are verified/i);
+    expect(boardNotice()).toContain('X handles are self-reported');
+    expect(boardNotice()).toContain('may be removed');
+    expect(boardNotice()).not.toMatch(/scores are verified/i);
   });
 });
 

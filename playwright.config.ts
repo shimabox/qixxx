@@ -34,6 +34,10 @@ export default defineConfig({
   // `base: '/'`).
   use: {
     trace: 'retain-on-failure',
+    // The page's language follows the browser's (src/i18n/): pinned to
+    // English so the suite reads the same on any machine.
+    // tests/e2e/japanese-text.spec.ts switches to ja-JP on its own.
+    locale: 'en-US',
   },
   projects: [
     {

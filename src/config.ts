@@ -457,10 +457,24 @@ export const GAMEOVER_MODAL_TINY_BELOW_PX = 200;
 // The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
 // this many CSS px on screen, however far the field is scaled down.
 export const FX_TEXT_MIN_DISPLAY_PX = 11;
+// The miss reason (WISP HIT YOUR LINE, STOPPED TOO LONG, ...): shown next to
+// the contact for TICKS ticks from the miss — through the miss hit stop and
+// after it — fading out over its last FADE_TICKS, and never drawn smaller
+// than MIN_DISPLAY_PX CSS px on screen. A reading text, so it does not move.
+export const FX_MISS_REASON_TICKS = 60;
+export const FX_MISS_REASON_FADE_TICKS = 12;
+export const FX_MISS_REASON_MIN_DISPLAY_PX = 13;
+// Its colour: the warning red, lighter so it reads on the dark field, edged
+// in COLOR_FX_OUTLINE so it reads on a claimed area as well.
+export const COLOR_FX_MISS_REASON = '#ff6b6b';
 // The effects' text: a geometric display face bundled with the game
 // (public/fonts/), falling back to monospace until it has loaded or if it
 // cannot be loaded.
 export const FX_TEXT_FONT_FAMILY = '"Orbitron", monospace';
+// The Japanese sentences (directions, notices, status and error lines, the
+// miss reason): the device's own Japanese fonts — none is bundled — falling
+// back to monospace. English text keeps its fonts.
+export const JA_TEXT_FONT_FAMILY = '"Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", monospace';
 export const COLOR_FX_NEON_CYAN = '#37e6ff';
 export const COLOR_FX_NEON_MAGENTA = '#ff2bd6';
 export const COLOR_FX_NEON_CORE = '#ffffff';
