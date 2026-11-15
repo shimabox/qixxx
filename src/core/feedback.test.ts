@@ -86,6 +86,35 @@ describe('captureFeedback does not change the run', () => {
       expect(claimsSeen).toBeGreaterThan(0);
     }
   });
+
+  it('stageClearBonus is the tick score gain minus areaScore on an occupancy clear, 0 on every other claim', () => {
+    let occupancyClears = 0;
+    let otherClaims = 0;
+    for (const options of SCRIPTED_CASES) {
+      let lastScore = 0;
+      runScriptedSession({
+        ...options,
+        captureFeedback: true,
+        onTick: (session) => {
+          const notices = session.drainClaimFeedback();
+          const gain = session.getScore() - lastScore;
+          lastScore = session.getScore();
+          for (const n of notices) {
+            if (n.stageCleared && !n.split) {
+              occupancyClears++;
+              expect(notices).toHaveLength(1);
+              expect(n.stageClearBonus).toBe(gain - n.areaScore);
+            } else {
+              otherClaims++;
+              expect(n.stageClearBonus).toBe(0);
+            }
+          }
+        },
+      });
+    }
+    expect(occupancyClears).toBeGreaterThan(0);
+    expect(otherClaims).toBeGreaterThan(0);
+  });
 });
 
 function drawDown(game: Game, ticks: number): void {
@@ -110,6 +139,7 @@ describe('claim notices', () => {
       occupancyAfter: game.getOccupancy(),
       lineSpeed: 'fast',
       areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1),
+      stageClearBonus: scoreStageClearBonus(game.getOccupancy(), game.getRequiredOccupancy()),
       multiplier: 1,
       split: false,
       stageCleared: true,
@@ -138,6 +168,7 @@ describe('claim notices', () => {
     expect(notice.areaScore).toBe(scoreAreaClaim(notice.claimedCells, 'slow', 3));
     expect(notice.stageCleared).toBe(false);
     expect(notice.split).toBe(false);
+    expect(notice.stageClearBonus).toBe(0);
     expect(game.getStatus()).toBe('playing');
   });
 
@@ -152,6 +183,7 @@ describe('claim notices', () => {
     const [notice] = game.drainClaimFeedback();
     expect(notice.split).toBe(true);
     expect(notice.stageCleared).toBe(true);
+    expect(notice.stageClearBonus).toBe(0);
     expect(notice.closedLine).toEqual([
       { x: 5, y: 1 },
       { x: 5, y: 2 },

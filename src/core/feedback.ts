@@ -22,6 +22,12 @@ export interface ClaimFeedback {
   lineSpeed: LineSpeed;
   /** Area points this claim scored (the stage-clear excess bonus is not included). */
   areaScore: number;
+  /**
+   * The excess-occupancy bonus this claim scored: scoreStageClearBonus()'s
+   * value when it cleared the stage by occupancy, 0 for a split clear and for
+   * a claim that did not clear the stage.
+   */
+  stageClearBonus: number;
   /** The score multiplier applied to `areaScore`. */
   multiplier: number;
   /** True when this claim split the Wisps apart. */

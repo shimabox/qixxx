@@ -624,6 +624,8 @@ export class Game {
           this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
           this.lastClearWasSplit = claimResult.split;
+          // Only read back by the optional claim notice below.
+          let stageClearBonus = 0;
           if (claimResult.split) {
             // Splitting the Wisps apart clears the stage instantly, regardless
             // of occupancy (docs/plan.md §4.2/§3.6). The multiplier bump for
@@ -632,7 +634,8 @@ export class Game {
             this.status = 'stageclear';
             this.events.push('split-clear');
           } else if (this.occupancy >= this.requiredOccupancy) {
-            this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
+            stageClearBonus = scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
+            this.score += stageClearBonus;
             this.status = 'stageclear';
             this.events.push('stage-clear');
           }
@@ -643,6 +646,7 @@ export class Game {
               occupancyAfter: this.occupancy,
               lineSpeed,
               areaScore,
+              stageClearBonus,
               multiplier: this.multiplier,
               split: claimResult.split,
               stageCleared: this.status === 'stageclear',
