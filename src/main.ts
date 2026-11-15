@@ -24,6 +24,8 @@ import { FxDirector, FxFrame } from './fx/director';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate } from './fx/liveTick';
+import { ScoreRoll } from './fx/scoreRoll';
+import { loadFxFonts } from './render/fxFonts';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -41,7 +43,9 @@ import {
   REPLAY_FORMAT_VERSION,
   REPLAY_STAGE_CLEAR_HOLD_TICKS,
   COLOR_FX_SPLIT,
-  COLOR_FX_OUTLINE,
+  COLOR_FX_NEON_CYAN,
+  COLOR_FX_NEON_MAGENTA,
+  FX_TEXT_FONT_FAMILY,
 } from './config';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
@@ -320,7 +324,9 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
 
 // Get or create the travelling-multiplier element (see `multiplierFly`).
 // Fixed-positioned so it can cross from the canvas to the HUD row; moved
-// every rendered frame by renderMultiplierFx().
+// every rendered frame by renderMultiplierFx(). Neon like the canvas
+// effects' text: the bundled display face, white, with a cyan and a magenta
+// glow (renderMultiplierFx() sets the glow, split apart for its first ticks).
 function getMultiplierFlyElement(): HTMLDivElement {
   let el = document.getElementById('fx-multiplier') as HTMLDivElement | null;
   if (!el) {
@@ -331,14 +337,33 @@ function getMultiplierFlyElement(): HTMLDivElement {
     el.style.top = '0';
     el.style.display = 'none';
     el.style.font = HUD_FONT;
-    el.style.fontWeight = 'bold';
-    el.style.color = COLOR_FX_SPLIT;
-    el.style.textShadow = `0 0 8px ${COLOR_FX_SPLIT}, 0 0 2px ${COLOR_FX_OUTLINE}`;
+    el.style.fontFamily = FX_TEXT_FONT_FAMILY;
+    el.style.fontWeight = '700';
+    el.style.color = '#ffffff';
+    el.style.textShadow = multiplierFlyShadow(0);
     el.style.pointerEvents = 'none';
     el.style.userSelect = 'none';
     el.style.whiteSpace = 'nowrap';
     el.style.zIndex = '20';
     document.body.appendChild(el);
+  }
+  return el;
+}
+
+// The travelling multiplier's glow: cyan (6px) and magenta (14px), the cyan
+// moved `offsetPx` left and the magenta as far right.
+function multiplierFlyShadow(offsetPx: number): string {
+  const off = Math.round(offsetPx * 100) / 100;
+  return `${-off}px 0px 6px ${COLOR_FX_NEON_CYAN}, ${off}px 0px 14px ${COLOR_FX_NEON_MAGENTA}`;
+}
+
+// The HUD's SCORE number, as its own span so it can glow while it counts up
+// (see `hudScoreRoll`); the line's text is unchanged by it.
+function getHudScoreElement(): HTMLSpanElement {
+  let el = document.getElementById('hud-score') as HTMLSpanElement | null;
+  if (!el) {
+    el = document.createElement('span');
+    el.id = 'hud-score';
   }
   return el;
 }
@@ -401,6 +426,15 @@ let hudMultiplier: HTMLSpanElement;
 // The HUD sits outside the canvas, so this one effect is a DOM element.
 let multiplierFly: HTMLDivElement;
 let lastMultiplierHighlight = 0;
+let lastMultiplierFlyShadow = '';
+// The live run's HUD SCORE number counting up to the real score after
+// points are added (src/fx/scoreRoll.ts). Ticked next to the director, so it
+// keeps counting through a hit stop. Display only: the high score, the GAME
+// OVER modal, the X share and the ranking all read session.getScore().
+// Replay viewing shows the replay's score as it is.
+const hudScoreRoll = new ScoreRoll();
+let hudScore: HTMLSpanElement;
+let lastHudScoreRolling = false;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -580,7 +614,11 @@ function init(): void {
   hudLine3 = getHudLineElement(hud, 'hud-line3');
   hudMultiplier = document.createElement('span');
   hudMultiplier.id = 'hud-multiplier';
+  hudScore = getHudScoreElement();
   multiplierFly = getMultiplierFlyElement();
+  // The effects' display face: requested now so it is ready by the first
+  // claim; the effects fall back to monospace until then (or if it fails).
+  loadFxFonts();
   // Matches `hudTwoLineMode`'s own `false` initial value (module scope)
   // until the real, geometry-based decision runs — see updateHudMode() —
   // from the fitCanvasToViewport() call below (which needs the credit
@@ -903,7 +941,9 @@ function updateHud(): void {
   const game = activeSession.getGame();
   const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
   const stage = activeSession.getStage();
-  const score = activeSession.getScore();
+  // Live play shows the counting-up value; a replay shows its score as is.
+  const score = viewMode === 'replay' ? activeSession.getScore() : hudScoreRoll.value();
+  const scoreRolling = viewMode !== 'replay' && hudScoreRoll.isRolling();
   const hi = activeSession.getHighScore();
   const lives = activeSession.getLives();
   const multiplier = activeSession.getMultiplier();
@@ -918,6 +958,13 @@ function updateHud(): void {
   // ticks) — without this, the color flip could lag up to 5 ticks behind
   // the instant remainingTicks actually crosses the threshold.
   const timeWarning = remainingTicks <= HUD_TIME_WARNING_TICKS;
+
+  // The SCORE number glows cyan while it counts up. A text-shadow only, so
+  // the HUD's line height and width stay as they are.
+  if (scoreRolling !== lastHudScoreRolling) {
+    lastHudScoreRolling = scoreRolling;
+    hudScore.style.textShadow = scoreRolling ? `0 0 6px ${COLOR_FX_NEON_CYAN}, 0 0 12px ${COLOR_FX_NEON_CYAN}` : '';
+  }
 
   if (
     stage === lastHudStage &&
@@ -956,17 +1003,22 @@ function updateHud(): void {
   // The `xN` multiplier at the end of the line is its own span (see
   // `hudMultiplier`); the line's text is unchanged by it.
   hudMultiplier.textContent = `x${multiplier}`;
+  // Likewise the SCORE number (see `hudScore`).
+  hudScore.textContent = String(score);
   if (hudTwoLineMode) {
-    hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
+    hudLine1.textContent = `STAGE ${stage}  SCORE: `;
+    hudLine1.append(hudScore, `  HI: ${hi}`);
     hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
     hudLine2.appendChild(hudMultiplier);
     hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
     if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
   } else {
-    hudLine1.textContent =
-      `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
-      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
-    hudLine1.appendChild(hudMultiplier);
+    hudLine1.textContent = `${modePrefix}STAGE ${stage}  SCORE: `;
+    hudLine1.append(
+      hudScore,
+      `  HI: ${hi}  TIME ${timeStr}  OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `,
+      hudMultiplier
+    );
     if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
   }
 }
@@ -989,6 +1041,13 @@ function renderMultiplierFx(frame: FxFrame | null): void {
     const scale = 2.5 - 1.5 * t;
     multiplierFly.textContent = fly.text;
     multiplierFly.style.display = 'block';
+    // Its glow splits apart for its first ticks (none with reduced motion).
+    const fontPx = parseFloat(multiplierFly.style.fontSize) || 16;
+    const shadow = multiplierFlyShadow(fly.channelOffset * fontPx);
+    if (shadow !== lastMultiplierFlyShadow) {
+      lastMultiplierFlyShadow = shadow;
+      multiplierFly.style.textShadow = shadow;
+    }
     multiplierFly.style.transform =
       `translate(${fromX + (toX - fromX) * t}px, ${fromY + (toY - fromY) * t}px) translate(-50%, -50%) scale(${scale})`;
   }
@@ -1096,7 +1155,9 @@ function updateLive(): void {
   // a hit stop holds the run, and a stopped tick ends right here — no input
   // poll (so a confirm pressed meanwhile is read once, on the first tick
   // after the stop), no session.update(), no input recording and no time
-  // warning, so the run's tick count and recorded samples stand still.
+  // warning, so the run's tick count and recorded samples stand still. The
+  // HUD score's count-up keeps going through a stop, like the effects.
+  hudScoreRoll.tick();
   const input = beginLiveTick({
     fx,
     hitStop,
@@ -1157,6 +1218,9 @@ function updateLive(): void {
   sfx.handleEvents(events);
   // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
   applyImpactNotices(session, fx, hitStop, sfx);
+  // The HUD's SCORE number follows the real score: counting up after points
+  // are added, at once when it falls back to 0 for a new run.
+  hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
   // TIME countdown warning: decided here, once per live tick, from the
   // remaining time this tick's session.update() left behind. The replay
   // branch above returns before reaching this, which is what keeps replays
