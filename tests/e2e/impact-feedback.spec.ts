@@ -194,7 +194,7 @@ test.describe('impact feedback', () => {
     expect(occupancy).toBeGreaterThan(0);
     expect(score).toBeGreaterThan(0);
     expect(claim.score).toBe(score);
-    await expect(page.locator('#hud')).toContainText(`OCCUPANCY: ${Math.floor(occupancy * 100)}%`);
+    await expect(page.locator('#hud')).toContainText(`${Math.floor(occupancy * 100 + 1e-9)}%/`);
     expect((await frame(page)).popups).toEqual([expect.objectContaining({ text: `+${claim.areaScore}` })]);
 
     // The run stands still for exactly the stop, then moves again.
@@ -212,7 +212,7 @@ test.describe('impact feedback', () => {
     for (;;) {
       const since = await ticksSince(page, 'claims');
       if (since >= 18 && !hudChecked) {
-        await expect(page.locator('#hud')).toContainText(`SCORE: ${score}`);
+        await expect(page.locator('#hud')).toContainText(`SCORE ${score}`);
         hudChecked = true;
       }
       const popups = (await frame(page)).popups;
@@ -291,9 +291,12 @@ test.describe('impact feedback', () => {
     expect(await status(page)).toBe('gameover');
     await expect(modal).toBeVisible();
 
+    // After the retry guard (24 ticks from the modal), one confirm starts
+    // the next run: GAME OVER -> stage 1, never stopping at Title.
     await page.keyboard.press('Enter');
     await page.clock.runFor(100);
-    expect(await status(page)).toBe('title');
+    expect(await status(page)).toBe('playing');
+    expect(await page.evaluate(() => window.__game__!.session.getStage())).toBe(1);
   });
 
   test('SPLIT! shows for 60 ticks and holds the stage-clear text back; confirm is dropped for 40 ticks', async ({ page }) => {
@@ -332,6 +335,17 @@ test.describe('impact feedback', () => {
     await expect(screen).toContainText('STAGE 1 CLEAR!');
     await expect(screen).toContainText('PRESS ANY KEY OR TAP FOR NEXT STAGE');
     await expect(screen).not.toContainText('(SPLIT CLEAR!)');
+
+    // The result counts up from the tick SPLIT! has gone: a confirm while it
+    // counts only completes it (TOTAL is the stage's real score gain), the
+    // next one starts the next stage.
+    const total = await page.evaluate(() => window.__game__!.session.getScore());
+    await expect(screen).toContainText('TOTAL');
+    expect(await screen.textContent()).not.toMatch(new RegExp(`TOTAL\\s+${total}\\b`));
+    await page.keyboard.press('Enter');
+    await page.clock.runFor(FRAME_MS);
+    expect(await status(page)).toBe('stageclear');
+    expect(await screen.textContent()).toMatch(new RegExp(`TOTAL\\s+${total}\\b`));
 
     await page.keyboard.press('Enter');
     await page.clock.runFor(100);

@@ -12,7 +12,7 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS } from '../config';
+import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS, RANKING_BOARD_SIZE } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 
 export interface RankingEntry {
@@ -150,7 +150,48 @@ export type SubmissionOfferDecision =
   /** In range, but with more area claims than the audit will verify — shown as an explanation, never as a form. */
   | 'over-claim-cap';
 
+/**
+ * The score a run has to beat to enter the board, from GET /api/ranking's
+ * verified `entries` (best first): 0 while the board has a free row (any
+ * score gets in), otherwise the lowest row's score — a tie sorts behind the
+ * incumbent (see decideSubmissionOffer()).
+ */
+export function rankInThresholdFrom(entries: RankingEntry[]): number {
+  if (entries.length < RANKING_BOARD_SIZE) return 0;
+  return entries[entries.length - 1].score;
+}
+
 /** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
+/**
+ * The board's entry score (rankInThresholdFrom()) as of the newest
+ * GET /api/ranking that succeeded. Several of those can be in flight at once
+ * (the page-load one and each GAME OVER's), and their replies can land out of
+ * order: each request takes a generation number from begin(), and a reply
+ * only writes when no newer generation has written already. A failed reply
+ * (`null`) writes nothing, so it never clears a known value.
+ */
+export class RankInThresholdTracker {
+  private nextGeneration = 0;
+  private writtenGeneration = -1;
+  private value: number | null = null;
+
+  /** Call as a GET /api/ranking goes out; pass the result to settle(). */
+  begin(): number {
+    return this.nextGeneration++;
+  }
+
+  /** Records the reply of request `generation`: its verified entries, or null when it failed. */
+  settle(generation: number, entries: RankingEntry[] | null): void {
+    if (entries === null || generation < this.writtenGeneration) return;
+    this.writtenGeneration = generation;
+    this.value = rankInThresholdFrom(entries);
+  }
+
+  get(): number | null {
+    return this.value;
+  }
+}
+
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
   return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
 }
@@ -190,7 +231,7 @@ export function decideSubmissionOffer(args: {
   // deleted by POST's own trim step. Offering the name field in that case
   // would promise a slot that cannot exist. Below 10 entries there is a free
   // slot regardless of the score, so no comparison applies.
-  const inRange = entries.length < 10 || snapshot.score > entries[entries.length - 1].score;
+  const inRange = entries.length < RANKING_BOARD_SIZE || snapshot.score > rankInThresholdFrom(entries);
   if (!inRange) return 'out-of-range';
   // Checked after the range test on purpose: a run that would not be offered
   // anyway needs no explanation, and a run that WOULD be deserves to hear
@@ -229,6 +270,15 @@ export interface RankingUIOptions {
    * boundary the skip is seeking.
    */
   onReplayAutoAdvanceChange: (autoAdvance: boolean) => void;
+  /**
+   * The submission panel's own RETRY: asks for exactly what the GAME OVER
+   * modal's RETRY button asks for. The panel sits on top of the modal, so
+   * without these two the modal's buttons could not be reached while it is
+   * up. The panel closes through hideAll() once the run leaves GAME OVER.
+   */
+  onRetry: () => void;
+  /** The submission panel's own TITLE: same as the GAME OVER modal's TITLE button (see onRetry). */
+  onTitle: () => void;
 }
 
 /**
@@ -393,6 +443,36 @@ export interface RankingUI {
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
+  /**
+   * Packs the submission panel tighter (smaller text, less padding and
+   * spacing) for a field too small to hold its roomy layout — a phone held
+   * sideways — so the whole panel, its RETRY / TITLE row included, stays on
+   * screen without scrolling. main.ts calls it whenever the field is resized.
+   */
+  setSubmitPanelCompact(compact: boolean): void;
+  /**
+   * Fetches GET /api/ranking once to learn the board's entry score (see
+   * getRankInThreshold()). main.ts calls it on page load; a failure is
+   * silent and leaves the score unknown.
+   */
+  loadRankInThreshold(): void;
+  /**
+   * The score a run has to beat to enter the board, as of the last
+   * successful GET /api/ranking (the page-load one or a GAME OVER offer's):
+   * 0 while the board has a free row, null until one succeeded.
+   */
+  getRankInThreshold(): number | null;
+  /**
+   * True while the ranking offer for the just-finished run must keep the
+   * keyboard and the field from starting the next run: while asking
+   * /api/ranking whether it can be posted, and while the submission panel
+   * (the form, its result or the over-the-cap notice) is on screen. False
+   * once that panel is closed (SKIP / OK) and once the run turns out not to
+   * be offered.
+   */
+  isSubmissionBlockingRetry(): boolean;
+  /** True only for the first half of isSubmissionBlockingRetry(): the /api/ranking check is still in flight. */
+  isSubmissionCheckPending(): boolean;
 }
 
 export function initRankingUI(options: RankingUIOptions): RankingUI {
@@ -708,6 +788,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   // ---- GAME OVER submission flow ----
   const submitOverlay = styledOverlay();
+  submitOverlay.id = 'ranking-submit-panel';
   const submitHeading = document.createElement('div');
   submitHeading.textContent = 'YOU MADE THE TOP 10!';
   submitHeading.style.fontSize = '1em';
@@ -849,7 +930,56 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   submitButtonRow.appendChild(skipButton);
   submitButtonRow.appendChild(postButton);
   submitOverlay.appendChild(submitButtonRow);
+
+  // RETRY / TITLE, smaller than the row above: the panel covers the GAME OVER
+  // modal, whose own RETRY / TITLE buttons are the way on while the keys and
+  // the field are held, so the panel carries the same two requests.
+  const submitNavRow = document.createElement('div');
+  submitNavRow.style.display = 'flex';
+  submitNavRow.style.gap = '10px';
+  const submitRetryButton = styledButton('RETRY');
+  submitRetryButton.id = 'ranking-submit-retry-button';
+  const submitTitleButton = styledButton('TITLE');
+  submitTitleButton.id = 'ranking-submit-title-button';
+  for (const button of [submitRetryButton, submitTitleButton]) {
+    button.style.fontSize = '0.7em';
+    button.style.padding = '4px 10px';
+  }
+  submitNavRow.appendChild(submitRetryButton);
+  submitNavRow.appendChild(submitTitleButton);
+  submitOverlay.appendChild(submitNavRow);
   anchor.appendChild(submitOverlay);
+
+  /** True while this panel's own run has a POST in flight. */
+  function isPostInFlight(): boolean {
+    return submittingFor !== null && submittingFor === activeSubmission;
+  }
+
+  /**
+   * RETRY / TITLE are off while the POST is in flight — leaving the run then
+   * would drop it with its submission still unanswered — and on otherwise
+   * (the form, the over-the-cap notice and a finished POST's result).
+   */
+  function syncSubmitNavButtons(): void {
+    const disabled = isPostInFlight();
+    submitRetryButton.disabled = disabled;
+    submitTitleButton.disabled = disabled;
+    submitRetryButton.style.opacity = disabled ? '0.4' : '1';
+    submitTitleButton.style.opacity = disabled ? '0.4' : '1';
+    submitRetryButton.style.cursor = disabled ? 'default' : 'pointer';
+    submitTitleButton.style.cursor = disabled ? 'default' : 'pointer';
+  }
+
+  submitRetryButton.addEventListener('click', () => {
+    if (isPostInFlight()) return;
+    options.onRetry();
+    submitRetryButton.blur();
+  });
+  submitTitleButton.addEventListener('click', () => {
+    if (isPostInFlight()) return;
+    options.onTitle();
+    submitTitleButton.blur();
+  });
 
   skipButton.addEventListener('click', () => {
     submitOverlay.style.display = 'none';
@@ -896,6 +1026,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
     submittingFor = snapshot;
     postButton.disabled = true;
+    syncSubmitNavButtons();
     submitStatus.textContent = 'SUBMITTING...';
 
     /**
@@ -1004,25 +1135,57 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // Only release the in-flight marker if it is still ours: a newer
       // submission may already have claimed it.
       if (submittingFor === snapshot) submittingFor = null;
+      syncSubmitNavButtons();
     }
+  }
+
+  // The board's entry score (getRankInThreshold()), from the newest
+  // successful GET /api/ranking that carried verified `entries`.
+  const rankInThreshold = new RankInThresholdTracker();
+
+  async function fetchVerifiedEntries(): Promise<RankingEntry[] | null> {
+    const generation = rankInThreshold.begin();
+    let entries: RankingEntry[] | null = null;
+    try {
+      const res = await fetch('/api/ranking');
+      if (res.ok) {
+        const data = (await res.json()) as { entries: RankingEntry[] };
+        entries = data.entries ?? [];
+      }
+    } catch {
+      entries = null;
+    }
+    rankInThreshold.settle(generation, entries);
+    return entries;
+  }
+
+  function loadRankInThreshold(): void {
+    void fetchVerifiedEntries();
+  }
+
+  // The snapshot whose /api/ranking check is still in flight (see
+  // isSubmissionCheckPending()). Identity-keyed like `submittingFor`, so an
+  // older run's late reply cannot clear a newer run's check.
+  let checkingFor: RunSubmissionSnapshot | null = null;
+
+  function isSubmissionCheckPending(): boolean {
+    return checkingFor !== null;
+  }
+
+  function isSubmissionBlockingRetry(): boolean {
+    return checkingFor !== null || submitOverlay.style.display !== 'none';
   }
 
   function offerSubmission(snapshot: RunSubmissionSnapshot): void {
     submitOverlay.style.display = 'none';
     activeSubmission = null;
+    checkingFor = null;
     if (!isSnapshotEligible(snapshot)) return;
     activeSubmission = snapshot;
+    checkingFor = snapshot;
     void (async () => {
-      let entries: RankingEntry[] | null = null;
-      try {
-        const res = await fetch('/api/ranking');
-        if (res.ok) {
-          const data = (await res.json()) as { entries: RankingEntry[] };
-          entries = data.entries ?? [];
-        }
-      } catch {
-        entries = null;
-      }
+      const entries = await fetchVerifiedEntries();
+      if (checkingFor === snapshot) checkingFor = null;
 
       // Everything below re-checks the world as it looks *now*, not as it
       // looked when the request went out — see decideSubmissionOffer()'s doc
@@ -1044,6 +1207,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         submitStatus.textContent = `TOO MANY AREA CLAIMS TO VERIFY (${snapshot.claims} > ${MAX_VERIFIED_CLAIMS}) — THIS RUN CANNOT BE RANKED.`;
         postButton.style.display = 'none';
         skipButton.textContent = 'OK';
+        syncSubmitNavButtons();
         submitOverlay.style.display = 'flex';
         return;
       }
@@ -1069,6 +1233,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       postButton.style.display = 'inline-block';
       postButton.disabled = false;
       skipButton.textContent = 'SKIP';
+      syncSubmitNavButtons();
       submitOverlay.style.display = 'flex';
     })();
   }
@@ -1344,6 +1509,25 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     syncAvailability();
   }
 
+  let submitPanelCompact = false;
+  function setSubmitPanelCompact(compact: boolean): void {
+    if (compact === submitPanelCompact) return;
+    submitPanelCompact = compact;
+    // The roomy values are styledOverlay()'s / styledButton()'s / the
+    // fields' own, restored when the field grows again.
+    submitOverlay.style.padding = compact ? '4px 8px' : '16px 20px';
+    submitOverlay.style.gap = compact ? '2px' : '8px';
+    submitOverlay.style.fontSize = compact ? '10px' : OVERLAY_FONT_SIZE;
+    // Explicit values, never '': clearing the longhand the `font` shorthand
+    // set would inherit #canvas-wrap's line-height 0.
+    submitOverlay.style.lineHeight = compact ? '1.1' : 'normal';
+    submitOverlay.style.maxHeight = compact ? '100%' : '90%';
+    for (const input of [nameInput, handleInput]) input.style.padding = compact ? '2px 6px' : '4px 8px';
+    for (const button of [skipButton, postButton]) button.style.padding = compact ? '3px 10px' : '6px 12px';
+    for (const button of [submitRetryButton, submitTitleButton]) button.style.padding = compact ? '2px 8px' : '4px 10px';
+    submitStatus.style.minHeight = compact ? '0' : '1.2em';
+  }
+
   function hideAll(): void {
     submitOverlay.style.display = 'none';
     // Drops the pending snapshot too: main.ts calls this the moment the run
@@ -1351,7 +1535,19 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // for it must not reopen the form (decideSubmissionOffer()'s
     // 'superseded' / 'stale-run' guards).
     activeSubmission = null;
+    checkingFor = null;
   }
 
-  return { mountTitleButton, syncAvailability, syncReplayStatus, offerSubmission, hideAll };
+  return {
+    mountTitleButton,
+    syncAvailability,
+    syncReplayStatus,
+    offerSubmission,
+    hideAll,
+    setSubmitPanelCompact,
+    loadRankInThreshold,
+    getRankInThreshold: () => rankInThreshold.get(),
+    isSubmissionBlockingRetry,
+    isSubmissionCheckPending,
+  };
 }

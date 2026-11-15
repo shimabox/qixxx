@@ -12,7 +12,7 @@ import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
 import { simulateReplayFromRle } from '../../src/core/replayEngine';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
-import { advanceUntil } from './support/fakeClock';
+import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes,
 // matching smoke.spec.ts's own local (not imported) declaration.
@@ -673,7 +673,11 @@ test.describe('name-input submission flow', () => {
     // landing on it is swallowed by stopKeyPropagation / the
     // interactive-element filter, so move focus off it first.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    // The finished submission's panel holds the keys until it is closed; then
+    // the modal's TITLE button goes back to Title (a key would start the next
+    // run instead).
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  999000  STAGE 9  FAKE0')).toBeVisible();
@@ -907,7 +911,11 @@ test.describe('name-input submission flow', () => {
     // window lands on the button and is swallowed by stopKeyPropagation /
     // the interactive-element filter, so Title is never reached.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space');
+    // The open panel holds the keys and covers the modal: SKIP closes it (run
+    // A's snapshot is dropped, exactly as leaving GAME OVER drops it), then
+    // TITLE goes back to Title.
+    await page.getByRole('button', { name: 'SKIP' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await reachGameoverDeterministically(page);
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
@@ -1168,7 +1176,9 @@ test.describe('name-input submission flow', () => {
 
     // Leave the finished run behind while the GET is still outstanding.
     await expect.poll(() => rankingGets).toBeGreaterThanOrEqual(1);
-    await page.keyboard.press('Space'); // GAME OVER -> Title (a brand-new run id)
+    // GAME OVER -> Title (a brand-new run id). The modal's TITLE button: the
+    // keys are held while the ranking check is in flight.
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
 
     // ...and it really does come back on the Title a finished run returns to.
@@ -1179,6 +1189,68 @@ test.describe('name-input submission flow', () => {
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     await expect(page.getByPlaceholder('NAME')).toBeHidden();
     expect(scoresPostCount).toBe(0);
+  });
+});
+
+// The submission panel holding the next run, on a faked, paused page clock
+// (tests/e2e/support/fakeClock.ts): the run is played to GAME OVER and every
+// "nothing happened" wait is game time, not a wall-clock sleep.
+test.describe('submission panel hold (fake clock)', () => {
+  const CLOCK_START = new Date('2026-01-01T00:00:00Z');
+  const FRAME_MS = 16;
+
+  test('the submission panel holds Enter and field taps until it is closed, also after a finished POST; then Enter retries', async ({ page }) => {
+    await mockRanking(page, []);
+    await page.route('**/api/scores', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, status: 'verified' }) })
+    );
+
+    await stubDeterministicNormalSeed(page);
+    await page.clock.install({ time: CLOCK_START });
+    await page.goto(APP_URL);
+    await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
+    await page.clock.runFor(100);
+    await page.keyboard.press('Space'); // Title -> Playing
+    await page.clock.runFor(100);
+    const status = () => page.evaluate(() => window.__game__?.session.getStatus());
+    expect(await status()).toBe('playing');
+    await loseAllLivesToIgniter(page);
+    const panel = page.getByText('YOU MADE THE TOP 10!');
+    await advanceUntil(page, () => panel.isVisible(), 2_000, FRAME_MS);
+    await page.clock.runFor(FRAME_MS * 2); // the hint follows on the next rendered frame
+    await expect(page.locator('#gameover-hint')).toHaveText('POST OR SKIP TO CONTINUE');
+    // A tap on the field, away from the panel in its middle.
+    const tapField = async () => {
+      const box = (await page.locator('#game-canvas').boundingBox())!;
+      await page.mouse.click(box.x + 4, box.y + box.height - 4);
+    };
+
+    // The form is up: neither Enter nor a field tap starts the next run.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Enter');
+    await tapField();
+    await page.clock.runFor(500);
+    expect(await status()).toBe('gameover');
+
+    // Posted, with its result still on screen: still held.
+    await page.getByPlaceholder('NAME').fill('HOLD');
+    await page.getByRole('button', { name: 'SUBMIT' }).click();
+    await expect(page.getByText('SUBMITTED.')).toBeVisible();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Enter');
+    await tapField();
+    await page.clock.runFor(500);
+    expect(await status()).toBe('gameover');
+
+    // Closed with OK: Enter starts the next run straight away.
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.clock.runFor(FRAME_MS * 2);
+    await expect(page.locator('#gameover-hint')).toHaveText('PRESS ANY KEY OR TAP FIELD TO RETRY');
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Enter');
+    await page.clock.runFor(100);
+    expect(await status()).toBe('playing');
+    expect(await page.evaluate(() => window.__game__!.session.getStage())).toBe(1);
   });
 });
 
@@ -1947,7 +2019,11 @@ test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audi
     // landing on it is swallowed by stopKeyPropagation / the
     // interactive-element filter, so move focus off it first.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Space'); // dismiss GAME OVER back to Title
+    // The finished submission's panel holds the keys until it is closed; then
+    // the modal's TITLE button goes back to Title (a key would start the next
+    // run instead).
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.locator('#gameover-back-button').click();
     await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     await page.locator('#ranking-button').click();
     const row = page.locator('#ranking-list-body > *').filter({ hasText: 'LIVEPOST' });

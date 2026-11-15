@@ -202,9 +202,9 @@ for (const viewport of [
           (id) => document.getElementById(id) as HTMLElement,
         );
         const texts = [
-          'STAGE 12  SCORE: 54321  HI: 98765',
-          'OCCUPANCY: 75%  LIVES: 3  x4',
-          'TIME 3:00.0',
+          'STAGE 12  SCORE 54321  HI 98765',
+          '75%/80% 5% LEFT  ◆◆◆  x4',
+          'TIME 3:00.0  TO BEST 44444',
         ];
         lines.forEach((line, index) => {
           line.textContent = texts[index];

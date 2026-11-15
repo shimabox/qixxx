@@ -1,5 +1,4 @@
 import { GameSession, SessionInput } from './core/session';
-import { InputRecorder } from './core/inputRecorder';
 import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import { KeyboardInput } from './input/keyboard';
@@ -18,12 +17,14 @@ import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
 import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
+import { StageResultTally, StageResultCounter, stageResultText } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate } from './fx/liveTick';
+import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
+import { stepLiveSession, LiveRunTracker } from './retryFlow';
 import { ScoreRoll } from './fx/scoreRoll';
 import { loadFxFonts } from './render/fxFonts';
 import {
@@ -46,7 +47,20 @@ import {
   COLOR_FX_NEON_CYAN,
   COLOR_FX_NEON_MAGENTA,
   FX_TEXT_FONT_FAMILY,
+  INITIAL_LIVES,
+  HUD_MULTIPLIER_BASE_SCALE,
+  HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE,
+  HUD_GAUGE_HEIGHT_PX,
+  HUD_GAUGE_NEAR_GOAL_POINTS,
+  HUD_GAUGE_TRACK_COLOR,
+  HUD_GAUGE_FILL_COLOR,
+  HUD_GAUGE_NEAR_COLOR,
+  HUD_GAUGE_GOAL_COLOR,
+  GAMEOVER_MODAL_COMPACT_BELOW_PX,
+  GAMEOVER_MODAL_TINY_BELOW_PX,
 } from './config';
+import { hudGoalText } from './hudGoal';
+import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -232,7 +246,9 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     screen.style.color = HUD_TEXT_COLOR;
     screen.style.font = HUD_FONT;
     screen.style.textAlign = 'center';
-    screen.style.whiteSpace = 'pre-line';
+    // pre-wrap, not pre-line: the STAGE CLEAR result's rows line up with
+    // runs of spaces (src/stageResult.ts).
+    screen.style.whiteSpace = 'pre-wrap';
     screen.style.textShadow = `0 0 10px ${HUD_ACCENT_COLOR}, 0 0 20px ${HUD_ACCENT_COLOR}`;
     screen.style.pointerEvents = 'none';
     screen.style.userSelect = 'none';
@@ -368,6 +384,56 @@ function getHudScoreElement(): HTMLSpanElement {
   return el;
 }
 
+// Get or create the occupancy gauge: a HUD_GAUGE_HEIGHT_PX bar as wide as the
+// field, absolutely positioned in the HUD_GAP_PX gap just above it (anchored
+// to #canvas-wrap, whose box is the field's), so it adds nothing to the
+// layout's height. 100% is the field's full width; the goal mark is 2px wide
+// and reaches 3px past the bar above and below so it is easy to find on a
+// phone, where the bar stays 4px tall.
+function getGaugeElements(wrap: HTMLDivElement): { gauge: HTMLDivElement; fill: HTMLDivElement; goal: HTMLDivElement } {
+  let gauge = document.getElementById('hud-gauge') as HTMLDivElement | null;
+  if (!gauge) {
+    gauge = document.createElement('div');
+    gauge.id = 'hud-gauge';
+    gauge.style.position = 'absolute';
+    gauge.style.left = '0';
+    gauge.style.right = '0';
+    // Centered in the gap: (HUD_GAP_PX - height) / 2 above the field's top edge.
+    gauge.style.bottom = `calc(100% + ${(HUD_GAP_PX - HUD_GAUGE_HEIGHT_PX) / 2}px)`;
+    gauge.style.height = `${HUD_GAUGE_HEIGHT_PX}px`;
+    gauge.style.background = HUD_GAUGE_TRACK_COLOR;
+    gauge.style.pointerEvents = 'none';
+    gauge.style.userSelect = 'none';
+
+    const fill = document.createElement('div');
+    fill.id = 'hud-gauge-fill';
+    fill.style.position = 'absolute';
+    fill.style.left = '0';
+    fill.style.top = '0';
+    fill.style.bottom = '0';
+    fill.style.width = '0%';
+    fill.style.background = HUD_GAUGE_FILL_COLOR;
+    gauge.appendChild(fill);
+
+    const goal = document.createElement('div');
+    goal.id = 'hud-gauge-goal';
+    goal.style.position = 'absolute';
+    goal.style.top = '-3px';
+    goal.style.bottom = '-3px';
+    goal.style.width = '2px';
+    goal.style.left = 'calc(0% - 1px)';
+    goal.style.background = HUD_GAUGE_GOAL_COLOR;
+    gauge.appendChild(goal);
+
+    wrap.appendChild(gauge);
+  }
+  return {
+    gauge,
+    fill: document.getElementById('hud-gauge-fill') as HTMLDivElement,
+    goal: document.getElementById('hud-gauge-goal') as HTMLDivElement,
+  };
+}
+
 // Game state
 let session: GameSession;
 let renderer: Renderer;
@@ -425,7 +491,6 @@ let hudMultiplier: HTMLSpanElement;
 // The next stage's multiplier travelling from the field center to the HUD.
 // The HUD sits outside the canvas, so this one effect is a DOM element.
 let multiplierFly: HTMLDivElement;
-let lastMultiplierHighlight = 0;
 let lastMultiplierFlyShadow = '';
 // The live run's HUD SCORE number counting up to the real score after
 // points are added (src/fx/scoreRoll.ts). Ticked next to the director, so it
@@ -433,7 +498,22 @@ let lastMultiplierFlyShadow = '';
 // OVER modal, the X share and the ranking all read session.getScore().
 // Replay viewing shows the replay's score as it is.
 const hudScoreRoll = new ScoreRoll();
+// The live STAGE CLEAR result (src/stageResult.ts): the points the current
+// stage scored, from its claim notices, and the count-up shown on the clear
+// screen. Reset when the next stage or a new run starts.
+const stageResultTally = new StageResultTally();
+const stageResultCounter = new StageResultCounter();
+// True on a field small enough (a phone held sideways) that the clear
+// screen drops its blank lines to stay on it — see fitCanvasToViewport().
+let tinyField = false;
+// The field's on-screen width / CANVAS_WIDTH, for the effects' smallest
+// text size (Renderer.setFxTextMinFontPx()). Updated on every resize.
+let fieldDisplayScale = 1;
 let hudScore: HTMLSpanElement;
+// The HUD's lives marks. Line height 0: the marks come from a fallback font
+// whose taller metrics would otherwise make the HUD line 1px taller, and with
+// it shrink the field.
+let hudLives: HTMLSpanElement;
 let lastHudScoreRolling = false;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
@@ -457,20 +537,26 @@ let lastInput: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, conf
 // last-displayed values lets the (comparatively expensive) textContent write
 // be skipped whenever nothing changed, instead of re-serializing + reflowing
 // the same string 60 times a second.
-let lastHudStage = -1;
-let lastHudScore = -1;
-let lastHudHi = -1;
-let lastHudOccupancy = -1;
-let lastHudLives = -1;
-let lastHudMultiplier = -1;
-// TIME changes far more often than the fields above (roughly every 6 ticks,
-// a decisecond at TICK_RATE=60) — cached as a string (not raw ticks) so the
-// comparison above stays a single strict-equality check per field, same
-// shape as every other lastHud* cache.
-let lastHudTime = '';
-// Whether the last-30-seconds warning color was applied on the previous write — see updateHud()'s doc
-// comment for why this is tracked separately from lastHudTime.
-let lastHudTimeWarning = false;
+// Every displayed value joined into one string (TIME included, which changes
+// roughly every 6 ticks), so "nothing changed" is a single comparison. ''
+// forces the next write.
+let lastHudKey = '';
+// The occupancy gauge's last-written state, cached the same way.
+let lastGaugeKey = '';
+
+// The player's best when the live run started. The live high score follows
+// the score during play, so the HUD's goal slot and the GAME OVER modal's NEW
+// RECORD compare against this instead. Set on page load and whenever a fresh
+// run begins (GAME OVER -> Title).
+let runBestAtStart = 0;
+// The HUD multiplier's emphasis after it rises or falls back to x1 (live
+// play only — see src/hudText.ts).
+const multiplierEmphasis = new MultiplierEmphasis();
+let lastMultiplierStyleKey = '';
+// The occupancy gauge between the HUD row and the field (see getGaugeElements()).
+let hudGauge: HTMLDivElement;
+let hudGaugeFill: HTMLDivElement;
+let hudGaugeGoal: HTMLDivElement;
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -509,28 +595,23 @@ let runMode: RunMode = 'normal';
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
-// RANKING: records every
-// PLAYING-tick input of the *current* run. Read exactly once per run, at the
-// gameover edge in renderFrame(), where its contents are frozen into a
-// RunSubmissionSnapshot handed to src/ui/ranking.ts — that module never
-// touches this recorder (or the live session) itself, so a submission can
-// never accidentally describe the *next* run. See update()'s own
-// seed-requeuing/recorder-reset comments below.
-const inputRecorder = new InputRecorder();
+// RANKING: the live run's recorded PLAYING-tick inputs, its successful area
+// claims and its per-run id (src/retryFlow.ts's LiveRunTracker). Read exactly
+// once per run, at the gameover edge in renderFrame(), where its contents are
+// frozen into a RunSubmissionSnapshot handed to src/ui/ranking.ts — that
+// module never touches the recorder (or the live session) itself, so a
+// submission can never accidentally describe the *next* run. The id moves on
+// at the one boundary where a brand-new run begins (GameOver -> Title), so an
+// /api/ranking response that arrives after the player has already moved on
+// is recognized as belonging to a run that no longer exists and discarded —
+// see src/ui/ranking.ts's decideSubmissionOffer().
+const runTracker = new LiveRunTracker();
 
-// Successful area claims in the live run so far. Reset together with the
-// recorder; frozen into the gameover snapshot so src/ui/ranking.ts can tell a
-// run that exceeds MAX_VERIFIED_CLAIMS (which the server's audit would only
-// reject days later, silently) before ever offering to submit it.
-let runClaims = 0;
-
-// Monotonic per-run identifier. Bumped at the one boundary
-// where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
-// resetToFreshRun()), so an /api/ranking response that arrives after the
-// player has already moved on can be recognized as belonging to a run that
-// no longer exists and discarded — see src/ui/ranking.ts's
-// decideSubmissionOffer().
-let runId = 1;
+// What the GAME OVER modal's RETRY / TITLE button asked for. Passed to the
+// core as confirm on every live tick until the run leaves GAME OVER — past
+// the confirm holds the keyboard and the field are under, and past the
+// core's own release gate dropping the first ones.
+let modalAction: 'retry' | 'title' | null = null;
 
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
@@ -566,6 +647,7 @@ function init(): void {
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
+  runBestAtStart = highScore;
   if (explicitSeedParam !== undefined) {
     // `?seed=` pins the whole page load to a 'seeded' run — GameSession's
     // own internal reset (triggered by its 'gameover' case) reuses this
@@ -614,7 +696,16 @@ function init(): void {
   hudLine3 = getHudLineElement(hud, 'hud-line3');
   hudMultiplier = document.createElement('span');
   hudMultiplier.id = 'hud-multiplier';
+  // Bold and drawn larger by a transform, so the line keeps its height.
+  hudMultiplier.style.display = 'inline-block';
+  hudMultiplier.style.fontWeight = 'bold';
+  hudMultiplier.style.transformOrigin = 'center';
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  ({ gauge: hudGauge, fill: hudGaugeFill, goal: hudGaugeGoal } = getGaugeElements(canvasWrap));
   hudScore = getHudScoreElement();
+  hudLives = document.createElement('span');
+  hudLives.id = 'hud-lives';
+  hudLives.style.lineHeight = '0';
   multiplierFly = getMultiplierFlyElement();
   // The effects' display face: requested now so it is ready by the first
   // claim; the effects fall back to monospace until then (or if it fails).
@@ -627,11 +718,14 @@ function init(): void {
   hudLine2.style.display = 'none';
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
-  gameOverModal = initGameOverModal(canvasWrap);
+  gameOverModal = initGameOverModal(canvasWrap, {
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
+  });
   rankingUI = initRankingUI({
     anchor: canvasWrap,
     getSession: () => session,
-    getRunId: () => runId,
+    getRunId: () => runTracker.getRunId(),
     getRulesetVersion: () => RULESET_VERSION,
     getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
     onReplayStart: enterReplayMode,
@@ -650,8 +744,16 @@ function init(): void {
       // Bounded so it can never grow without limit.
       if (replayAutoAdvanceLog.length < 20) replayAutoAdvanceLog.push(autoAdvance);
     },
+    // The submission panel covers the modal: its own RETRY / TITLE ask for
+    // the same transition as the modal's buttons.
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
   });
   rankingUI.mountTitleButton();
+  // The board's entry score for the HUD's goal slot: asked for once now, and
+  // refreshed by each GAME OVER's own ranking check — never during play. A
+  // seeded run's goal slot shows the high score, so it does not need it.
+  if (runMode === 'normal') rankingUI.loadRankInThreshold();
 
   sfx = new SfxEngine(loadMuted());
   creditLink = getCreditLinkElement(hudRow);
@@ -748,6 +850,25 @@ function updateTouchLayout(): void {
   }
 }
 
+// The modal's buttons: only meaningful while the live run is on GAME OVER.
+function requestModalAction(action: 'retry' | 'title'): void {
+  if (viewMode !== 'live' || session.getStatus() !== 'gameover') return;
+  modalAction = action;
+}
+
+// What holds a GAME OVER confirm from the keyboard, the field and the touch
+// buttons this tick (src/fx/liveTick.ts's GameOverConfirmGate): the guard
+// after the modal appears and the ranking offer for the run that just ended.
+function currentRetryHold(): RetryHold {
+  const checkPending = rankingUI.isSubmissionCheckPending();
+  return {
+    guardTicks: fxParams.retryConfirmGuardTicks,
+    checkPending,
+    checkWaitMaxTicks: fxParams.retryOfferWaitMaxTicks,
+    formShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
+  };
+}
+
 /** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
 function currentSession(): GameSession {
   return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
@@ -771,10 +892,12 @@ function enterReplayMode(engine: ReplayEngine): void {
   fx.reset();
   gameOverConfirmGate.reset();
   renderer.resetBoard();
+  multiplierEmphasis.reset();
   renderMultiplierFx(null);
   // Force the next renderFrame() to rewrite the HUD/screen text (they were
   // last written for the live session and must not be left stale).
-  lastHudStage = -1;
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -788,7 +911,8 @@ function exitReplayMode(): void {
   // The live board is back on screen: the fill reveal must not compare it
   // with the replay's last frame.
   renderer.resetBoard();
-  lastHudStage = -1;
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -922,12 +1046,7 @@ function updateHudMode(): void {
   hudTwoLineMode = twoLine;
   hudLine2.style.display = twoLine ? 'block' : 'none';
   hudLine3.style.display = twoLine ? 'block' : 'none';
-  lastHudStage = -1;
-  lastHudScore = -1;
-  lastHudHi = -1;
-  lastHudOccupancy = -1;
-  lastHudLives = -1;
-  lastHudMultiplier = -1;
+  lastHudKey = '';
   updateHud();
 }
 
@@ -939,7 +1058,8 @@ function updateHudMode(): void {
 function updateHud(): void {
   const activeSession = currentSession();
   const game = activeSession.getGame();
-  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
+  const occupancyPercent = floorPercent(game.getOccupancy());
+  const goalPercent = floorPercent(game.getRequiredOccupancy());
   const stage = activeSession.getStage();
   // Live play shows the counting-up value; a replay shows its score as is.
   const score = viewMode === 'replay' ? activeSession.getScore() : hudScoreRoll.value();
@@ -951,13 +1071,25 @@ function updateHud(): void {
   // GameSession.getTimeLimitTicks() to 0 — a run-wide countdown, not a per-stage elapsed count.
   const remainingTicks = activeSession.getRemainingTicks();
   const timeStr = formatTicks(remainingTicks);
-  // Last-30-seconds warning: tracked
-  // as its own boolean, separately from `timeStr === lastHudTime` below,
-  // because the crossing tick doesn't always land on a decisecond-bucket
-  // boundary (formatTicks() only changes its displayed string once every 6
-  // ticks) — without this, the color flip could lag up to 5 ticks behind
-  // the instant remainingTicks actually crosses the threshold.
+  // Last-30-seconds warning: part of the cache key on its own, because the
+  // crossing tick doesn't always land on a decisecond-bucket boundary
+  // (formatTicks() only changes its displayed string once every 6 ticks) —
+  // without it, the color flip could lag up to 5 ticks behind the instant
+  // remainingTicks actually crosses the threshold.
   const timeWarning = remainingTicks <= HUD_TIME_WARNING_TICKS;
+  // The goal slot (src/hudGoal.ts): the high score for a seeded run and a
+  // replay, otherwise the next target, worked out from the REAL score (not
+  // the counting-up display value).
+  // A first play has no best to chase until its first point: plain HI then.
+  const noBestYet = runBestAtStart === 0 && activeSession.getScore() === 0;
+  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || noBestYet;
+  const goal = hudGoalText({
+    mode: goalIsHiScore ? 'hi' : 'chase',
+    score: activeSession.getScore(),
+    hiScore: hi,
+    bestAtStart: runBestAtStart,
+    rankInThreshold: rankingUI.getRankInThreshold(),
+  });
 
   // The SCORE number glows cyan while it counts up. A text-shadow only, so
   // the HUD's line height and width stay as they are.
@@ -966,61 +1098,64 @@ function updateHud(): void {
     hudScore.style.textShadow = scoreRolling ? `0 0 6px ${COLOR_FX_NEON_CYAN}, 0 0 12px ${COLOR_FX_NEON_CYAN}` : '';
   }
 
-  if (
-    stage === lastHudStage &&
-    score === lastHudScore &&
-    hi === lastHudHi &&
-    occupancyPercent === lastHudOccupancy &&
-    lives === lastHudLives &&
-    multiplier === lastHudMultiplier &&
-    timeStr === lastHudTime &&
-    timeWarning === lastHudTimeWarning
-  ) {
-    return;
-  }
-  lastHudStage = stage;
-  lastHudScore = score;
-  lastHudHi = hi;
-  lastHudOccupancy = occupancyPercent;
-  lastHudLives = lives;
-  lastHudMultiplier = multiplier;
-  lastHudTime = timeStr;
-  lastHudTimeWarning = timeWarning;
+  updateGauge(occupancyPercent, goalPercent);
 
-  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
-  // (byte-identical to before seeded-run support existed, including in
-  // two-line mode's lines 1-2 — never touched here at all — which the
-  // mobile-viewport E2E test asserts stays unclipped), `SEED <n>` for a
-  // `?seed=` run.
+  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode].join('|');
+  if (key === lastHudKey) return;
+  lastHudKey = key;
+
+  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal',
+  // `SEED <n>  ` for a `?seed=` run.
   const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
-  // Reset every line's color to its inherited default first, then apply the warning color only to
-  // whichever line actually carries TIME this frame — necessary because a
-  // HUD-mode flip (updateHudMode()) can move TIME from hudLine1 to hudLine3
-  // (or back) between one write and the next, and a stale inline color left
-  // on the line that *used* to carry TIME would otherwise persist.
+  const { lines, timeLine } = hudLines(
+    {
+      modePrefix,
+      stage,
+      hiScore: hi,
+      goal,
+      goalIsHiScore,
+      time: timeStr,
+      occupancyPercent,
+      goalPercent,
+    },
+    hudTwoLineMode
+  );
+  // The `xN` multiplier and the SCORE number are their own spans (see
+  // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
+  hudMultiplier.textContent = `x${multiplier}`;
+  hudScore.textContent = String(score);
+  hudLives.textContent = livesText(lives, INITIAL_LIVES);
+  const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
+  lineElements.forEach((el, index) => {
+    el.textContent = '';
+    for (const part of lines[index]) {
+      if (typeof part === 'string') el.append(part);
+      else el.append(part === HUD_SCORE_SLOT ? hudScore : part === HUD_LIVES_SLOT ? hudLives : hudMultiplier);
+    }
+  });
+  // Every line's color is reset first, then the warning color goes only on
+  // whichever line carries TIME this frame — a HUD-mode flip
+  // (updateHudMode()) can move TIME between lines, and a stale inline color
+  // left on the line that *used* to carry it would otherwise persist.
   hudLine1.style.color = '';
   hudLine3.style.color = '';
-  // The `xN` multiplier at the end of the line is its own span (see
-  // `hudMultiplier`); the line's text is unchanged by it.
-  hudMultiplier.textContent = `x${multiplier}`;
-  // Likewise the SCORE number (see `hudScore`).
-  hudScore.textContent = String(score);
-  if (hudTwoLineMode) {
-    hudLine1.textContent = `STAGE ${stage}  SCORE: `;
-    hudLine1.append(hudScore, `  HI: ${hi}`);
-    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `;
-    hudLine2.appendChild(hudMultiplier);
-    hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
-    if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
-  } else {
-    hudLine1.textContent = `${modePrefix}STAGE ${stage}  SCORE: `;
-    hudLine1.append(
-      hudScore,
-      `  HI: ${hi}  TIME ${timeStr}  OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  `,
-      hudMultiplier
-    );
-    if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
-  }
+  if (timeWarning) lineElements[timeLine].style.color = HUD_TIME_WARNING_COLOR;
+}
+
+// The occupancy gauge: filled to the current share, with a white mark at the
+// goal; the fill turns brighter once HUD_GAUGE_NEAR_GOAL_POINTS or fewer
+// points are left. Shown for replays too (it is the board's state, not an
+// effect).
+function updateGauge(occupancyPercent: number, goalPercent: number): void {
+  const near = goalPercent - occupancyPercent <= HUD_GAUGE_NEAR_GOAL_POINTS;
+  const key = `${occupancyPercent}|${goalPercent}|${near}`;
+  if (key === lastGaugeKey) return;
+  lastGaugeKey = key;
+  hudGaugeFill.style.width = `${occupancyPercent}%`;
+  hudGaugeFill.style.background = near ? HUD_GAUGE_NEAR_COLOR : HUD_GAUGE_FILL_COLOR;
+  hudGaugeFill.style.boxShadow = near ? `0 0 6px ${HUD_GAUGE_NEAR_COLOR}` : 'none';
+  hudGaugeGoal.style.left = `calc(${goalPercent}% - 1px)`;
+  hudGauge.dataset.near = near ? 'true' : 'false';
 }
 
 // Moves the travelling multiplier (after a split) from the canvas center to
@@ -1052,16 +1187,34 @@ function renderMultiplierFx(frame: FxFrame | null): void {
       `translate(${fromX + (toX - fromX) * t}px, ${fromY + (toY - fromY) * t}px) translate(-50%, -50%) scale(${scale})`;
   }
 
+  // The HUD multiplier's emphasis (src/hudText.ts's MultiplierEmphasis):
+  // cyan after it rises, the warning colour after it falls back to x1, larger
+  // at first and easing back over HUD_MULTIPLIER_EMPHASIS_TICKS. A rise after
+  // a split starts as the travelling multiplier lands, which is when the
+  // director's own highlight starts too — the emphasis takes its place, so
+  // the two are never shown together. Live play only.
+  const emphasis = frame ? multiplierEmphasis.frame() : null;
   const highlight = frame?.multiplierHighlight ?? 0;
-  if (highlight !== lastMultiplierHighlight) {
-    lastMultiplierHighlight = highlight;
-    if (highlight > 0) {
-      hudMultiplier.style.color = COLOR_FX_SPLIT;
-      hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
-    } else {
-      hudMultiplier.style.color = '';
-      hudMultiplier.style.textShadow = '';
-    }
+  const styleKey = emphasis ? `${emphasis.kind}|${emphasis.strength}` : `h|${highlight}`;
+  if (styleKey === lastMultiplierStyleKey) return;
+  lastMultiplierStyleKey = styleKey;
+  if (emphasis) {
+    const color = emphasis.kind === 'up' ? COLOR_FX_NEON_CYAN : HUD_TIME_WARNING_COLOR;
+    hudMultiplier.dataset.emphasis = emphasis.kind;
+    hudMultiplier.style.color = color;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * emphasis.strength)}px ${color}`;
+    const scale = HUD_MULTIPLIER_BASE_SCALE + HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE * emphasis.strength;
+    hudMultiplier.style.transform = `scale(${Math.round(scale * 1000) / 1000})`;
+    return;
+  }
+  delete hudMultiplier.dataset.emphasis;
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  if (highlight > 0) {
+    hudMultiplier.style.color = COLOR_FX_SPLIT;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
+  } else {
+    hudMultiplier.style.color = '';
+    hudMultiplier.style.textShadow = '';
   }
 }
 
@@ -1098,6 +1251,16 @@ function fitCanvasToViewport(): void {
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+  fieldDisplayScale = cssWidth / CANVAS_WIDTH;
+  // A small field gets the GAME OVER modal's tighter spacing, so the whole
+  // modal stays on the field.
+  tinyField = cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX;
+  gameOverModal.setDensity(
+    tinyField ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
+  );
+  // The ranking submission panel, over the modal, packs tighter on the same
+  // small fields.
+  rankingUI.setSubmitPanelCompact(tinyField);
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
@@ -1158,14 +1321,31 @@ function updateLive(): void {
   // warning, so the run's tick count and recorded samples stand still. The
   // HUD score's count-up keeps going through a stop, like the effects.
   hudScoreRoll.tick();
-  const input = beginLiveTick({
+  multiplierEmphasis.tick();
+  // The clear screen's count-up runs from the tick it is on screen (once
+  // SPLIT! has gone), through hit stops like the other display effects.
+  stageResultCounter.step(session.getStatus() === 'stageclear', !fx.isSplitBannerActive(), fxParams.stageResultRollTicks);
+  const polled = beginLiveTick({
     fx,
     hitStop,
     gate: gameOverConfirmGate,
     status: session.getStatus(),
     readInput: () => keyboard.getInput(),
+    retryHold: currentRetryHold,
   });
-  if (!input) return;
+  if (!polled) return;
+
+  const statusBeforeThisTick = session.getStatus();
+  // The modal's RETRY / TITLE request reaches the core as confirm on every
+  // GAME OVER tick until the run leaves it (see `modalAction`).
+  if (statusBeforeThisTick !== 'gameover') modalAction = null;
+  let input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  // On STAGE CLEAR a confirm first completes the result's count-up (or, under
+  // SPLIT!, has it appear complete); only the next one starts the next stage.
+  if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
+    stageResultCounter.finish();
+    input = { ...input, confirm: false };
+  }
 
   lastInput = input;
 
@@ -1178,49 +1358,56 @@ function updateLive(): void {
   // times while the GAME OVER screen sits idle is cheap. Never touches a
   // 'seeded' (`?seed=`) run, whose fixed seed must keep reproducing the same
   // board on every retry, exactly as before this feature existed.
-  const statusBeforeThisTick = session.getStatus();
   if (runMode === 'normal' && statusBeforeThisTick === 'gameover') {
     session.setNextSeed(generateNormalRunSeed());
   }
 
   const stageBeforeThisTick = session.getStage();
-  session.update(input);
-
-  // InputRecorder: reset the
-  // instant a fresh run actually starts (gameover -> title, i.e.
-  // resetToFreshRun() just fired inside the update() call above) — without
-  // this, the recorder's own "have we already seen this totalTicks value"
-  // guard would silently refuse to record the new run's early ticks (their
-  // totalTicks values are smaller than the previous run's final one).
-  // observe() itself is always safe to call unconditionally afterward: it's
-  // a no-op on any tick that didn't actually advance a *new* playing tick
-  // (title/stageclear/gameover ticks, or this same reset tick).
-  if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
-    inputRecorder.reset();
-    runClaims = 0;
-    // A brand-new run starts here — see `runId`'s own comment.
-    runId++;
-    // Back to Title: every impact effect and hold is dropped.
-    hitStop.clear();
-    fx.reset();
-    renderer.resetBoard();
+  // One session update — or, when this confirm ends GAME OVER with anything
+  // but the TITLE button, two in a row: GAME OVER -> Title -> stage 1, so
+  // the Title screen is never drawn (src/retryFlow.ts).
+  const step = stepLiveSession(session, input, {
+    retry: modalAction !== 'title',
+    // A fresh run begins (GAME OVER -> Title, resetToFreshRun() just ran):
+    // the recorder, claims and run id (see `runTracker`), every impact effect
+    // and hold, and the best this run is chasing (the high score already
+    // includes the run that just ended).
+    onFreshRun: () => {
+      runTracker.startFreshRun();
+      hitStop.clear();
+      fx.reset();
+      renderer.resetBoard();
+      multiplierEmphasis.reset();
+      stageResultTally.reset();
+      stageResultCounter.clear();
+      runBestAtStart = session.getHighScore();
+    },
+  });
+  if (step.freshRun) {
+    modalAction = null;
   } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
     // The next stage's board replaces this one: drop the effects tied to the
     // old board. SPLIT! and the travelling multiplier keep running.
     hitStop.clear();
     fx.resetBoard();
     renderer.resetBoard();
+    stageResultTally.reset();
   }
-  inputRecorder.observe(session, input);
 
   const events = session.drainEvents();
-  for (const ev of events) if (ev === 'area-claimed') runClaims++;
+  // Records this tick's input if it played a tick (a no-op on title,
+  // stageclear and gameover ticks, and on the fresh-run tick itself) and
+  // counts its claims.
+  runTracker.observe(session, input, events);
   sfx.handleEvents(events);
+
   // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
-  applyImpactNotices(session, fx, hitStop, sfx);
+  for (const notice of applyImpactNotices(session, fx, hitStop, sfx)) stageResultTally.add(notice);
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
+  // After the notices: a split has just started the travelling multiplier.
+  multiplierEmphasis.observe(session.getMultiplier(), fx.isMultiplierFlying(), fxParams.multiplierEmphasisTicks);
   // TIME countdown warning: decided here, once per live tick, from the
   // remaining time this tick's session.update() left behind. The replay
   // branch above returns before reaching this, which is what keeps replays
@@ -1261,6 +1448,8 @@ function renderFrame(): void {
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
   // Impact feedback is live play only: a replay is drawn exactly as before.
   const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
+  // Read every frame, so the debug panel's value applies at once.
+  renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
 
   renderer.render(
     game.getField(),
@@ -1334,27 +1523,32 @@ function renderFrame(): void {
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
-  // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
-  // TITLE"/any-key resets the run to 'title'). Re-read here (rather than
-  // reused from updateHud()'s internals) since that call may have skipped
-  // its own re-read via the lastHud* cache when nothing displayed changed.
+  // hide it exactly once when it stops being 'gameover' (RETRY, TITLE, or a
+  // key / a tap starting the next run).
   //
   // After a game-ending miss the modal waits FX_GAMEOVER_HOLD_TICKS so the
   // miss itself is seen first, then appears on the first frame after that.
-  // GameOverConfirmGate (src/fx/liveTick.ts) keeps confirm from reaching the
-  // core until this frame has shown it, so nothing can skip the modal.
+  // GameOverConfirmGate (src/fx/liveTick.ts) drops every confirm from the
+  // keyboard and the field until this frame has shown it and for
+  // RETRY_CONFIRM_GUARD_TICKS after, so nothing can skip the modal.
   if (status === 'gameover') {
     if (!gameOverModalShown && !fx.isGameOverHeld()) {
       gameOverModalShown = true;
       gameOverConfirmGate.markModalShown();
+      const score = session.getScore();
+      // NEW RECORD: only for a run that may save its high score (a normal
+      // run with no debug override at any point), against the best it
+      // started from.
+      const recordsHighScore = shouldPersistHighScore(runMode) && !session.isRunTainted();
       gameOverModal.show({
-        score: activeSession.getScore(),
-        stage: activeSession.getStage(),
-        hiScore: activeSession.getHighScore(),
+        score,
+        stage: session.getStage(),
+        hiScore: session.getHighScore(),
         // TIME UP!: distinguishes a
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
-        reason: activeSession.getGameOverReason() ?? undefined,
+        reason: session.getGameOverReason() ?? undefined,
+        newRecordDelta: recordsHighScore && score > runBestAtStart ? score - runBestAtStart : undefined,
       });
       // Ranking submission offer: a no-op if this run isn't POST-eligible
       // (`?seed=`/tainted, see
@@ -1364,16 +1558,19 @@ function renderFrame(): void {
       // `session` (not `activeSession`) deliberately, to make it explicit
       // this is the *live* run's final state and never a replay's.
       rankingUI.offerSubmission({
-        runId,
+        runId: runTracker.getRunId(),
         seed: session.getSeed(),
-        rle: inputRecorder.encode(),
-        score: session.getScore(),
+        rle: runTracker.recorder.encode(),
+        score,
         stage: session.getStage(),
         runMode,
         tainted: session.isRunTainted(),
-        claims: runClaims,
+        claims: runTracker.getClaims(),
       });
     }
+    // The hint says what the keys do: retry, or wait for the submission panel
+    // to be closed.
+    if (gameOverModalShown) gameOverModal.setSubmissionHold(currentRetryHold().formShown);
   } else {
     gameOverConfirmGate.reset();
     if (gameOverModalShown) {
@@ -1408,7 +1605,20 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       // overlap; the split itself is announced by the banner, not by a
       // (SPLIT CLEAR!) line.
       if (fx.isSplitBannerActive()) return '';
-      return stageClearText(session, { withPrompt: true, withSplitNote: false });
+      // What the stage scored, counted up (src/stageResult.ts). The cleared
+      // stage's Game is still the session's, so its multiplier is the one
+      // the stage was played at; the session's is already the next stage's.
+      return stageResultText({
+        stage: session.getStage(),
+        values: stageResultCounter.values({
+          area: stageResultTally.getArea(),
+          bonus: stageResultTally.getBonus(),
+          total: stageResultTally.getTotal(),
+        }),
+        multiplierBefore: session.getGame().getMultiplier(),
+        multiplierNext: session.getMultiplier(),
+        tight: tinyField,
+      });
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
       // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's

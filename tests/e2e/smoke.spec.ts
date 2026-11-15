@@ -169,7 +169,7 @@ test.describe('narrow mobile viewport HUD (two-line mode)', () => {
   // against). 390x844 mirrors a typical modern phone in portrait.
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test('OCCUPANCY and LIVES are visible, not ellipsis-clipped', async ({ page }) => {
+  test('occupancy (current/goal/left) and the lives marks are visible, not ellipsis-clipped', async ({ page }) => {
     await page.goto(APP_URL);
     await page.keyboard.press('Space'); // Title -> Playing
 
@@ -178,8 +178,8 @@ test.describe('narrow mobile viewport HUD (two-line mode)', () => {
       .toBe('playing');
 
     const hud = page.locator('#hud');
-    await expect(hud).toContainText('OCCUPANCY');
-    await expect(hud).toContainText('LIVES');
+    await expect(hud).toContainText('0%/65% 65% LEFT');
+    await expect(hud).toContainText('◆◆◆');
 
     // The regression this guards against: in one-line mode, #hud's
     // nowrap+ellipsis text-overflow silently truncated LIVES/OCCUPANCY off
@@ -189,8 +189,8 @@ test.describe('narrow mobile viewport HUD (two-line mode)', () => {
     // (scrollWidth <= clientWidth means nothing is cut off by overflow).
     const line2 = page.locator('#hud-line2');
     await expect(line2).toBeVisible();
-    await expect(line2).toContainText('OCCUPANCY');
-    await expect(line2).toContainText('LIVES');
+    await expect(line2).toContainText('% LEFT');
+    await expect(line2).toContainText('◆◆◆');
     const isUnclipped = await line2.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
     expect(isUnclipped).toBe(true);
   });

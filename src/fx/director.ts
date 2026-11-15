@@ -357,6 +357,11 @@ export class FxDirector {
     return this.banner !== null;
   }
 
+  /** True while the next stage's multiplier is still travelling to the HUD (FxFrame.multiplierFly). */
+  isMultiplierFlying(): boolean {
+    return this.multiplier !== null && this.multiplier.age < this.multiplier.flyTicks;
+  }
+
   /** Claims in a row so far; 0 after a miss, a new stage or a reset. */
   getChain(): number {
     return this.chain;

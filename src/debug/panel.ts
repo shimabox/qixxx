@@ -233,6 +233,11 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     FX_CHAIN_WINDOW_TICKS: p.chainWindowTicks,
     FX_CHAIN_PITCH_MAX_STEPS: p.chainPitchMaxSteps,
     FX_SCORE_ROLL_TICKS: p.scoreRollTicks,
+    HUD_MULTIPLIER_EMPHASIS_TICKS: p.multiplierEmphasisTicks,
+    STAGE_RESULT_ROLL_TICKS: p.stageResultRollTicks,
+    RETRY_OFFER_WAIT_MAX_TICKS: p.retryOfferWaitMaxTicks,
+    RETRY_CONFIRM_GUARD_TICKS: p.retryConfirmGuardTicks,
+    FX_TEXT_MIN_DISPLAY_PX: p.fxTextMinDisplayPx,
   };
 }
 
@@ -272,6 +277,11 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'chainWindowTicks', label: 'Chain window (t)', range: { min: 0, max: 600, step: 1 } },
   { key: 'chainPitchMaxSteps', label: 'Chain pitch steps (max)', range: { min: 0, max: 12, step: 1 } },
   { key: 'scoreRollTicks', label: 'HUD score count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'multiplierEmphasisTicks', label: 'HUD multiplier emphasis (t)', range: FX_TICKS_RANGE },
+  { key: 'stageResultRollTicks', label: 'Clear result count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'retryOfferWaitMaxTicks', label: 'Retry: ranking check wait (t)', range: { min: 0, max: 600, step: 1 } },
+  { key: 'retryConfirmGuardTicks', label: 'Retry: confirm guard (t)', range: FX_TICKS_RANGE },
+  { key: 'fxTextMinDisplayPx', label: 'Effect text min (CSS px)', range: { min: 0, max: 32, step: 1 } },
 ];
 const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
   { key: 'shakeSmall', label: 'Shake S' },
@@ -323,6 +333,7 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       occupancyAfter: share,
       lineSpeed: 'fast',
       areaScore,
+      stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: false,
       stageCleared: false,
@@ -351,6 +362,7 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       occupancyAfter: 0.05,
       lineSpeed: 'fast',
       areaScore: 0,
+      stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: true,
       stageCleared: true,

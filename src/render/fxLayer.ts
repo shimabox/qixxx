@@ -43,6 +43,30 @@ const SPLIT_WIDTH_SHARE = 0.6; // of the field width, letter spacing included
 const SPLIT_SPACING = 0.14; // of its font size
 const EDGE_PAD_PX = 6; // text kept this far inside the field
 
+export interface PopupFontSizes {
+  scorePx: number;
+  notePx: number;
+  praisePx: number;
+  chainPx: number;
+}
+
+/**
+ * The popup texts' canvas font sizes at bounce `scale`. `minFontPx` is the
+ * smallest canvas size that still reads at the smallest on-screen size
+ * (FX_TEXT_MIN_DISPLAY_PX / the field's display scale — see
+ * Renderer.setFxTextMinFontPx()): each text is raised to it when the field is
+ * shown small (a phone), and keeps its own size otherwise.
+ */
+export function popupFontSizes(scale: number, minFontPx = 0): PopupFontSizes {
+  const size = (base: number) => Math.max(base * scale, minFontPx);
+  return {
+    scorePx: size(POPUP_FONT_PX),
+    notePx: size(POPUP_NOTE_FONT_PX),
+    praisePx: size(POPUP_FONT_PX * PRAISE_FONT_SHARE),
+    chainPx: size(POPUP_FONT_PX * CHAIN_FONT_SHARE),
+  };
+}
+
 function cellCenter(c: Point): { x: number; y: number } {
   return { x: (c.x + 0.5) * RENDER_SCALE, y: (c.y + 0.5) * RENDER_SCALE };
 }
@@ -271,12 +295,14 @@ function fillGlowText(
  * size the frame gives: NICE! / GREAT! / AWESOME! above for a large enough
  * claim, x2 (slow line) and CHAIN xN (claims in a row) below. `positionOf`
  * gives the popup's center in cells (the centroid of the cells it was
- * scored for). The group is kept inside the field.
+ * scored for). The group is kept inside the field. `minFontPx`: see
+ * popupFontSizes().
  */
 export function drawPopups(
   ctx: CanvasRenderingContext2D,
   popups: readonly FxPopup[],
-  positionOf: (popup: FxPopup) => { x: number; y: number }
+  positionOf: (popup: FxPopup) => { x: number; y: number },
+  minFontPx = 0
 ): void {
   if (popups.length === 0) return;
   ctx.save();
@@ -285,10 +311,7 @@ export function drawPopups(
   ctx.lineJoin = 'round';
   for (const popup of popups) {
     const at = positionOf(popup);
-    const scorePx = POPUP_FONT_PX * popup.scale;
-    const notePx = POPUP_NOTE_FONT_PX * popup.scale;
-    const praisePx = POPUP_FONT_PX * PRAISE_FONT_SHARE * popup.scale;
-    const chainPx = POPUP_FONT_PX * CHAIN_FONT_SHARE * popup.scale;
+    const { scorePx, notePx, praisePx, chainPx } = popupFontSizes(popup.scale, minFontPx);
 
     // Rows relative to the score's center, top to bottom.
     const praiseDy = popup.praise ? -(scorePx * 0.5 + praisePx * 0.62) : 0;
@@ -297,7 +320,19 @@ export function drawPopups(
     const top = popup.praise ? praiseDy - praisePx * 0.55 : -scorePx * 0.55;
     const bottom = popup.chain ? chainDy + chainPx * 0.6 : popup.note ? noteDy + notePx * 0.6 : scorePx * 0.55;
 
-    const x = clamp((at.x + 0.5) * RENDER_SCALE, 48, CANVAS_WIDTH - 48);
+    // Kept inside the field sideways by the widest of the score, the note
+    // and CHAIN xN (no less than the margin it always had).
+    let half = 48 - EDGE_PAD_PX;
+    for (const [label, px] of [
+      [popup.text, scorePx],
+      [popup.note, notePx],
+      [popup.chain, chainPx],
+    ] as const) {
+      if (!label) continue;
+      ctx.font = fxFont(700, px);
+      half = Math.max(half, layoutSpaced(ctx, label, px * POPUP_SPACING).width / 2 + px * 0.2);
+    }
+    const x = clamp((at.x + 0.5) * RENDER_SCALE, EDGE_PAD_PX + half, CANVAS_WIDTH - EDGE_PAD_PX - half);
     let y = clamp((at.y + 0.5) * RENDER_SCALE - popup.progress * POPUP_RISE_PX, 20, CANVAS_HEIGHT - 28);
     y = clamp(y, EDGE_PAD_PX - top, CANVAS_HEIGHT - EDGE_PAD_PX - bottom);
     ctx.globalAlpha = popup.progress < 0.7 ? 1 : Math.max(0, (1 - popup.progress) / 0.3);

@@ -60,22 +60,24 @@ async function expectFullyReadableHud(page: import('@playwright/test').Page): Pr
   expect(await isUnclipped(line1)).toBe(true);
   await expect(line1).toContainText('STAGE');
   await expect(line1).toContainText('SCORE');
-  await expect(line1).toContainText('HI');
+  // HI in two-line mode; on one line the goal slot holds HI for a seeded run
+  // and the next target (TO BEST ...) for a normal one.
+  await expect(line1).toContainText(stacked ? /HI \d/ : /HI \d|TO BEST \d|TO #10 \d|TOP 10!|NEW BEST!/);
 
   if (stacked) {
     await expect(line2).toBeVisible();
     await expect(line3).toBeVisible();
     expect(await isUnclipped(line2)).toBe(true);
     expect(await isUnclipped(line3)).toBe(true);
-    await expect(line2).toContainText('OCCUPANCY');
-    await expect(line2).toContainText('LIVES');
+    await expect(line2).toContainText('% LEFT');
+    await expect(line2).toContainText('◆');
     await expect(line3).toContainText('TIME');
   } else {
     await expect(line2).toBeHidden();
     await expect(line3).toBeHidden();
     await expect(line1).toContainText('TIME');
-    await expect(line1).toContainText('OCCUPANCY');
-    await expect(line1).toContainText('LIVES');
+    await expect(line1).toContainText('% LEFT');
+    await expect(line1).toContainText('◆');
   }
 }
 
@@ -101,11 +103,11 @@ async function setWorstCaseHudText(page: import('@playwright/test').Page): Promi
     const l2 = document.getElementById('hud-line2') as HTMLElement;
     const l3 = document.getElementById('hud-line3') as HTMLElement;
     if (l2.style.display === 'block') {
-      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999';
-      l2.textContent = 'OCCUPANCY: 100%  LIVES: 9  x9';
-      l3.textContent = 'TIME 3:00.0';
+      l1.textContent = 'STAGE 999  SCORE 999999  HI 999999';
+      l2.textContent = '10%/90% 80% LEFT  ◆◆◇  x9';
+      l3.textContent = 'TIME 3:00.0  TO BEST 999999';
     } else {
-      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+      l1.textContent = 'STAGE 999  SCORE 999999  TO BEST 999999  TIME 3:00.0  10%/90% 80% LEFT  ◆◆◇  x9';
     }
   });
 }
