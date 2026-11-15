@@ -10,6 +10,7 @@
 // loop is driven by real wall-clock time, so a duration-based wait would be
 // exactly the kind of flaky timing assumption this approach avoids.
 import { test, expect, devices } from '@playwright/test';
+import { advanceUntil } from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes
 // (docs/plan.md §7.2). Declared locally rather than imported from src/ so
@@ -97,37 +98,47 @@ test('claims an area via a scripted movement sequence, increasing occupancy from
   // the real GameSession (no browser) and picking one with zero misses and
   // a large surrounding margin (198/200 seeds in that range already worked
   // — 1 was simply the first, not narrowly special).
+  //
+  // Driven on a faked, paused page clock in one-frame steps (see
+  // tests/e2e/gameover-share.spec.ts for the rationale). On the real clock,
+  // expect.poll()'s widening intervals let each key stay held up to about a
+  // second past its target, and on some of those timings the seed-1 Wisp
+  // reaches the line before it closes; one-frame steps keep every run on the
+  // same short path.
+  const CLOCK_START = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: CLOCK_START });
   await page.goto(`${APP_URL}?seed=1`);
+  await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
   await page.keyboard.press('Space'); // Title -> Playing
+  await page.clock.runFor(100);
 
-  await expect
-    .poll(() => page.evaluate(() => window.__game__?.session.getStatus()))
-    .toBe('playing');
+  expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
 
   const getMarker = () => page.evaluate(() => window.__game__!.session.getGame().getMarker().getPosition());
   const getOccupancy = () => page.evaluate(() => window.__game__!.session.getGame().getOccupancy());
+  const FRAME_MS = 16;
 
   expect(await getOccupancy()).toBe(0);
 
   // Walk left along the (freely-walkable) top border, well away from the
   // Wisp's field-center spawn point, before drawing anything.
   await page.keyboard.down('ArrowLeft');
-  await expect.poll(async () => (await getMarker()).x).toBeLessThanOrEqual(30);
+  await advanceUntil(page, async () => (await getMarker()).x <= 30, 4_000, FRAME_MS);
   await page.keyboard.up('ArrowLeft');
 
   // Draw a small square back up to the border (Space = fast line, §5.1):
   // down, then right, then up to close the loop against the top border.
   await page.keyboard.down('Space');
   await page.keyboard.down('ArrowDown');
-  await expect.poll(async () => (await getMarker()).y).toBeGreaterThanOrEqual(25);
+  await advanceUntil(page, async () => (await getMarker()).y >= 25, 4_000, FRAME_MS);
   await page.keyboard.up('ArrowDown');
 
   await page.keyboard.down('ArrowRight');
-  await expect.poll(async () => (await getMarker()).x).toBeGreaterThanOrEqual(55);
+  await advanceUntil(page, async () => (await getMarker()).x >= 55, 4_000, FRAME_MS);
   await page.keyboard.up('ArrowRight');
 
   await page.keyboard.down('ArrowUp');
-  await expect.poll(() => getOccupancy(), { timeout: 10_000 }).toBeGreaterThan(0);
+  await advanceUntil(page, async () => (await getOccupancy()) > 0, 4_000, FRAME_MS);
   await page.keyboard.up('ArrowUp');
   await page.keyboard.up('Space');
 });

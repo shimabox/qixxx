@@ -107,7 +107,10 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     await advanceUntil(page, async () => (await getLives()) < livesBefore, 6_000);
   }
 
-  await page.clock.runFor(100);
+  // The modal waits FX_GAMEOVER_HOLD_TICKS (32 ticks, about 0.53s) after the
+  // game-ending miss so the miss itself is seen first; 700ms of game time
+  // covers that plus the frame that shows it.
+  await page.clock.runFor(700);
   expect(await getStatus()).toBe('gameover');
 
   const [stage, score, hi] = await page.evaluate(() => {
