@@ -586,3 +586,8 @@ export const MAX_INPUT_SAMPLES = TIME_LIMIT_TICKS;
 // real play approaches. Raised from 100 before launch, while scores was empty
 // (no season bump needed); see the runbook for the post-launch procedure.
 export const MAX_VERIFIED_CLAIMS = 300;
+
+// How many rows the ranking board keeps (the TOP 10). The client reads it for
+// the HUD's goal slot (src/hudGoal.ts) and the submission offer's
+// provisional in-range check (src/ui/ranking.ts).
+export const RANKING_BOARD_SIZE = 10;

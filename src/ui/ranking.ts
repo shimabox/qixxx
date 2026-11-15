@@ -12,7 +12,7 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS } from '../config';
+import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS, RANKING_BOARD_SIZE } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 
 export interface RankingEntry {
@@ -150,7 +150,48 @@ export type SubmissionOfferDecision =
   /** In range, but with more area claims than the audit will verify — shown as an explanation, never as a form. */
   | 'over-claim-cap';
 
+/**
+ * The score a run has to beat to enter the board, from GET /api/ranking's
+ * verified `entries` (best first): 0 while the board has a free row (any
+ * score gets in), otherwise the lowest row's score — a tie sorts behind the
+ * incumbent (see decideSubmissionOffer()).
+ */
+export function rankInThresholdFrom(entries: RankingEntry[]): number {
+  if (entries.length < RANKING_BOARD_SIZE) return 0;
+  return entries[entries.length - 1].score;
+}
+
 /** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
+/**
+ * The board's entry score (rankInThresholdFrom()) as of the newest
+ * GET /api/ranking that succeeded. Several of those can be in flight at once
+ * (the page-load one and each GAME OVER's), and their replies can land out of
+ * order: each request takes a generation number from begin(), and a reply
+ * only writes when no newer generation has written already. A failed reply
+ * (`null`) writes nothing, so it never clears a known value.
+ */
+export class RankInThresholdTracker {
+  private nextGeneration = 0;
+  private writtenGeneration = -1;
+  private value: number | null = null;
+
+  /** Call as a GET /api/ranking goes out; pass the result to settle(). */
+  begin(): number {
+    return this.nextGeneration++;
+  }
+
+  /** Records the reply of request `generation`: its verified entries, or null when it failed. */
+  settle(generation: number, entries: RankingEntry[] | null): void {
+    if (entries === null || generation < this.writtenGeneration) return;
+    this.writtenGeneration = generation;
+    this.value = rankInThresholdFrom(entries);
+  }
+
+  get(): number | null {
+    return this.value;
+  }
+}
+
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
   return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
 }
@@ -190,7 +231,7 @@ export function decideSubmissionOffer(args: {
   // deleted by POST's own trim step. Offering the name field in that case
   // would promise a slot that cannot exist. Below 10 entries there is a free
   // slot regardless of the score, so no comparison applies.
-  const inRange = entries.length < 10 || snapshot.score > entries[entries.length - 1].score;
+  const inRange = entries.length < RANKING_BOARD_SIZE || snapshot.score > rankInThresholdFrom(entries);
   if (!inRange) return 'out-of-range';
   // Checked after the range test on purpose: a run that would not be offered
   // anyway needs no explanation, and a run that WOULD be deserves to hear
@@ -393,6 +434,29 @@ export interface RankingUI {
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
+  /**
+   * Fetches GET /api/ranking once to learn the board's entry score (see
+   * getRankInThreshold()). main.ts calls it on page load; a failure is
+   * silent and leaves the score unknown.
+   */
+  loadRankInThreshold(): void;
+  /**
+   * The score a run has to beat to enter the board, as of the last
+   * successful GET /api/ranking (the page-load one or a GAME OVER offer's):
+   * 0 while the board has a free row, null until one succeeded.
+   */
+  getRankInThreshold(): number | null;
+  /**
+   * True while the ranking offer for the just-finished run must keep the
+   * keyboard and the field from starting the next run: while asking
+   * /api/ranking whether it can be posted, and while the submission panel
+   * (the form, its result or the over-the-cap notice) is on screen. False
+   * once that panel is closed (SKIP / OK) and once the run turns out not to
+   * be offered.
+   */
+  isSubmissionBlockingRetry(): boolean;
+  /** True only for the first half of isSubmissionBlockingRetry(): the /api/ranking check is still in flight. */
+  isSubmissionCheckPending(): boolean;
 }
 
 export function initRankingUI(options: RankingUIOptions): RankingUI {
@@ -1007,22 +1071,53 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
+  // The board's entry score (getRankInThreshold()), from the newest
+  // successful GET /api/ranking that carried verified `entries`.
+  const rankInThreshold = new RankInThresholdTracker();
+
+  async function fetchVerifiedEntries(): Promise<RankingEntry[] | null> {
+    const generation = rankInThreshold.begin();
+    let entries: RankingEntry[] | null = null;
+    try {
+      const res = await fetch('/api/ranking');
+      if (res.ok) {
+        const data = (await res.json()) as { entries: RankingEntry[] };
+        entries = data.entries ?? [];
+      }
+    } catch {
+      entries = null;
+    }
+    rankInThreshold.settle(generation, entries);
+    return entries;
+  }
+
+  function loadRankInThreshold(): void {
+    void fetchVerifiedEntries();
+  }
+
+  // The snapshot whose /api/ranking check is still in flight (see
+  // isSubmissionCheckPending()). Identity-keyed like `submittingFor`, so an
+  // older run's late reply cannot clear a newer run's check.
+  let checkingFor: RunSubmissionSnapshot | null = null;
+
+  function isSubmissionCheckPending(): boolean {
+    return checkingFor !== null;
+  }
+
+  function isSubmissionBlockingRetry(): boolean {
+    return checkingFor !== null || submitOverlay.style.display !== 'none';
+  }
+
   function offerSubmission(snapshot: RunSubmissionSnapshot): void {
     submitOverlay.style.display = 'none';
     activeSubmission = null;
+    checkingFor = null;
     if (!isSnapshotEligible(snapshot)) return;
     activeSubmission = snapshot;
+    checkingFor = snapshot;
     void (async () => {
-      let entries: RankingEntry[] | null = null;
-      try {
-        const res = await fetch('/api/ranking');
-        if (res.ok) {
-          const data = (await res.json()) as { entries: RankingEntry[] };
-          entries = data.entries ?? [];
-        }
-      } catch {
-        entries = null;
-      }
+      const entries = await fetchVerifiedEntries();
+      if (checkingFor === snapshot) checkingFor = null;
 
       // Everything below re-checks the world as it looks *now*, not as it
       // looked when the request went out — see decideSubmissionOffer()'s doc
@@ -1351,7 +1446,18 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // for it must not reopen the form (decideSubmissionOffer()'s
     // 'superseded' / 'stale-run' guards).
     activeSubmission = null;
+    checkingFor = null;
   }
 
-  return { mountTitleButton, syncAvailability, syncReplayStatus, offerSubmission, hideAll };
+  return {
+    mountTitleButton,
+    syncAvailability,
+    syncReplayStatus,
+    offerSubmission,
+    hideAll,
+    loadRankInThreshold,
+    getRankInThreshold: () => rankInThreshold.get(),
+    isSubmissionBlockingRetry,
+    isSubmissionCheckPending,
+  };
 }

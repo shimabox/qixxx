@@ -14,6 +14,8 @@ import {
   isReplayPayloadPlayable,
   formatRankingDate,
   limitRankingName,
+  rankInThresholdFrom,
+  RankInThresholdTracker,
   stopKeyPropagation,
   type RankingEntry,
   type RunSubmissionSnapshot,
@@ -165,6 +167,59 @@ describe('decideSubmissionOffer: provisional in-range boundary', () => {
 
   it('does not guess when the ranking fetch failed', () => {
     expect(decide({ entries: null })).toBe('fetch-failed');
+  });
+});
+
+describe('rankInThresholdFrom', () => {
+  it('is 0 while the board has a free row, so any score gets in', () => {
+    expect(rankInThresholdFrom([])).toBe(0);
+    expect(rankInThresholdFrom(board([9999, 9998]))).toBe(0);
+  });
+
+  it('is the lowest row on a full board, agreeing with the offer boundary', () => {
+    expect(rankInThresholdFrom(fullBoard(500))).toBe(500);
+    expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) }), entries: fullBoard(500) })).toBe('out-of-range');
+    expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) + 1 }), entries: fullBoard(500) })).toBe('show');
+  });
+});
+
+describe('RankInThresholdTracker', () => {
+  it('is null until a request succeeds', () => {
+    const tracker = new RankInThresholdTracker();
+    expect(tracker.get()).toBeNull();
+    tracker.settle(tracker.begin(), null);
+    expect(tracker.get()).toBeNull();
+  });
+
+  it('keeps the newer value when the earlier request answers last', () => {
+    const tracker = new RankInThresholdTracker();
+    const pageLoad = tracker.begin();
+    const gameOver = tracker.begin();
+    tracker.settle(gameOver, fullBoard(700));
+    tracker.settle(pageLoad, fullBoard(500));
+    expect(tracker.get()).toBe(700);
+  });
+
+  it('takes the newer value when the replies land in order', () => {
+    const tracker = new RankInThresholdTracker();
+    const first = tracker.begin();
+    const second = tracker.begin();
+    tracker.settle(first, fullBoard(500));
+    expect(tracker.get()).toBe(500);
+    tracker.settle(second, fullBoard(700));
+    expect(tracker.get()).toBe(700);
+  });
+
+  it('never clears a known value on a failed reply, older or newer', () => {
+    const tracker = new RankInThresholdTracker();
+    const first = tracker.begin();
+    const second = tracker.begin();
+    tracker.settle(first, fullBoard(500));
+    tracker.settle(second, null);
+    expect(tracker.get()).toBe(500);
+    // A later success still writes after a failed newer request.
+    tracker.settle(tracker.begin(), []);
+    expect(tracker.get()).toBe(0);
   });
 });
 

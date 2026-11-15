@@ -1,9 +1,7 @@
 // The HUD's goal slot: what the player is chasing right now. Pure — no DOM,
 // no storage — so every case has direct unit test coverage
 // (src/hudGoal.test.ts).
-
-/** How many rows the ranking board keeps (the server's TOP 10). */
-export const RANKING_BOARD_SIZE = 10;
+import { RANKING_BOARD_SIZE } from './config';
 
 export interface HudGoalInput {
   /**
