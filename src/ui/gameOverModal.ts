@@ -11,6 +11,7 @@
 // existing DOM-touching exemption.
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, HUD_TIME_WARNING_COLOR, COLOR_FX_NEON_CYAN } from '../config';
 import { t, type MessageKey } from '../i18n';
+import { applySentenceFont } from './sentenceFont';
 
 export interface GameOverScoreInfo {
   score: number;
@@ -206,6 +207,8 @@ export class GameOverModal {
     this.hint.textContent = t(HINT_RETRY);
     this.hint.style.fontSize = '0.7em';
     this.hint.style.opacity = '0.7';
+    // A sentence: the device's Japanese font in Japanese.
+    applySentenceFont(this.hint);
     this.container.appendChild(this.hint);
 
     this.setDensity('normal');

@@ -17,7 +17,7 @@ import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
 import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
-import { StageResultTally, StageResultCounter, stageResultText } from './stageResult';
+import { StageResultTally, StageResultCounter, stageResultScreen } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
@@ -61,8 +61,9 @@ import {
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
-import { t } from './i18n';
-import { screenTextString, titleScreenText } from './screenText';
+import { detectLocale, getLocale, setLocale, t } from './i18n';
+import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
+import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -646,6 +647,11 @@ function formatTicks(ticks: number): string {
 // an SPA embedded context but a full-page app. Should remounting become
 // necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
+  // The page language, before any UI is built: `?lang=ja` / `?lang=en`, else
+  // the browser's first language (src/i18n/). Fixed for the page load.
+  setLocale(detectLocale(window.location.search, navigator.languages ?? []));
+  document.documentElement.lang = getLocale();
+
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
   lastSavedHighScore = highScore;
@@ -687,6 +693,11 @@ function init(): void {
   // merge of the two input sources with no extra glue code.
   new TouchControls(window, document.body);
   attachTapToConfirm(canvas);
+  // English-only text keeps the Latin monospace on a Japanese page, so the
+  // HUD and the field keep their size (src/ui/sentenceFont.ts).
+  markEnglishOnly(gameRoot);
+  const touchControls = document.getElementById('touch-controls');
+  if (touchControls) markEnglishOnly(touchControls);
 
   // Initially appended to #hud-row in this order (hud, creditLink, then
   // muteButton). Bottom mode retains that visual order; side mode fixes the
@@ -709,6 +720,7 @@ function init(): void {
   hudLives.id = 'hud-lives';
   hudLives.style.lineHeight = '0';
   multiplierFly = getMultiplierFlyElement();
+  markEnglishOnly(multiplierFly);
   // The effects' display face: requested now so it is ready by the first
   // claim; the effects fall back to monospace until then (or if it fails).
   loadFxFonts();
@@ -979,6 +991,10 @@ function measureRequiredSingleLineWidth(): number {
   probe.style.whiteSpace = 'nowrap';
   probe.style.font = window.getComputedStyle(hud).font;
   probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  // Measured in the HUD's own language: on a Japanese page, <body> would hand
+  // the probe `lang="ja"`, whose generic monospace may be another face with
+  // another width than the HUD's (src/ui/sentenceFont.ts).
+  markEnglishOnly(probe);
   document.body.appendChild(probe);
   const width = probe.getBoundingClientRect().width;
   document.body.removeChild(probe);
@@ -1591,26 +1607,46 @@ function renderFrame(): void {
     }
   } else {
     const text = screenText(status);
-    if (text !== lastScreenText) {
-      lastScreenText = text;
-      screen.textContent = text;
+    const key = screenTextString(text);
+    if (key !== lastScreenText) {
+      lastScreenText = key;
+      writeScreen(text);
     }
   }
 }
 
-function screenText(status: ReturnType<GameSession['getStatus']>): string {
+// Writes the Title / STAGE CLEAR overlay. English: one text, exactly
+// `body + hint`. Japanese: the hint (a sentence) gets its own span in the
+// device's Japanese font, a little smaller since each letter is wider, so the
+// result rows above it stay in the monospace face and keep lining up; the
+// overlay's whole text still reads `body + hint`.
+function writeScreen(text: ScreenText): void {
+  if (getLocale() === 'en' || text.hint === '') {
+    screen.textContent = screenTextString(text);
+    return;
+  }
+  screen.textContent = text.body;
+  const hint = document.createElement('span');
+  hint.id = 'screen-hint';
+  hint.textContent = text.hint;
+  hint.style.fontSize = '0.85em';
+  applySentenceFont(hint);
+  screen.appendChild(hint);
+}
+
+function screenText(status: ReturnType<GameSession['getStatus']>): ScreenText {
   switch (status) {
     case 'title':
-      return screenTextString(titleScreenText(session.getHighScore()));
+      return titleScreenText(session.getHighScore());
     case 'stageclear':
       // While SPLIT! is on the field the clear text waits, so the two never
       // overlap; the split itself is announced by the banner, not by a
       // (SPLIT CLEAR!) line.
-      if (fx.isSplitBannerActive()) return '';
+      if (fx.isSplitBannerActive()) return EMPTY_SCREEN_TEXT;
       // What the stage scored, counted up (src/stageResult.ts). The cleared
       // stage's Game is still the session's, so its multiplier is the one
       // the stage was played at; the session's is already the next stage's.
-      return stageResultText({
+      return stageResultScreen({
         stage: session.getStage(),
         values: stageResultCounter.values({
           area: stageResultTally.getArea(),
@@ -1628,9 +1664,9 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       // too would just sit invisibly behind it. Returning '' avoids that
       // dead/duplicate node entirely (see the module comment in
       // src/ui/gameOverModal.ts's hint line).
-      return '';
+      return EMPTY_SCREEN_TEXT;
     case 'playing':
-      return '';
+      return EMPTY_SCREEN_TEXT;
   }
 }
 

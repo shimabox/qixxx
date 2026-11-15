@@ -15,6 +15,7 @@ import { RunMode } from '../runMode';
 import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS, RANKING_BOARD_SIZE } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 import { t } from '../i18n';
+import { applySentenceFont } from './sentenceFont';
 
 export interface RankingEntry {
   id: string;
@@ -512,6 +513,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // Appended BELOW the list (see the end of this block), as a footnote: up
   // between the heading and the rows it read as the panel's headline.
   disclaimer.textContent = boardNotice();
+  applySentenceFont(disclaimer);
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
@@ -575,6 +577,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     listBody.textContent = '';
     const line = document.createElement('div');
     line.textContent = text;
+    applySentenceFont(line);
     listBody.appendChild(line);
   }
 
@@ -618,6 +621,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (entries.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = t('ranking.empty');
+      applySentenceFont(empty);
       listBody.appendChild(empty);
       return;
     }
@@ -775,6 +779,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // ---- Transient message (network/replay-unavailable errors) ----
   const messageOverlay = styledOverlay();
   const messageText = document.createElement('div');
+  applySentenceFont(messageText);
   messageOverlay.appendChild(messageText);
   const messageCloseButton = styledButton(t('ranking.ok'));
   messageCloseButton.addEventListener('click', () => hideTransientMessage());
@@ -827,6 +832,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   stopKeyPropagation(handleCheckbox);
   const handleLabelText = document.createElement('span');
   handleLabelText.textContent = t('submit.useHandle');
+  applySentenceFont(handleLabelText);
   handleRow.appendChild(handleCheckbox);
   handleRow.appendChild(handleLabelText);
   submitOverlay.appendChild(handleRow);
@@ -862,6 +868,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   retainedValueHint.style.maxWidth = '100%';
   retainedValueHint.style.overflowWrap = 'anywhere';
   retainedValueHint.style.display = 'none';
+  applySentenceFont(retainedValueHint);
   submitOverlay.appendChild(retainedValueHint);
 
   /**
@@ -926,6 +933,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const submitStatus = document.createElement('div');
   submitStatus.style.fontSize = '0.75em';
   submitStatus.style.minHeight = '1.2em';
+  applySentenceFont(submitStatus);
   submitOverlay.appendChild(submitStatus);
 
   const submitButtonRow = document.createElement('div');
