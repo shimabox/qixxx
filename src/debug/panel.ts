@@ -27,7 +27,7 @@ export interface DebugFxHooks {
   params: FxParams;
   fx: FxDirector;
   hitStop: HitStop;
-  playClaim: (claim: { share: number; speed: LineSpeed }) => void;
+  playClaim: (claim: { share: number; speed: LineSpeed; chain: number }) => void;
   playSplitImpact: () => void;
   playMiss: () => void;
 }
@@ -222,6 +222,17 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     FX_MULTIPLIER_FLY_TICKS: p.multiplierFlyTicks,
     FX_MULTIPLIER_HIGHLIGHT_TICKS: p.multiplierHighlightTicks,
     FX_GAMEOVER_HOLD_TICKS: p.gameOverHoldTicks,
+    FX_CLAIM_SHARE_HUGE: p.claimShareHuge,
+    FX_TEXT_GLITCH_BANNER_TICKS: p.textGlitchBannerTicks,
+    FX_TEXT_GLITCH_POPUP_TICKS: p.textGlitchPopupTicks,
+    FX_POPUP_BOUNCE_SCALE: p.popupBounceScale,
+    FX_POPUP_BOUNCE_TICKS: p.popupBounceTicks,
+    FX_SPARK_MAX: p.sparkMax,
+    FX_SPARK_TICKS: p.sparkTicks,
+    FX_SPARK_DISTANCE_CELLS: p.sparkDistanceCells,
+    FX_CHAIN_WINDOW_TICKS: p.chainWindowTicks,
+    FX_CHAIN_PITCH_MAX_STEPS: p.chainPitchMaxSteps,
+    FX_SCORE_ROLL_TICKS: p.scoreRollTicks,
   };
 }
 
@@ -250,6 +261,17 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'multiplierFlyTicks', label: 'Multiplier fly (t)', range: FX_TICKS_RANGE },
   { key: 'multiplierHighlightTicks', label: 'Multiplier highlight (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverHoldTicks', label: 'GAME OVER hold (t)', range: FX_TICKS_RANGE },
+  { key: 'claimShareHuge', label: 'AWESOME! from (share)', range: { min: 0, max: 1, step: 0.01 } },
+  { key: 'textGlitchBannerTicks', label: 'SPLIT! glitch (t)', range: FX_TICKS_RANGE },
+  { key: 'textGlitchPopupTicks', label: 'Popup colour split (t)', range: FX_TICKS_RANGE },
+  { key: 'popupBounceScale', label: 'Popup bounce (x)', range: { min: 1, max: 3, step: 0.05 } },
+  { key: 'popupBounceTicks', label: 'Popup bounce (t)', range: FX_TICKS_RANGE },
+  { key: 'sparkMax', label: 'Sparks (max)', range: { min: 0, max: 100, step: 1 } },
+  { key: 'sparkTicks', label: 'Sparks (t)', range: FX_TICKS_RANGE },
+  { key: 'sparkDistanceCells', label: 'Sparks distance (cells)', range: { min: 0, max: 20, step: 0.5 } },
+  { key: 'chainWindowTicks', label: 'Chain window (t)', range: { min: 0, max: 600, step: 1 } },
+  { key: 'chainPitchMaxSteps', label: 'Chain pitch steps (max)', range: { min: 0, max: 12, step: 1 } },
+  { key: 'scoreRollTicks', label: 'HUD score count-up (t)', range: FX_TICKS_RANGE },
 ];
 const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
   { key: 'shakeSmall', label: 'Shake S' },
@@ -306,8 +328,11 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       stageCleared: false,
       closedLine: testLine(session),
     };
-    hooks.hitStop.request(hooks.fx.onClaim(notice, { nextMultiplier: session.getMultiplier() }).hitStopTicks);
-    hooks.playClaim({ share, speed: 'fast' });
+    // Pressed again within the chain window, the test claims chain like real
+    // ones: CHAIN xN under the popup and a rising claim sound.
+    const { hitStopTicks, chain } = hooks.fx.onClaim(notice, { nextMultiplier: session.getMultiplier() });
+    hooks.hitStop.request(hitStopTicks);
+    hooks.playClaim({ share, speed: 'fast', chain });
   };
   const addTest = (id: string, label: string, onClick: () => void): void => {
     const button = buildButton(label, onClick);
