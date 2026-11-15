@@ -17,6 +17,7 @@ import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
 import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
+import { StageResultTally, StageResultCounter, stageResultText } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
 import { initRankingUI, RankingUI } from './ui/ranking';
 import { FxDirector, FxFrame } from './fx/director';
@@ -245,7 +246,9 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     screen.style.color = HUD_TEXT_COLOR;
     screen.style.font = HUD_FONT;
     screen.style.textAlign = 'center';
-    screen.style.whiteSpace = 'pre-line';
+    // pre-wrap, not pre-line: the STAGE CLEAR result's rows line up with
+    // runs of spaces (src/stageResult.ts).
+    screen.style.whiteSpace = 'pre-wrap';
     screen.style.textShadow = `0 0 10px ${HUD_ACCENT_COLOR}, 0 0 20px ${HUD_ACCENT_COLOR}`;
     screen.style.pointerEvents = 'none';
     screen.style.userSelect = 'none';
@@ -495,6 +498,14 @@ let lastMultiplierFlyShadow = '';
 // OVER modal, the X share and the ranking all read session.getScore().
 // Replay viewing shows the replay's score as it is.
 const hudScoreRoll = new ScoreRoll();
+// The live STAGE CLEAR result (src/stageResult.ts): the points the current
+// stage scored, from its claim notices, and the count-up shown on the clear
+// screen. Reset when the next stage or a new run starts.
+const stageResultTally = new StageResultTally();
+const stageResultCounter = new StageResultCounter();
+// True on a field small enough (a phone held sideways) that the clear
+// screen drops its blank lines to stay on it — see fitCanvasToViewport().
+let tinyField = false;
 let hudScore: HTMLSpanElement;
 // The HUD's lives marks. Line height 0: the marks come from a fallback font
 // whose taller metrics would otherwise make the HUD line 1px taller, and with
@@ -1235,8 +1246,9 @@ function fitCanvasToViewport(): void {
   canvas.style.height = `${cssHeight}px`;
   // A small field gets the GAME OVER modal's tighter spacing, so the whole
   // modal stays on the field.
+  tinyField = cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX;
   gameOverModal.setDensity(
-    cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
+    tinyField ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
   );
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
@@ -1299,6 +1311,9 @@ function updateLive(): void {
   // HUD score's count-up keeps going through a stop, like the effects.
   hudScoreRoll.tick();
   multiplierEmphasis.tick();
+  // The clear screen's count-up runs from the tick it is on screen (once
+  // SPLIT! has gone), through hit stops like the other display effects.
+  stageResultCounter.step(session.getStatus() === 'stageclear', !fx.isSplitBannerActive(), fxParams.stageResultRollTicks);
   const polled = beginLiveTick({
     fx,
     hitStop,
@@ -1313,7 +1328,13 @@ function updateLive(): void {
   // The modal's RETRY / TITLE request reaches the core as confirm on every
   // GAME OVER tick until the run leaves it (see `modalAction`).
   if (statusBeforeThisTick !== 'gameover') modalAction = null;
-  const input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  let input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  // On STAGE CLEAR a confirm first completes the result's count-up (or, under
+  // SPLIT!, has it appear complete); only the next one starts the next stage.
+  if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
+    stageResultCounter.finish();
+    input = { ...input, confirm: false };
+  }
 
   lastInput = input;
 
@@ -1346,6 +1367,8 @@ function updateLive(): void {
       fx.reset();
       renderer.resetBoard();
       multiplierEmphasis.reset();
+      stageResultTally.reset();
+      stageResultCounter.clear();
       runBestAtStart = session.getHighScore();
     },
   });
@@ -1357,6 +1380,7 @@ function updateLive(): void {
     hitStop.clear();
     fx.resetBoard();
     renderer.resetBoard();
+    stageResultTally.reset();
   }
 
   const events = session.drainEvents();
@@ -1367,7 +1391,7 @@ function updateLive(): void {
   sfx.handleEvents(events);
 
   // This tick's claim/miss notices -> effects, hit stop, claim/split sounds.
-  applyImpactNotices(session, fx, hitStop, sfx);
+  for (const notice of applyImpactNotices(session, fx, hitStop, sfx)) stageResultTally.add(notice);
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
@@ -1568,7 +1592,20 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       // overlap; the split itself is announced by the banner, not by a
       // (SPLIT CLEAR!) line.
       if (fx.isSplitBannerActive()) return '';
-      return stageClearText(session, { withPrompt: true, withSplitNote: false });
+      // What the stage scored, counted up (src/stageResult.ts). The cleared
+      // stage's Game is still the session's, so its multiplier is the one
+      // the stage was played at; the session's is already the next stage's.
+      return stageResultText({
+        stage: session.getStage(),
+        values: stageResultCounter.values({
+          area: stageResultTally.getArea(),
+          bonus: stageResultTally.getBonus(),
+          total: stageResultTally.getTotal(),
+        }),
+        multiplierBefore: session.getGame().getMultiplier(),
+        multiplierNext: session.getMultiplier(),
+        tight: tinyField,
+      });
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
       // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's
