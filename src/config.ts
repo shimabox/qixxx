@@ -388,6 +388,40 @@ export const FX_SPLIT_CONFIRM_LOCK_TICKS = 40; // confirm is not passed on after
 export const FX_MULTIPLIER_FLY_TICKS = 40; // the next multiplier travels to the HUD
 export const FX_MULTIPLIER_HIGHLIGHT_TICKS = 20; // then the HUD multiplier is highlighted
 export const FX_GAMEOVER_HOLD_TICKS = 32; // after a game-ending miss: modal waits, confirm is not passed on
+// From this added occupancy a claim is praised AWESOME! (from MID it is NICE!,
+// from LARGE GREAT!). Only the praise word reads it; the claim size used for
+// the hit stop, shake and sound stays small / mid / large.
+export const FX_CLAIM_SHARE_HUGE = 0.3;
+// The text's glitch (src/fx/textGlitch.ts): SPLIT! tears apart for its first
+// BANNER ticks, the score popup and the travelling multiplier split their
+// colours for their first POPUP ticks.
+export const FX_TEXT_GLITCH_BANNER_TICKS = 9;
+export const FX_TEXT_GLITCH_POPUP_TICKS = 6;
+// The score popup (and its praise word) appears this much larger and eases
+// back to its normal size by the end of BOUNCE_TICKS.
+export const FX_POPUP_BOUNCE_SCALE = 1.4;
+export const FX_POPUP_BOUNCE_TICKS = 8;
+// Sparks from the closed line on every claim: up to MAX cells picked evenly
+// along the line, one spark each, flying DISTANCE cells across the line over
+// TICKS ticks while fading out.
+export const FX_SPARK_MAX = 24;
+export const FX_SPARK_TICKS = 16;
+export const FX_SPARK_DISTANCE_CELLS = 5;
+// Claims in a row: a claim within WINDOW ticks of the previous one adds one
+// to the chain (shown as CHAIN xN from 2). Each step raises the claim sound
+// by two semitones, up to PITCH_MAX_STEPS steps. Display and sound only.
+export const FX_CHAIN_WINDOW_TICKS = 180;
+export const FX_CHAIN_PITCH_MAX_STEPS = 6;
+// The HUD's score counts up to the real score over this many ticks.
+export const FX_SCORE_ROLL_TICKS = 18;
+// The effects' text: a geometric display face bundled with the game
+// (public/fonts/), falling back to monospace until it has loaded or if it
+// cannot be loaded.
+export const FX_TEXT_FONT_FAMILY = '"Orbitron", monospace';
+export const COLOR_FX_NEON_CYAN = '#37e6ff';
+export const COLOR_FX_NEON_MAGENTA = '#ff2bd6';
+export const COLOR_FX_NEON_CORE = '#ffffff';
+export const COLOR_FX_TEXT_FILL = '#eaffff';
 // Colors of the impact feedback layer (src/render/fxLayer.ts).
 export const COLOR_FX_FLASH_LIGHT = '#ffffff';
 export const COLOR_FX_FLASH_DARK = '#000000';
