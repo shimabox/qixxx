@@ -76,9 +76,9 @@ npm run typecheck  # tsc --noEmit
 
 ### デバッグパネル（開発用）
 
-開発サーバで URL に `?debug` を付けると、敵の数・速度・出現間隔・要求占有率などをスライダーで即時調整できるパネルが出ます（プロダクションビルドには含まれません）。`EXPORT` でチューニング結果を JSON として書き出せます。
+開発サーバで URL に `?debug` を付けると、敵の数・速度・出現間隔・要求占有率などをスライダーで即時調整できるパネルが出ます（プロダクションビルドには含まれません）。下の `FX` の区画では、確定・分断・ミスの演出（止め・揺れ・表示の長さ・文字の裂け・火花・連続確定・スコアの数え上げなど）の数値を調整し、`TEST CLAIM S / M / L`・`TEST SPLIT`・`TEST MISS` で試し打ちできます。`TEST CLAIM` を続けて押すと、連続確定の表示と音の上がり方も確かめられます。この区画はプレイの設定を変えないので、使ってもハイスコアの保存やランキングの投稿に影響しません。`EXPORT` でチューニング結果を JSON として書き出せます。
 
-![デバッグパネル。Wisp を 3 体に増やしたところ](docs/images/readme-debug.png)
+![デバッグパネル。Wisp を 3 体に増やし、FX の区画の TEST CLAIM を続けて押したところ。盤面に AWESOME!、+1800、CHAIN x2 が出ている](docs/images/readme-debug.png)
 
 ## ディレクトリ構成
 
@@ -106,3 +106,5 @@ docs/
 ## ライセンス
 
 [MIT](LICENSE)
+
+演出の文字に使う書体 Orbitron（`public/fonts/Orbitron-wght.ttf`）を同梱しています。この書体のライセンスは SIL Open Font License 1.1 で、全文は [`public/fonts/Orbitron-OFL.txt`](public/fonts/Orbitron-OFL.txt) にあります。

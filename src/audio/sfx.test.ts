@@ -6,7 +6,7 @@
 // many times resume() is invoked (e.g. once per keydown/pointerdown, per
 // main.ts).
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { SfxEngine } from './sfx';
+import { SfxEngine, claimChainPitch } from './sfx';
 
 class MockGainNode {
   gain = {
@@ -41,7 +41,7 @@ class MockOscillatorNode {
   }
   disconnect(): void {}
   start(): void {}
-  stop(): void {}
+  stop = vi.fn();
   addEventListener(): void {}
 }
 
@@ -192,7 +192,7 @@ describe('SfxEngine — retry resume() on sound-producing calls (fix/ios-audio-r
     const sfx = new SfxEngine();
     // Deliberately skip resume() — simulates a sound firing before the
     // user-gesture resume() Promise has settled.
-    sfx.handleEvents(['area-claimed']);
+    sfx.handleEvents(['miss']);
 
     expect(resumeSpy).toHaveBeenCalledTimes(1);
   });
@@ -211,7 +211,7 @@ describe('SfxEngine — retry resume() on sound-producing calls (fix/ios-audio-r
     (globalThis as { window?: unknown }).window = { AudioContext: SpyAudioContext };
 
     const sfx = new SfxEngine();
-    sfx.handleEvents(['area-claimed']);
+    sfx.handleEvents(['miss']);
 
     expect(resumeSpy).not.toHaveBeenCalled();
   });
@@ -327,7 +327,7 @@ describe('SfxEngine — TIME countdown warning cues', () => {
 });
 
 describe('SfxEngine — pitch glide of the existing one-shots', () => {
-  it('still plays the miss falling from 90 Hz to 36 Hz over 0.35s', () => {
+  it('plays the miss falling from 90 Hz to 36 Hz, peaking within 5ms and ending within 0.35s', () => {
     const { oscillators, gains } = installRecordingAudioContext();
 
     new SfxEngine().handleEvents(['miss']);
@@ -337,8 +337,10 @@ describe('SfxEngine — pitch glide of the existing one-shots', () => {
     expect(osc.type).toBe('sawtooth');
     expect(osc.frequency.setValueAtTime).toHaveBeenCalledWith(90, 0);
     expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledTimes(1);
-    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(36, 0.35);
-    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 0.01);
+    expect(osc.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(36, 0.33);
+    expect(gains[1].gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 0.004);
+    expect(gains[1].gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(0.0001, 0.33);
+    expect(osc.stop.mock.calls[0][0]).toBeLessThanOrEqual(0.35 + 1e-9);
   });
 
   it('still plays the ember despawn falling from 180 Hz to 72 Hz over 0.07s', () => {
@@ -369,10 +371,137 @@ describe('SfxEngine — pitch glide of the existing one-shots', () => {
       'ember-entered-line',
     ]);
 
-    // 5 single notes + the 4-, 5- and 2-note arpeggios.
-    expect(oscillators).toHaveLength(16);
+    // 4 single notes + the 4- and 2-note arpeggios. area-claimed and
+    // split-clear are silent here: main.ts plays them from the claim notice
+    // (playClaim() / playSplitImpact()).
+    expect(oscillators).toHaveLength(10);
     for (const osc of oscillators) {
       expect(osc.frequency.exponentialRampToValueAtTime).not.toHaveBeenCalled();
     }
+  });
+
+  it('plays nothing for area-claimed or split-clear events', () => {
+    const { oscillators } = installRecordingAudioContext();
+    new SfxEngine().handleEvents(['area-claimed', 'split-clear']);
+    expect(oscillators).toHaveLength(0);
+  });
+});
+
+describe('SfxEngine — claim and split sounds', () => {
+  const peakTime = (gain: MockGainNode): number => gain.gain.linearRampToValueAtTime.mock.calls[0][1];
+  const endTime = (gain: MockGainNode): number => gain.gain.exponentialRampToValueAtTime.mock.calls[0][1];
+  const startFreq = (osc: MockOscillatorNode): number => osc.frequency.setValueAtTime.mock.calls[0][0];
+  const startTime = (osc: MockOscillatorNode): number => osc.frequency.setValueAtTime.mock.calls[0][1];
+
+  it('a small claim: a short hit peaking within 5ms and over within 0.08s, then a 0.2s rising sweep', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+    new SfxEngine().playClaim({ share: 0.02, speed: 'fast' });
+
+    expect(oscillators).toHaveLength(2);
+    const [hit, rise] = oscillators;
+    const [, hitEnv, riseEnv] = gains;
+    expect(peakTime(hitEnv)).toBeLessThanOrEqual(0.005);
+    expect(endTime(hitEnv)).toBeLessThanOrEqual(0.08);
+    expect(hit.frequency.exponentialRampToValueAtTime).not.toHaveBeenCalled();
+    // The sweep starts when the hit ends, rises, and lasts 0.2s.
+    expect(startTime(rise)).toBeCloseTo(endTime(hitEnv));
+    const [riseTo, riseEnd] = rise.frequency.exponentialRampToValueAtTime.mock.calls[0];
+    expect(riseTo).toBeGreaterThan(startFreq(rise));
+    expect(riseEnd - startTime(rise)).toBeCloseTo(0.2);
+    expect(endTime(riseEnv) - startTime(rise)).toBeCloseTo(0.2);
+  });
+
+  it('adds a low layer near 220 Hz for a mid claim and near 110 Hz for a large one, both short and sharp', () => {
+    for (const [share, low] of [
+      [0.1, 220],
+      [0.3, 110],
+    ] as const) {
+      const { oscillators, gains } = installRecordingAudioContext();
+      new SfxEngine().playClaim({ share, speed: 'fast' });
+      expect(oscillators).toHaveLength(3);
+      expect(startFreq(oscillators[1])).toBe(low);
+      expect(peakTime(gains[2])).toBeLessThanOrEqual(0.005);
+      expect(endTime(gains[2])).toBeLessThanOrEqual(0.08);
+    }
+  });
+
+  it('rises further for a slow line', () => {
+    const fast = installRecordingAudioContext();
+    new SfxEngine().playClaim({ share: 0.02, speed: 'fast' });
+    const fastTo = fast.oscillators[1].frequency.exponentialRampToValueAtTime.mock.calls[0][0];
+    const slow = installRecordingAudioContext();
+    new SfxEngine().playClaim({ share: 0.02, speed: 'slow' });
+    const slowTo = slow.oscillators[1].frequency.exponentialRampToValueAtTime.mock.calls[0][0];
+    expect(slowTo).toBeGreaterThan(fastTo);
+  });
+
+  it('the split: a low thump over within 0.12s, then the 5-note split arpeggio after it', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+    new SfxEngine().playSplitImpact();
+
+    expect(oscillators).toHaveLength(6);
+    const [thump, ...arpeggio] = oscillators;
+    expect(startFreq(thump)).toBeLessThan(120);
+    expect(peakTime(gains[1])).toBeLessThanOrEqual(0.005);
+    expect(endTime(gains[1])).toBeLessThanOrEqual(0.12);
+    expect(arpeggio.map(startFreq)).toEqual([784, 988, 1175, 1568, 1976]);
+    expect(startTime(arpeggio[0])).toBeCloseTo(endTime(gains[1]));
+  });
+
+  it('raises the hit and the sweep two semitones per chain step, up to 6 steps; the low layer keeps its pitch', () => {
+    const play = (chain?: number) => {
+      const rec = installRecordingAudioContext();
+      new SfxEngine().playClaim(chain === undefined ? { share: 0.1, speed: 'fast' } : { share: 0.1, speed: 'fast', chain });
+      const [hit, low, rise] = rec.oscillators;
+      return {
+        hit: startFreq(hit),
+        low: startFreq(low),
+        riseFrom: startFreq(rise),
+        riseTo: rise.frequency.exponentialRampToValueAtTime.mock.calls[0][0] as number,
+      };
+    };
+    const first = play(1);
+    expect(play()).toEqual(first); // no chain given = the first claim
+    expect(first.hit).toBe(1047);
+    for (let chain = 2; chain <= 7; chain++) {
+      const ratio = Math.pow(2, (2 * (chain - 1)) / 12);
+      const sound = play(chain);
+      expect(sound.hit).toBeCloseTo(first.hit * ratio, 6);
+      expect(sound.riseFrom).toBeCloseTo(first.riseFrom * ratio, 6);
+      expect(sound.riseTo).toBeCloseTo(first.riseTo * ratio, 6);
+      expect(sound.low).toBe(first.low);
+      expect(sound.hit).toBeGreaterThan(play(chain - 1).hit);
+    }
+    // Six steps (chain 7) is the top.
+    expect(play(8)).toEqual(play(7));
+    expect(play(30)).toEqual(play(7));
+  });
+
+  it('claimChainPitch: 1 for the first claim, +2 semitones a step, capped', () => {
+    expect(claimChainPitch(1, 6)).toBe(1);
+    expect(claimChainPitch(0, 6)).toBe(1);
+    expect(claimChainPitch(2, 6)).toBeCloseTo(Math.pow(2, 2 / 12), 12);
+    expect(claimChainPitch(7, 6)).toBeCloseTo(Math.pow(2, 12 / 12), 12);
+    expect(claimChainPitch(20, 6)).toBe(claimChainPitch(7, 6));
+    expect(claimChainPitch(5, 2)).toBe(claimChainPitch(3, 2));
+  });
+
+  it('the split sound does not change with the chain', () => {
+    const freqs = () => {
+      const rec = installRecordingAudioContext();
+      new SfxEngine().playSplitImpact();
+      return rec.oscillators.map(startFreq);
+    };
+    const before = freqs();
+    new SfxEngine().playClaim({ share: 0.1, speed: 'fast', chain: 5 });
+    expect(freqs()).toEqual(before);
+  });
+
+  it('plays neither while muted', () => {
+    const { oscillators } = installRecordingAudioContext();
+    const sfx = new SfxEngine(true);
+    sfx.playClaim({ share: 0.3, speed: 'slow' });
+    sfx.playSplitImpact();
+    expect(oscillators).toHaveLength(0);
   });
 });

@@ -8,13 +8,26 @@
 import type { GameEvent } from '../core/events';
 import type { LineSpeed } from '../core/claim';
 import type { TimeWarningCue } from '../timeWarningCue';
+import { classifyClaimShare, fxParams } from '../fx/params';
 import {
   SFX_MASTER_GAIN,
   SFX_DRAW_GAIN,
   SFX_DRAW_FREQ_FAST,
   SFX_DRAW_FREQ_SLOW,
-  SFX_AREA_CLAIMED_FREQ,
-  SFX_AREA_CLAIMED_DURATION,
+  SFX_DEFAULT_ATTACK,
+  SFX_IMPACT_ATTACK,
+  SFX_TONE_STOP_TAIL,
+  SFX_CLAIM_HIT_FREQ,
+  SFX_CLAIM_HIT_DURATION,
+  SFX_CLAIM_LOW_MID_FREQ,
+  SFX_CLAIM_LOW_LARGE_FREQ,
+  SFX_CLAIM_LOW_DURATION,
+  SFX_CLAIM_RISE_FREQ_START,
+  SFX_CLAIM_RISE_FREQ_END_FAST,
+  SFX_CLAIM_RISE_FREQ_END_SLOW,
+  SFX_CLAIM_RISE_DURATION,
+  SFX_SPLIT_IMPACT_FREQ,
+  SFX_SPLIT_IMPACT_DURATION,
   SFX_MISS_FREQ,
   SFX_MISS_DURATION,
   SFX_STAGE_CLEAR_NOTES,
@@ -46,6 +59,18 @@ import {
 type AudioContextCtor = typeof AudioContext;
 interface WindowWithWebkitAudio extends Window {
   webkitAudioContext?: AudioContextCtor;
+}
+
+/** Semitones the claim sound rises per step of a chain of claims. */
+const CHAIN_SEMITONES_PER_STEP = 2;
+
+/**
+ * The claim sound's pitch multiplier at `chain` (1 for the first claim of a
+ * row): two semitones higher per further claim, capped at `maxSteps` steps.
+ */
+export function claimChainPitch(chain: number, maxSteps: number): number {
+  const steps = Math.max(0, Math.min(Math.floor(chain) - 1, Math.floor(maxSteps)));
+  return Math.pow(2, (steps * CHAIN_SEMITONES_PER_STEP) / 12);
 }
 
 /** Where a falling one-shot (miss, ember-despawned) ends its glide from `freq`. */
@@ -192,18 +217,21 @@ export class SfxEngine {
     }
   }
 
-  /** Consumes GameEvents (docs/plan.md §3.8/§9.9) drained from GameSession, playing the matching one-shot SE for each. */
+  /**
+   * Consumes GameEvents (docs/plan.md §3.8/§9.9) drained from GameSession,
+   * playing the matching one-shot SE for each. 'area-claimed' and
+   * 'split-clear' are silent here: their sounds depend on the claim's size
+   * and speed, so main.ts plays them from the claim notice instead
+   * (playClaim() / playSplitImpact()).
+   */
   handleEvents(events: readonly GameEvent[]): void {
     for (const event of events) {
       switch (event) {
         case 'area-claimed':
-          this.playAreaClaimed();
+        case 'split-clear':
           break;
         case 'stage-clear':
           this.playStageClear();
-          break;
-        case 'split-clear':
-          this.playSplitClear();
           break;
         case 'miss':
           this.playMiss();
@@ -264,27 +292,77 @@ export class SfxEngine {
     }
   }
 
-  private playAreaClaimed(): void {
-    this.playTone(SFX_AREA_CLAIMED_FREQ, SFX_AREA_CLAIMED_DURATION, 'triangle', 0.22);
+  /**
+   * The area-claim sound: a short hit that peaks at once, with a low layer
+   * under a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
+   * sweep rising while the new area fills in (higher for a slow line).
+   * `share` is the occupancy the claim added (0-1), sized the same way as
+   * the visual feedback (src/fx/params.ts). `chain` is the claim's place in
+   * a row of claims (src/fx/director.ts): from the second, the hit and the
+   * sweep rise two semitones per step, up to chainPitchMaxSteps steps, so a
+   * run of claims climbs. The low layer keeps its pitch.
+   */
+  playClaim({ share, speed, chain = 1 }: { share: number; speed: LineSpeed; chain?: number }): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const pitch = claimChainPitch(chain, fxParams.chainPitchMaxSteps);
+    this.playTone(SFX_CLAIM_HIT_FREQ * pitch, SFX_CLAIM_HIT_DURATION, 'triangle', 0.24, undefined, now, SFX_IMPACT_ATTACK);
+    const size = classifyClaimShare(share, fxParams);
+    if (size !== 'small') {
+      const lowFreq = size === 'large' ? SFX_CLAIM_LOW_LARGE_FREQ : SFX_CLAIM_LOW_MID_FREQ;
+      this.playTone(lowFreq, SFX_CLAIM_LOW_DURATION, 'square', 0.22, undefined, now, SFX_IMPACT_ATTACK);
+    }
+    const riseEnd = speed === 'slow' ? SFX_CLAIM_RISE_FREQ_END_SLOW : SFX_CLAIM_RISE_FREQ_END_FAST;
+    this.playTone(
+      SFX_CLAIM_RISE_FREQ_START * pitch,
+      SFX_CLAIM_RISE_DURATION,
+      'triangle',
+      0.14,
+      riseEnd * pitch,
+      now + SFX_CLAIM_HIT_DURATION
+    );
+  }
+
+  /** The split sound: a low, short thump, then the split arpeggio. */
+  playSplitImpact(): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.playTone(
+      SFX_SPLIT_IMPACT_FREQ,
+      SFX_SPLIT_IMPACT_DURATION,
+      'square',
+      0.3,
+      descendFrom(SFX_SPLIT_IMPACT_FREQ),
+      now,
+      SFX_IMPACT_ATTACK
+    );
+    this.playArpeggio(SFX_SPLIT_CLEAR_NOTES, SFX_SPLIT_CLEAR_NOTE_DURATION, 'square', 0.2, now + SFX_SPLIT_IMPACT_DURATION);
   }
 
   private playMiss(): void {
-    this.playTone(SFX_MISS_FREQ, SFX_MISS_DURATION, 'sawtooth', 0.25, descendFrom(SFX_MISS_FREQ));
+    this.playTone(SFX_MISS_FREQ, SFX_MISS_DURATION, 'sawtooth', 0.25, descendFrom(SFX_MISS_FREQ), undefined, SFX_IMPACT_ATTACK);
   }
 
   private playStageClear(): void {
     this.playArpeggio(SFX_STAGE_CLEAR_NOTES, SFX_STAGE_CLEAR_NOTE_DURATION, 'triangle', 0.22);
   }
 
-  private playSplitClear(): void {
-    this.playArpeggio(SFX_SPLIT_CLEAR_NOTES, SFX_SPLIT_CLEAR_NOTE_DURATION, 'square', 0.2);
-  }
-
-  private playArpeggio(notes: readonly number[], noteDuration: number, type: OscillatorType, gain: number): void {
+  private playArpeggio(
+    notes: readonly number[],
+    noteDuration: number,
+    type: OscillatorType,
+    gain: number,
+    startTime?: number
+  ): void {
     const ctx = this.ensureContext();
     if (!ctx) return;
+    const start = startTime ?? ctx.currentTime;
     notes.forEach((freq, i) => {
-      this.playTone(freq, noteDuration, type, gain, undefined, ctx.currentTime + i * noteDuration);
+      this.playTone(freq, noteDuration, type, gain, undefined, start + i * noteDuration);
     });
   }
 
@@ -296,7 +374,8 @@ export class SfxEngine {
    * ringing) never fight over shared state.
    *
    * With `endFreq` the pitch glides from `freq` to it over the note, falling
-   * or rising; without it the note holds `freq`.
+   * or rising; without it the note holds `freq`. `attack` is how long the
+   * note takes to reach its peak.
    */
   private playTone(
     freq: number,
@@ -304,7 +383,8 @@ export class SfxEngine {
     type: OscillatorType = 'sine',
     gain = 0.2,
     endFreq?: number,
-    startTime?: number
+    startTime?: number,
+    attack = SFX_DEFAULT_ATTACK
   ): void {
     if (this.muted) return;
     const ctx = this.ensureContext();
@@ -321,12 +401,12 @@ export class SfxEngine {
     }
 
     env.gain.setValueAtTime(0, start);
-    env.gain.linearRampToValueAtTime(gain, start + 0.01);
+    env.gain.linearRampToValueAtTime(gain, start + attack);
     env.gain.exponentialRampToValueAtTime(0.0001, start + duration);
 
     osc.connect(env).connect(this.masterGain);
     osc.start(start);
-    osc.stop(start + duration + 0.02);
+    osc.stop(start + duration + SFX_TONE_STOP_TAIL);
     osc.addEventListener('ended', () => {
       osc.disconnect();
       env.disconnect();
