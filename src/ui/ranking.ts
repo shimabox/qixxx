@@ -21,6 +21,7 @@ import {
   TITLE_BUTTON_COMPACT_FONT_PX,
   TITLE_BUTTON_COMPACT_INSET_PX,
   TITLE_BUTTON_COMPACT_PADDING,
+  TITLE_DEMO_MAX_CANDIDATES,
 } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 import { t } from '../i18n';
@@ -206,6 +207,20 @@ export class RankInThresholdTracker {
   }
 }
 
+/**
+ * The records the Title screen's demo may play, from GET /api/ranking's
+ * verified `entries` (best first): the ids of the first `max` rows whose
+ * replay can be fetched, in board order.
+ */
+export function demoCandidateIdsFrom(entries: readonly Pick<RankingEntry, 'id' | 'replayAvailable'>[], max: number): string[] {
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (ids.length >= max) break;
+    if (entry.replayAvailable === true && typeof entry.id === 'string' && entry.id !== '') ids.push(entry.id);
+  }
+  return ids;
+}
+
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
   return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
 }
@@ -315,7 +330,7 @@ export function formatRankingDate(iso: string): string {
   return `${year}-${month}-${day}`;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
+export function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -489,6 +504,12 @@ export interface RankingUI {
    * 0 while the board has a free row, null until one succeeded.
    */
   getRankInThreshold(): number | null;
+  /**
+   * The records the Title screen's demo may play (demoCandidateIdsFrom()),
+   * from loadRankInThreshold()'s page-load GET /api/ranking only: empty
+   * until it succeeds, and empty for good if it fails. No request of its own.
+   */
+  getDemoCandidateIds(): readonly string[];
   /**
    * True while the ranking offer for the just-finished run must keep the
    * keyboard and the field from starting the next run: while asking
@@ -1193,8 +1214,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     return entries;
   }
 
+  // The Title demo's candidates, from the page-load GET /api/ranking (see
+  // getDemoCandidateIds()). Only the ids are kept, never names or ranks.
+  let demoCandidateIds: readonly string[] = [];
+
   function loadRankInThreshold(): void {
-    void fetchVerifiedEntries();
+    void fetchVerifiedEntries().then((entries) => {
+      if (entries !== null && Array.isArray(entries)) {
+        demoCandidateIds = demoCandidateIdsFrom(entries, TITLE_DEMO_MAX_CANDIDATES);
+      }
+    });
   }
 
   // The snapshot whose /api/ranking check is still in flight (see
@@ -1604,6 +1633,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     setSubmitPanelCompact,
     loadRankInThreshold,
     getRankInThreshold: () => rankInThreshold.get(),
+    getDemoCandidateIds: () => demoCandidateIds,
     isSubmissionBlockingRetry,
     isSubmissionCheckPending,
   };

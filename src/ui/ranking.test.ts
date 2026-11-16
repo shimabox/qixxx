@@ -10,6 +10,7 @@ import {
   acceptedSubmissionText,
   boardNotice,
   decideSubmissionOffer,
+  demoCandidateIdsFrom,
   isSnapshotEligible,
   isReplayPayloadPlayable,
   formatRankingDate,
@@ -180,6 +181,21 @@ describe('rankInThresholdFrom', () => {
     expect(rankInThresholdFrom(fullBoard(500))).toBe(500);
     expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) }), entries: fullBoard(500) })).toBe('out-of-range');
     expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) + 1 }), entries: fullBoard(500) })).toBe('show');
+  });
+});
+
+describe('demoCandidateIdsFrom', () => {
+  const row = (id: string, replayAvailable: boolean) => ({ id, replayAvailable });
+
+  it('takes the replayable rows from the top of the board, in board order, up to the limit', () => {
+    const entries = [row('a', true), row('b', false), row('c', true), row('d', true), row('e', true)];
+    expect(demoCandidateIdsFrom(entries, 3)).toEqual(['a', 'c', 'd']);
+  });
+
+  it('returns fewer when fewer rows are replayable, and none for an empty board or no replays', () => {
+    expect(demoCandidateIdsFrom([row('a', false), row('b', true)], 3)).toEqual(['b']);
+    expect(demoCandidateIdsFrom([], 3)).toEqual([]);
+    expect(demoCandidateIdsFrom([row('a', false), row('b', false)], 3)).toEqual([]);
   });
 });
 
