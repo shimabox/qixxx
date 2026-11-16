@@ -166,6 +166,30 @@ export const messages = {
   'miss.blaze': tr('BLAZE HIT YOU', 'ブレイズにぶつかった'),
   'miss.igniter': tr('STOPPED TOO LONG', '立ち止まりすぎた'),
 
+  // --- In-play hints ---------------------------------------------------------
+  // `.key` reads for a keyboard, `.touch` for the on-screen buttons.
+  'hint.draw.key': tr('HOLD SPACE + ARROW KEYS TO DRAW A LINE', 'Space を押しながら矢印キーで線を引こう'),
+  'hint.draw.touch': tr('HOLD FAST + A DIRECTION TO DRAW A LINE', 'FAST を押しながら方向ボタンで線を引こう'),
+  'hint.claimSide': tr('THE SIDE WITHOUT ENEMIES BECOMES YOURS', '敵のいない側が自分の陣地になる'),
+  'hint.slow.key': tr('DRAW THE WHOLE LINE WITH Z FOR DOUBLE POINTS', 'Z を押したまま最後まで引くと点が 2 倍'),
+  'hint.slow.touch': tr('DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS', 'SLOW だけで最後まで引くと点が 2 倍'),
+  'hint.split': tr('SPLIT THE WISPS WITH A LINE TO CLEAR AT ONCE', 'ウィスプを線で切り分けると一発クリア'),
+  'hint.ember': tr('EMBER: PATROLS THE BORDER', 'エンバー: 枠の上を回ってくる'),
+  'hint.blaze': tr('BLAZE: CLIMBS ONTO YOUR LINE', 'ブレイズ: 引いている線の上まで登ってくる'),
+  'hint.igniter': tr('IGNITER: CHASES YOU WHEN YOU STOP ON A LINE', 'イグナイター: 線の途中で止まると追ってくる'),
+
+  // --- HOW TO PLAY -----------------------------------------------------------
+  'howTo.button': same('HOW TO PLAY'),
+  'howTo.heading': same('HOW TO PLAY'),
+  'howTo.closeButton': same('CLOSE'),
+  'howTo.draw.key': tr('HOLD SPACE AND MOVE TO DRAW A LINE', 'Space を押しながら動くと線が引ける'),
+  'howTo.draw.touch': tr('HOLD FAST AND MOVE TO DRAW A LINE', 'FAST を押しながら動くと線が引ける'),
+  'howTo.close': tr('REACH THE BORDER AGAIN TO CLAIM THE AREA', '線を枠までつなぐと陣地になる'),
+  'howTo.side': tr('YOU GET THE SIDE WITHOUT ENEMIES', '敵のいない側が自分の陣地'),
+  'howTo.split': tr('SPLIT THE WISPS TO CLEAR AT ONCE', 'ウィスプを切り分けると一発クリア'),
+  'howTo.goal': tr('FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES', '目標の % まで囲むとクリア。1 プレイは 3 分'),
+  'howTo.clearMark': same('CLEAR!'),
+
   // --- Touch controls --------------------------------------------------------
   'touch.slow': same('SLOW'),
   'touch.fast': same('FAST'),

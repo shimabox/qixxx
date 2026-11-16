@@ -98,6 +98,21 @@ const JAPANESE_SENTENCES: Record<string, string | ((...args: never[]) => string)
   'miss.ember': 'エンバーにぶつかった',
   'miss.blaze': 'ブレイズにぶつかった',
   'miss.igniter': '立ち止まりすぎた',
+  'hint.draw.key': 'Space を押しながら矢印キーで線を引こう',
+  'hint.draw.touch': 'FAST を押しながら方向ボタンで線を引こう',
+  'hint.claimSide': '敵のいない側が自分の陣地になる',
+  'hint.slow.key': 'Z を押したまま最後まで引くと点が 2 倍',
+  'hint.slow.touch': 'SLOW だけで最後まで引くと点が 2 倍',
+  'hint.split': 'ウィスプを線で切り分けると一発クリア',
+  'hint.ember': 'エンバー: 枠の上を回ってくる',
+  'hint.blaze': 'ブレイズ: 引いている線の上まで登ってくる',
+  'hint.igniter': 'イグナイター: 線の途中で止まると追ってくる',
+  'howTo.draw.key': 'Space を押しながら動くと線が引ける',
+  'howTo.draw.touch': 'FAST を押しながら動くと線が引ける',
+  'howTo.close': '線を枠までつなぐと陣地になる',
+  'howTo.side': '敵のいない側が自分の陣地',
+  'howTo.split': 'ウィスプを切り分けると一発クリア',
+  'howTo.goal': '目標の % まで囲むとクリア。1 プレイは 3 分',
 };
 
 // Placeholder arguments for the keys that take them: each `{name}` of the
@@ -159,5 +174,33 @@ describe('messages', () => {
     expect(t('miss.ember')).toBe('EMBER HIT YOU');
     expect(t('miss.blaze')).toBe('BLAZE HIT YOU');
     expect(t('miss.igniter')).toBe('STOPPED TOO LONG');
+  });
+
+  it('has the hints and HOW TO PLAY sentences in English as designed', () => {
+    const english: Record<string, string> = {
+      'hint.draw.key': 'HOLD SPACE + ARROW KEYS TO DRAW A LINE',
+      'hint.draw.touch': 'HOLD FAST + A DIRECTION TO DRAW A LINE',
+      'hint.claimSide': 'THE SIDE WITHOUT ENEMIES BECOMES YOURS',
+      'hint.slow.key': 'DRAW THE WHOLE LINE WITH Z FOR DOUBLE POINTS',
+      'hint.slow.touch': 'DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS',
+      'hint.split': 'SPLIT THE WISPS WITH A LINE TO CLEAR AT ONCE',
+      'hint.ember': 'EMBER: PATROLS THE BORDER',
+      'hint.blaze': 'BLAZE: CLIMBS ONTO YOUR LINE',
+      'hint.igniter': 'IGNITER: CHASES YOU WHEN YOU STOP ON A LINE',
+      'howTo.draw.key': 'HOLD SPACE AND MOVE TO DRAW A LINE',
+      'howTo.draw.touch': 'HOLD FAST AND MOVE TO DRAW A LINE',
+      'howTo.close': 'REACH THE BORDER AGAIN TO CLAIM THE AREA',
+      'howTo.side': 'YOU GET THE SIDE WITHOUT ENEMIES',
+      'howTo.split': 'SPLIT THE WISPS TO CLEAR AT ONCE',
+      'howTo.goal': 'FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES',
+    };
+    for (const [key, text] of Object.entries(english)) {
+      expect((messages as Record<string, { en: unknown }>)[key]?.en, key).toBe(text);
+    }
+    // The button and the heading stay English.
+    setLocale('ja');
+    expect(t('howTo.button')).toBe('HOW TO PLAY');
+    expect(t('howTo.heading')).toBe('HOW TO PLAY');
+    expect(t('howTo.closeButton')).toBe('CLOSE');
   });
 });
