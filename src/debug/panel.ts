@@ -475,7 +475,11 @@ export interface DebugPanelHandle {
 export function initDebugPanel(
   getSession: () => GameSession,
   hudRow: HTMLElement,
-  fxHooks?: DebugFxHooks
+  fxHooks?: DebugFxHooks,
+  // RESET HINTS: forgets which in-play hints this device has seen (saved and
+  // in memory), so the next play shows them again. Display only — not a
+  // debug override, the run is untouched.
+  resetHints?: () => void
 ): DebugPanelHandle {
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
@@ -495,7 +499,7 @@ export function initDebugPanel(
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const { panel, sync } = buildPanel(getSession, () => setOpen(false), fxHooks);
+  const { panel, sync } = buildPanel(getSession, () => setOpen(false), fxHooks, resetHints);
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
@@ -561,7 +565,8 @@ function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
 function buildPanel(
   getSession: () => GameSession,
   onClose: () => void,
-  fxHooks?: DebugFxHooks
+  fxHooks?: DebugFxHooks,
+  resetHints?: () => void
 ): { panel: HTMLDivElement; sync: () => void } {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
@@ -704,6 +709,7 @@ function buildPanel(
   });
   buttonRow.appendChild(resetButton);
   buttonRow.appendChild(exportButton);
+  if (resetHints) buttonRow.appendChild(buildButton('RESET HINTS', resetHints));
   panel.appendChild(buttonRow);
 
   const exportOutput = document.createElement('textarea');

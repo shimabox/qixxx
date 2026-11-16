@@ -97,6 +97,22 @@ describe('KeyboardInput — confirm keys', () => {
   });
 });
 
+describe('KeyboardInput — ignored key-downs', () => {
+  it('does not count a key-down the filter ignores, then counts the same key once it is pressed afresh', () => {
+    const target = new EventTarget();
+    let ignoring = true;
+    const input = new KeyboardInput(target, () => ignoring);
+    key(target, 'keydown', 'Enter');
+    key(target, 'keydown', 'Enter', { repeat: true });
+    expect(input.getInput().confirm).toBe(false);
+    key(target, 'keyup', 'Enter');
+    ignoring = false;
+    key(target, 'keydown', 'Enter');
+    expect(input.getInput().confirm).toBe(true);
+    input.dispose();
+  });
+});
+
 describe('KeyboardInput — blur clears held state (GameOver release gate support, 2026-08-22)', () => {
   it('drops held keys on blur, so a keyup missed while unfocused cannot leave a key stuck down', () => {
     const target = new EventTarget();

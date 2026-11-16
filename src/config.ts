@@ -486,6 +486,53 @@ export const COLOR_FX_OUTLINE = '#0a0e27'; // dark outline keeps popups/SPLIT! r
 export const COLOR_FX_POPUP = '#ffffff';
 export const COLOR_FX_SPLIT = '#ffe066';
 
+// In-play hints (src/hints/): a short line over the field, plus a mark on the
+// field or a glowing touch button, the first time a situation comes up.
+// Display only — they never touch the input, the run or the score.
+// A timed hint (the claimed side, an enemy's first appearance) stays this
+// many ticks; the split hint a little longer, being the longest sentence.
+export const HINT_TIMED_TICKS = 150;
+export const HINT_SPLIT_TICKS = 180;
+// The slow-line hint stays until a slow-line claim, or at most this long.
+export const HINT_SLOW_MAX_TICKS = 600;
+// A timed hint that comes up while another is shown waits its turn; one
+// that has waited longer than this is dropped (and shown another time).
+export const HINT_QUEUE_MAX_WAIT_TICKS = 300;
+// The ring around a hint's target: shown for RING_TICKS from the hint
+// appearing, RADIUS cells across the field's own cells.
+export const HINT_RING_TICKS = 90;
+export const HINT_RING_RADIUS_CELLS = 5;
+// The drawing hint's arrow from the marker into the field, in cells.
+export const HINT_ARROW_LENGTH_CELLS = 8;
+// The hint line fades in and out over this many ticks (not with reduced motion).
+export const HINT_FADE_TICKS = 12;
+// The hint line's text size (CSS px): the field's on-screen width times
+// HINT_BAR_FONT_PER_FIELD_WIDTH, kept between HINT_BAR_FONT_PX and
+// HINT_BAR_FONT_MAX_PX, so a wide field (a PC screen) gets a line that reads
+// at its scale. On a field shown less than HINT_BAR_COMPACT_BELOW_PX tall,
+// the smaller HINT_BAR_FONT_COMPACT_PX.
+export const HINT_BAR_FONT_PX = 13;
+export const HINT_BAR_FONT_MAX_PX = 18;
+export const HINT_BAR_FONT_PER_FIELD_WIDTH = 0.018;
+export const HINT_BAR_FONT_COMPACT_PX = 12;
+export const HINT_BAR_COMPACT_BELOW_PX = 200;
+// On a field shown less than this tall (a phone held sideways, between the
+// touch controls) the Title screen's HOW TO PLAY and RANKING buttons shrink
+// to this text size and sit in one row along the field's top edge, clear of
+// the title text.
+export const TITLE_BUTTONS_COMPACT_BELOW_PX = 200;
+export const TITLE_BUTTON_COMPACT_FONT_PX = 10;
+export const TITLE_BUTTON_COMPACT_PADDING = '2px 6px';
+// Their room from the field's edges and from each other (CSS px).
+export const TITLE_BUTTON_COMPACT_INSET_PX = 4;
+// With the small buttons, the Title screen's text sits this much lower than
+// the field's middle (CSS px), clear of them.
+export const TITLE_TEXT_COMPACT_OFFSET_PX = 12;
+// After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
+// buttons) are dropped for this many ticks, so the key that closed it does
+// not also start a run.
+export const HOW_TO_CLOSE_GUARD_TICKS = 12;
+
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
 // to spot (real-playtest feedback). These constants only enlarge the drawn

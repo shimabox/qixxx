@@ -60,12 +60,22 @@ import {
   HUD_GAUGE_GOAL_COLOR,
   GAMEOVER_MODAL_COMPACT_BELOW_PX,
   GAMEOVER_MODAL_TINY_BELOW_PX,
+  TITLE_BUTTONS_COMPACT_BELOW_PX,
+  TITLE_TEXT_COMPACT_OFFSET_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
 import { detectLocale, getLocale, setLocale, t } from './i18n';
 import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
 import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
+import { HintDirector, type HintView } from './hints/director';
+import { HintSeenStore } from './storage/hints';
+import { HintBar } from './ui/hintBar';
+import { HowToPlayUI } from './ui/howToPlay';
+import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
+import type { Ember } from './core/patrol';
+import type { GameEvent } from './core/events';
+import type { ClaimFeedback } from './core/feedback';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -81,6 +91,12 @@ declare global {
       hitStop: HitStop;
       /** Auto-advance transitions around replay skips — see replayAutoAdvanceLog. */
       getReplayAutoAdvanceLog: () => boolean[];
+      /** The in-play hint shown now (src/hints/), or null. */
+      getHint: () => { id: string; textKey: string; glow: string | null; age: number } | null;
+      /** The hint's ring / arrow handed to the renderer for the last frame, or null. */
+      getHintMarks: () => HintMarkShapes | null;
+      /** Forgets every seen hint (the debug panel's RESET HINTS). */
+      resetHints: () => void;
     };
   }
 }
@@ -458,6 +474,8 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let rankingUI: RankingUI;
+// The Title screen's HOW TO PLAY button and panel (src/ui/howToPlay.ts).
+let howToPlay: HowToPlayUI;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
 
@@ -514,6 +532,11 @@ let tinyField = false;
 // The field's on-screen width / CANVAS_WIDTH, for the effects' smallest
 // text size (Renderer.setFxTextMinFontPx()). Updated on every resize.
 let fieldDisplayScale = 1;
+// The field's on-screen width and height (CSS px), for the hint line's text size.
+let fieldCssWidth = CANVAS_WIDTH;
+let fieldCssHeight = CANVAS_HEIGHT;
+// The Title screen's buttons are the small ones (applyTitleButtonsCompact()).
+let titleButtonsCompact = false;
 let hudScore: HTMLSpanElement;
 // The HUD's lives marks. Line height 0: the marks come from a fallback font
 // whose taller metrics would otherwise make the HUD line 1px taller, and with
@@ -548,6 +571,19 @@ let lastInput: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, conf
 let lastHudKey = '';
 // The occupancy gauge's last-written state, cached the same way.
 let lastGaugeKey = '';
+
+// In-play hints (src/hints/): which one shows, its line over the field
+// (src/ui/hintBar.ts) and its mark on the field (src/render/hintLayer.ts).
+// Live play only, and display only — they read what a tick did, never feed
+// anything back into the input, the run or the score.
+const hintSeen = new HintSeenStore();
+const hintDirector = new HintDirector<Ember>(hintSeen);
+let hintBar: HintBar;
+let lastHintMarks: HintMarkShapes | null = null;
+// The touch sentences and the button glow (src/input/touch.ts's check).
+let touchDevice = false;
+// prefers-reduced-motion: the hint's line, marks and glow hold still.
+let reducedMotion = false;
 
 // The player's best when the live run started. The live high score follows
 // the score during play, so the HUD's goal slot and the GAME OVER modal's NEW
@@ -680,15 +716,23 @@ function init(): void {
   // start-up and followed when it changes.
   const reducedMotionQuery =
     typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-  fx = new FxDirector(fxParams, { reducedMotion: reducedMotionQuery?.matches ?? false });
-  reducedMotionQuery?.addEventListener('change', (event) => fx.setReducedMotion(event.matches));
+  reducedMotion = reducedMotionQuery?.matches ?? false;
+  fx = new FxDirector(fxParams, { reducedMotion });
+  reducedMotionQuery?.addEventListener('change', (event) => {
+    reducedMotion = event.matches;
+    fx.setReducedMotion(event.matches);
+  });
+  touchDevice = isTouchCapableDevice();
 
   gameRoot = getGameRootElement();
   hudRow = getHudRowElement(gameRoot);
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
-  keyboard = new KeyboardInput();
+  // A key pressed while HOW TO PLAY is open is not counted until it is
+  // released (src/ui/howToPlay.ts), so holding the key that closed it does
+  // not start a run.
+  keyboard = new KeyboardInput(window, (event) => howToPlay?.keepsKeyDown(event) ?? false);
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
   // default target), exactly matching KeyboardInput's own listening target
   // above — see input/touch.ts's module comment for how that's a complete
@@ -734,6 +778,7 @@ function init(): void {
   hudLine2.style.display = 'none';
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
+  hintBar = new HintBar(canvasWrap);
   gameOverModal = initGameOverModal(canvasWrap, {
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
@@ -764,8 +809,16 @@ function init(): void {
     // the same transition as the modal's buttons.
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
+    // One panel at a time over the Title screen.
+    onListOpen: () => howToPlay.close(),
   });
   rankingUI.mountTitleButton();
+  howToPlay = new HowToPlayUI({
+    anchor: canvasWrap,
+    getRankingButton: () => rankingUI.getTitleButton(),
+    touch: touchDevice,
+    onOpen: () => rankingUI.hideList(),
+  });
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
@@ -791,7 +844,19 @@ function init(): void {
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
 
-  window.__game__ = { session, sfx, fx, hitStop, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
+  window.__game__ = {
+    session,
+    sfx,
+    fx,
+    hitStop,
+    getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog],
+    getHint: () => {
+      const view = viewMode === 'live' ? hintDirector.current() : null;
+      return view ? { id: view.id, textKey: view.textKey, glow: view.glow, age: view.age } : null;
+    },
+    getHintMarks: () => lastHintMarks,
+    resetHints: () => hintSeen.reset(),
+  };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
   // shipped to players. The `import.meta.env.DEV` check is a compile-time
@@ -808,7 +873,7 @@ function init(): void {
         playClaim: (claim) => sfx.playClaim(claim),
         playSplitImpact: () => sfx.playSplitImpact(),
         playMiss: () => sfx.handleEvents(['miss']),
-      });
+      }, () => hintSeen.reset());
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,
@@ -910,6 +975,11 @@ function enterReplayMode(engine: ReplayEngine): void {
   renderer.resetBoard();
   multiplierEmphasis.reset();
   renderMultiplierFx(null);
+  // No hints over a replay; what the live run has seen stays as it is.
+  hintDirector.reset();
+  hintBar.hide();
+  lastHintMarks = null;
+  renderer.setHintMarks(null);
   // Force the next renderFrame() to rewrite the HUD/screen text (they were
   // last written for the live session and must not be left stale).
   lastHudKey = '';
@@ -1272,6 +1342,8 @@ function fitCanvasToViewport(): void {
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
   fieldDisplayScale = cssWidth / CANVAS_WIDTH;
+  fieldCssWidth = cssWidth;
+  fieldCssHeight = cssHeight;
   // A small field gets the GAME OVER modal's tighter spacing, so the whole
   // modal stays on the field.
   tinyField = cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX;
@@ -1281,6 +1353,11 @@ function fitCanvasToViewport(): void {
   // The ranking submission panel, over the modal, packs tighter on the same
   // small fields.
   rankingUI.setSubmitPanelCompact(tinyField);
+  // On a small field the Title screen's two buttons shrink into one row
+  // along the top edge, clear of the title text.
+  applyTitleButtonsCompact();
+  // HOW TO PLAY stays clear of RANKING on the new field width.
+  howToPlay?.layout();
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
@@ -1353,13 +1430,21 @@ function updateLive(): void {
     readInput: () => keyboard.getInput(),
     retryHold: currentRetryHold,
   });
-  if (!polled) return;
+  if (!polled) {
+    // A hit-stopped tick: the hints' time runs on, like the effects'.
+    stepHints(null, [], [], false);
+    return;
+  }
 
   const statusBeforeThisTick = session.getStatus();
   // The modal's RETRY / TITLE request reaches the core as confirm on every
   // GAME OVER tick until the run leaves it (see `modalAction`).
   if (statusBeforeThisTick !== 'gameover') modalAction = null;
   let input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  // While HOW TO PLAY is open and for a few ticks after it closes, a confirm
+  // is dropped (not kept for later), so the key or tap that closed it does
+  // not also start a run. Counted every tick.
+  if (howToPlay.dropsConfirm() && input.confirm) input = { ...input, confirm: false };
   // On STAGE CLEAR a confirm first completes the result's count-up (or, under
   // SPLIT!, has it appear complete); only the next one starts the next stage.
   if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
@@ -1425,7 +1510,14 @@ function updateLive(): void {
   // and a miss's reason, told apart by the Embers of this same tick (a Blaze
   // or a plain Ember on the contact cell).
   const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
-  for (const notice of applyImpactNotices(session, fx, hitStop, sfx, missReason)) stageResultTally.add(notice);
+  const claims = applyImpactNotices(session, fx, hitStop, sfx, missReason);
+  for (const notice of claims) stageResultTally.add(notice);
+  // The hints read what this tick did. A stage's play starts when the status
+  // turns 'playing': a new run's from Title or GAME OVER, a later stage's
+  // from STAGE CLEAR.
+  const startedPlaying = statusBeforeThisTick !== 'playing' && session.getStatus() === 'playing';
+  const stageStart = !startedPlaying ? null : statusBeforeThisTick === 'stageclear' && !step.freshRun ? 'stage' : 'run';
+  stepHints(stageStart, claims, events, true);
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
@@ -1460,6 +1552,59 @@ function updateLive(): void {
   }
 }
 
+// The Title screen's HOW TO PLAY and RANKING buttons, small and in one row on
+// a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall.
+function applyTitleButtonsCompact(): void {
+  titleButtonsCompact = fieldCssHeight < TITLE_BUTTONS_COMPACT_BELOW_PX;
+  rankingUI.setTitleButtonCompact(titleButtonsCompact);
+  howToPlay?.setCompact(titleButtonsCompact);
+}
+
+// Steps the in-play hints once per live tick (src/hints/director.ts).
+// `played` is false on a hit-stopped tick, which did nothing but let time run.
+function stepHints(
+  stageStart: 'run' | 'stage' | null,
+  claims: readonly ClaimFeedback[],
+  events: readonly GameEvent[],
+  played: boolean
+): void {
+  const game = session.getGame();
+  const spawned = played && events.some((e) => e === 'ember-spawned' || e === 'ember-blaze-spawned');
+  const embers = game.getEmbers();
+  hintDirector.step({
+    playing: viewMode === 'live' && session.getStatus() === 'playing',
+    stageStart,
+    wispCount: game.getWisps().length,
+    claims,
+    events,
+    spawnedEmber: spawned && embers.length > 0 ? embers[embers.length - 1] : null,
+    touch: touchDevice,
+  });
+}
+
+// The hint's mark resolved to cells on the live field: the arrow from the
+// marker (none while it draws a line, or when no step leads into the field),
+// or the ring's targets where they are now (an Ember that has gone, or an
+// Igniter that has gone, leaves no ring).
+function resolveHintMark(view: HintView<Ember> | null): ResolvedHintMark | null {
+  const mark = view?.mark ?? null;
+  if (mark === null) return null;
+  const game = session.getGame();
+  if (mark.kind === 'arrow') {
+    const marker = game.getMarker();
+    if (marker.isDrawing()) return null;
+    const from = marker.getPosition();
+    const dir = hintArrowDirection(game.getField(), from);
+    return dir ? { kind: 'arrow', from, dir } : null;
+  }
+  if (mark.target === 'wisps') return { kind: 'ring', centers: game.getWisps().map((wisp) => wisp.getPosition()) };
+  if (mark.target === 'igniter') {
+    const position = game.getIgniterPosition();
+    return position ? { kind: 'ring', centers: [position] } : null;
+  }
+  return game.getEmbers().includes(mark.ember) ? { kind: 'ring', centers: [mark.ember.getPosition()] } : null;
+}
+
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
   const activeSession = currentSession();
@@ -1474,6 +1619,10 @@ function renderFrame(): void {
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
   renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
+  // The in-play hint: live play only.
+  const hintView = viewMode === 'replay' ? null : hintDirector.current();
+  lastHintMarks = hintView ? hintMarkShapes(resolveHintMark(hintView), hintView.age, reducedMotion) : null;
+  renderer.setHintMarks(lastHintMarks);
 
   renderer.render(
     game.getField(),
@@ -1485,6 +1634,20 @@ function renderFrame(): void {
     fxFrame ?? undefined
   );
   renderMultiplierFx(fxFrame);
+  if (viewMode === 'replay') {
+    hintBar.hide();
+  } else {
+    hintBar.render(
+      {
+        view: hintView,
+        markerY: game.getMarker().getPosition().y,
+        fieldCssWidth,
+        fieldCssHeight,
+        reducedMotion,
+      },
+      (glow) => document.querySelector<HTMLElement>(`#touch-controls button[data-code="${glow === 'fast' ? 'Space' : 'KeyZ'}"]`)
+    );
+  }
 
   const status = activeSession.getStatus();
 
@@ -1496,6 +1659,8 @@ function renderFrame(): void {
   // timer of its own) so it tracks the same status this frame is rendering;
   // the call is a no-op unless that availability actually flipped.
   rankingUI.syncAvailability();
+  // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
+  howToPlay.syncAvailability(viewMode === 'live' && replayEngine === null && status === 'title');
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
@@ -1619,6 +1784,11 @@ function renderFrame(): void {
       writeScreen(text);
     }
   }
+  // With the small Title buttons in a row along the field's top edge, the
+  // title text sits a little lower, clear of them.
+  const lowered = titleButtonsCompact && status === 'title' && viewMode === 'live' && replayEngine === null;
+  const screenTop = lowered ? `calc(50% + ${TITLE_TEXT_COMPACT_OFFSET_PX}px)` : '50%';
+  if (screen.style.top !== screenTop) screen.style.top = screenTop;
 }
 
 // Writes the Title / STAGE CLEAR overlay. English: one text, exactly
