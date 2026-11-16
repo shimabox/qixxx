@@ -2,6 +2,7 @@ import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, Cell
 import type { Ember } from '../core/patrol';
 import type { FxFrame, FxFillReveal, FxPopup } from '../fx/director';
 import { drawFlash, drawLineGlows, drawMissReason, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
+import { drawHintMarks, type HintMarkShapes } from './hintLayer';
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -108,6 +109,7 @@ export class Renderer {
 
   private fxTextMinFontPx = 0;
   private missReasonMinFontPx = 0;
+  private hintMarks: HintMarkShapes | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -277,6 +279,14 @@ export class Renderer {
     // The miss reason: over the flash so the burst never washes it out, and
     // outside the shake, since it is there to be read.
     if (fx?.missReason) drawMissReason(this.ctx, fx.missReason, this.missReasonMinFontPx);
+    // The in-play hint's mark (live play only — main.ts never sets one for a
+    // replay): on top, and outside the shake like the miss reason.
+    if (this.hintMarks) drawHintMarks(this.ctx, this.hintMarks);
+  }
+
+  /** The in-play hint's ring or arrow for the next frames (src/render/hintLayer.ts), or null for none. */
+  setHintMarks(shapes: HintMarkShapes | null): void {
+    this.hintMarks = shapes;
   }
 
   private popupPosition(popup: FxPopup): { x: number; y: number } {

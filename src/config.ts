@@ -506,9 +506,14 @@ export const HINT_RING_RADIUS_CELLS = 5;
 export const HINT_ARROW_LENGTH_CELLS = 8;
 // The hint line fades in and out over this many ticks (not with reduced motion).
 export const HINT_FADE_TICKS = 12;
-// The hint line's text size (CSS px), and on a field shown less than
-// HINT_BAR_COMPACT_BELOW_PX tall the smaller size.
+// The hint line's text size (CSS px): the field's on-screen width times
+// HINT_BAR_FONT_PER_FIELD_WIDTH, kept between HINT_BAR_FONT_PX and
+// HINT_BAR_FONT_MAX_PX, so a wide field (a PC screen) gets a line that reads
+// at its scale. On a field shown less than HINT_BAR_COMPACT_BELOW_PX tall,
+// the smaller HINT_BAR_FONT_COMPACT_PX.
 export const HINT_BAR_FONT_PX = 13;
+export const HINT_BAR_FONT_MAX_PX = 18;
+export const HINT_BAR_FONT_PER_FIELD_WIDTH = 0.018;
 export const HINT_BAR_FONT_COMPACT_PX = 12;
 export const HINT_BAR_COMPACT_BELOW_PX = 200;
 // After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
