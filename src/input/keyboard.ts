@@ -19,9 +19,15 @@ export class KeyboardInput {
   // Title/StageClear/GameOver transition (see SessionInput.confirm).
   private confirmPending = false;
   private target: EventTarget;
+  private ignoresKeyDown: (event: Event) => boolean;
 
-  constructor(target: EventTarget = window) {
+  /**
+   * `ignoresKeyDown`: true for a key-down not to be counted as a press at
+   * all (src/ui/howToPlay.ts's keepsKeyDown()). The key's key-up still is.
+   */
+  constructor(target: EventTarget = window, ignoresKeyDown: (event: Event) => boolean = () => false) {
     this.target = target;
+    this.ignoresKeyDown = ignoresKeyDown;
     target.addEventListener('keydown', this.onKeyDown);
     target.addEventListener('keyup', this.onKeyUp);
     target.addEventListener('blur', this.onBlur);
@@ -41,14 +47,13 @@ export class KeyboardInput {
   };
 
   private onKeyDown = (event: Event): void => {
-    if (isFromInteractiveElement(event)) return;
+    if (isFromInteractiveElement(event) || this.ignoresKeyDown(event)) return;
     const code = (event as KeyboardEvent).code;
     if (code === 'Tab') return;
     if (!this.pressed.has(code)) {
       this.pressed.add(code);
       this.pressOrder.push(code);
-      this.confirmPending = true;
-    }
+      this.confirmPending = true;    }
     // Prevent the page from scrolling on arrow keys / space while playing.
     if (isTrackedKey(code)) {
       event.preventDefault();

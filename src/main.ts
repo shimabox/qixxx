@@ -60,6 +60,8 @@ import {
   HUD_GAUGE_GOAL_COLOR,
   GAMEOVER_MODAL_COMPACT_BELOW_PX,
   GAMEOVER_MODAL_TINY_BELOW_PX,
+  TITLE_BUTTONS_COMPACT_BELOW_PX,
+  TITLE_TEXT_COMPACT_OFFSET_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -69,6 +71,7 @@ import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
 import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
 import { HintBar } from './ui/hintBar';
+import { HowToPlayUI } from './ui/howToPlay';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
@@ -471,6 +474,8 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let rankingUI: RankingUI;
+// The Title screen's HOW TO PLAY button and panel (src/ui/howToPlay.ts).
+let howToPlay: HowToPlayUI;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
 
@@ -530,6 +535,8 @@ let fieldDisplayScale = 1;
 // The field's on-screen width and height (CSS px), for the hint line's text size.
 let fieldCssWidth = CANVAS_WIDTH;
 let fieldCssHeight = CANVAS_HEIGHT;
+// The Title screen's buttons are the small ones (applyTitleButtonsCompact()).
+let titleButtonsCompact = false;
 let hudScore: HTMLSpanElement;
 // The HUD's lives marks. Line height 0: the marks come from a fallback font
 // whose taller metrics would otherwise make the HUD line 1px taller, and with
@@ -722,7 +729,10 @@ function init(): void {
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
-  keyboard = new KeyboardInput();
+  // A key pressed while HOW TO PLAY is open is not counted until it is
+  // released (src/ui/howToPlay.ts), so holding the key that closed it does
+  // not start a run.
+  keyboard = new KeyboardInput(window, (event) => howToPlay?.keepsKeyDown(event) ?? false);
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
   // default target), exactly matching KeyboardInput's own listening target
   // above — see input/touch.ts's module comment for how that's a complete
@@ -799,8 +809,16 @@ function init(): void {
     // the same transition as the modal's buttons.
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
+    // One panel at a time over the Title screen.
+    onListOpen: () => howToPlay.close(),
   });
   rankingUI.mountTitleButton();
+  howToPlay = new HowToPlayUI({
+    anchor: canvasWrap,
+    getRankingButton: () => rankingUI.getTitleButton(),
+    touch: touchDevice,
+    onOpen: () => rankingUI.hideList(),
+  });
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
@@ -1335,6 +1353,11 @@ function fitCanvasToViewport(): void {
   // The ranking submission panel, over the modal, packs tighter on the same
   // small fields.
   rankingUI.setSubmitPanelCompact(tinyField);
+  // On a small field the Title screen's two buttons shrink into one row
+  // along the top edge, clear of the title text.
+  applyTitleButtonsCompact();
+  // HOW TO PLAY stays clear of RANKING on the new field width.
+  howToPlay?.layout();
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
@@ -1418,6 +1441,10 @@ function updateLive(): void {
   // GAME OVER tick until the run leaves it (see `modalAction`).
   if (statusBeforeThisTick !== 'gameover') modalAction = null;
   let input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  // While HOW TO PLAY is open and for a few ticks after it closes, a confirm
+  // is dropped (not kept for later), so the key or tap that closed it does
+  // not also start a run. Counted every tick.
+  if (howToPlay.dropsConfirm() && input.confirm) input = { ...input, confirm: false };
   // On STAGE CLEAR a confirm first completes the result's count-up (or, under
   // SPLIT!, has it appear complete); only the next one starts the next stage.
   if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
@@ -1525,6 +1552,14 @@ function updateLive(): void {
   }
 }
 
+// The Title screen's HOW TO PLAY and RANKING buttons, small and in one row on
+// a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall.
+function applyTitleButtonsCompact(): void {
+  titleButtonsCompact = fieldCssHeight < TITLE_BUTTONS_COMPACT_BELOW_PX;
+  rankingUI.setTitleButtonCompact(titleButtonsCompact);
+  howToPlay?.setCompact(titleButtonsCompact);
+}
+
 // Steps the in-play hints once per live tick (src/hints/director.ts).
 // `played` is false on a hit-stopped tick, which did nothing but let time run.
 function stepHints(
@@ -1624,6 +1659,8 @@ function renderFrame(): void {
   // timer of its own) so it tracks the same status this frame is rendering;
   // the call is a no-op unless that availability actually flipped.
   rankingUI.syncAvailability();
+  // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
+  howToPlay.syncAvailability(viewMode === 'live' && replayEngine === null && status === 'title');
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
@@ -1747,6 +1784,11 @@ function renderFrame(): void {
       writeScreen(text);
     }
   }
+  // With the small Title buttons in a row along the field's top edge, the
+  // title text sits a little lower, clear of them.
+  const lowered = titleButtonsCompact && status === 'title' && viewMode === 'live' && replayEngine === null;
+  const screenTop = lowered ? `calc(50% + ${TITLE_TEXT_COMPACT_OFFSET_PX}px)` : '50%';
+  if (screen.style.top !== screenTop) screen.style.top = screenTop;
 }
 
 // Writes the Title / STAGE CLEAR overlay. English: one text, exactly

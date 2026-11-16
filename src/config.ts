@@ -516,6 +516,18 @@ export const HINT_BAR_FONT_MAX_PX = 18;
 export const HINT_BAR_FONT_PER_FIELD_WIDTH = 0.018;
 export const HINT_BAR_FONT_COMPACT_PX = 12;
 export const HINT_BAR_COMPACT_BELOW_PX = 200;
+// On a field shown less than this tall (a phone held sideways, between the
+// touch controls) the Title screen's HOW TO PLAY and RANKING buttons shrink
+// to this text size and sit in one row along the field's top edge, clear of
+// the title text.
+export const TITLE_BUTTONS_COMPACT_BELOW_PX = 200;
+export const TITLE_BUTTON_COMPACT_FONT_PX = 10;
+export const TITLE_BUTTON_COMPACT_PADDING = '2px 6px';
+// Their room from the field's edges and from each other (CSS px).
+export const TITLE_BUTTON_COMPACT_INSET_PX = 4;
+// With the small buttons, the Title screen's text sits this much lower than
+// the field's middle (CSS px), clear of them.
+export const TITLE_TEXT_COMPACT_OFFSET_PX = 12;
 // After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
 // buttons) are dropped for this many ticks, so the key that closed it does
 // not also start a run.

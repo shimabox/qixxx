@@ -12,7 +12,16 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS, RANKING_BOARD_SIZE } from '../config';
+import {
+  HUD_FONT,
+  HUD_TEXT_COLOR,
+  HUD_ACCENT_COLOR,
+  MAX_VERIFIED_CLAIMS,
+  RANKING_BOARD_SIZE,
+  TITLE_BUTTON_COMPACT_FONT_PX,
+  TITLE_BUTTON_COMPACT_INSET_PX,
+  TITLE_BUTTON_COMPACT_PADDING,
+} from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
 import { t } from '../i18n';
 import { applySentenceFont } from './sentenceFont';
@@ -284,6 +293,8 @@ export interface RankingUIOptions {
   onRetry: () => void;
   /** The submission panel's own TITLE: same as the GAME OVER modal's TITLE button (see onRetry). */
   onTitle: () => void;
+  /** Called when the ranking list opens (main.ts closes HOW TO PLAY). */
+  onListOpen?: () => void;
 }
 
 /**
@@ -448,6 +459,17 @@ export interface RankingUI {
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
+  /** Closes the ranking list if it is open (HOW TO PLAY opening). */
+  hideList(): void;
+  /** The RANKING button, once mounted. */
+  getTitleButton(): HTMLButtonElement | null;
+  /**
+   * Shrinks the RANKING button (TITLE_BUTTON_COMPACT_FONT_PX, tighter
+   * padding, closer to the corner) for a field shown less than
+   * TITLE_BUTTONS_COMPACT_BELOW_PX tall, where the roomy one covers the title
+   * text. main.ts calls it whenever the field is resized.
+   */
+  setTitleButtonCompact(compact: boolean): void;
   /**
    * Packs the submission panel tighter (smaller text, less padding and
    * spacing) for a field too small to hold its roomy layout — a phone held
@@ -587,6 +609,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   async function showList(): Promise<void> {
     if (!browsingAllowed()) return;
+    options.onListOpen?.();
     browsingGeneration++;
     const requestGeneration = browsingGeneration;
     showListStatus(t('ranking.loading'));
@@ -1513,11 +1536,29 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     });
     anchor.appendChild(button);
     titleButton = button;
+    // A field already known to be small: the compact button from the start.
+    if (titleButtonCompact) {
+      titleButtonCompact = false;
+      setTitleButtonCompact(true);
+    }
     // Mounted during init(), before the first frame ever renders: start from
     // the real current state rather than flashing the button on a non-Title
     // screen for one frame.
     lastBrowsingAllowed = null;
     syncAvailability();
+  }
+
+  let titleButtonCompact = false;
+  function setTitleButtonCompact(compact: boolean): void {
+    if (compact === titleButtonCompact) return;
+    titleButtonCompact = compact;
+    if (!titleButton) return;
+    // The roomy values are mountTitleButton()'s own.
+    titleButton.style.fontSize = compact ? `${TITLE_BUTTON_COMPACT_FONT_PX}px` : '1em';
+    titleButton.style.padding = compact ? TITLE_BUTTON_COMPACT_PADDING : '8px 16px';
+    titleButton.style.top = compact ? `${TITLE_BUTTON_COMPACT_INSET_PX}px` : '8px';
+    titleButton.style.right = compact ? `${TITLE_BUTTON_COMPACT_INSET_PX}px` : '8px';
+    titleButton.style.maxWidth = compact ? `calc(100% - ${TITLE_BUTTON_COMPACT_INSET_PX * 2}px)` : 'calc(100% - 16px)';
   }
 
   let submitPanelCompact = false;
@@ -1555,6 +1596,11 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     syncReplayStatus,
     offerSubmission,
     hideAll,
+    hideList: () => {
+      if (listOverlay.style.display !== 'none') hideList();
+    },
+    getTitleButton: () => titleButton,
+    setTitleButtonCompact,
     setSubmitPanelCompact,
     loadRankInThreshold,
     getRankInThreshold: () => rankInThreshold.get(),
