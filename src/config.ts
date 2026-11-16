@@ -541,11 +541,15 @@ export const TITLE_DEMO_END_HOLD_TICKS = 120;
 export const TITLE_DEMO_DIM_ALPHA = 0.55;
 // The DEMO tag in the field's bottom-left corner: its text size (CSS px), the
 // smaller size on a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall,
-// and its distance from the field's left and bottom edges for each.
+// and its distance from the field's left and bottom edges for each. On the
+// small field the title text, lowered by TITLE_TEXT_COMPACT_OFFSET_PX and
+// wrapped to the field's width, leaves only about the tag's own height below
+// it, so the small tag sits on the field's bottom edge.
 export const TITLE_DEMO_LABEL_FONT_PX = 12;
 export const TITLE_DEMO_LABEL_FONT_COMPACT_PX = 10;
 export const TITLE_DEMO_LABEL_INSET_PX = 8;
 export const TITLE_DEMO_LABEL_INSET_COMPACT_PX = 4;
+export const TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX = 0;
 // After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
 // buttons) are dropped for this many ticks, so the key that closed it does
 // not also start a run.
