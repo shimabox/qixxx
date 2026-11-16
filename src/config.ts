@@ -486,6 +486,36 @@ export const COLOR_FX_OUTLINE = '#0a0e27'; // dark outline keeps popups/SPLIT! r
 export const COLOR_FX_POPUP = '#ffffff';
 export const COLOR_FX_SPLIT = '#ffe066';
 
+// In-play hints (src/hints/): a short line over the field, plus a mark on the
+// field or a glowing touch button, the first time a situation comes up.
+// Display only — they never touch the input, the run or the score.
+// A timed hint (the claimed side, an enemy's first appearance) stays this
+// many ticks; the split hint a little longer, being the longest sentence.
+export const HINT_TIMED_TICKS = 150;
+export const HINT_SPLIT_TICKS = 180;
+// The slow-line hint stays until a slow-line claim, or at most this long.
+export const HINT_SLOW_MAX_TICKS = 600;
+// A timed hint that comes up while another is shown waits its turn; one
+// that has waited longer than this is dropped (and shown another time).
+export const HINT_QUEUE_MAX_WAIT_TICKS = 300;
+// The ring around a hint's target: shown for RING_TICKS from the hint
+// appearing, RADIUS cells across the field's own cells.
+export const HINT_RING_TICKS = 90;
+export const HINT_RING_RADIUS_CELLS = 5;
+// The drawing hint's arrow from the marker into the field, in cells.
+export const HINT_ARROW_LENGTH_CELLS = 8;
+// The hint line fades in and out over this many ticks (not with reduced motion).
+export const HINT_FADE_TICKS = 12;
+// The hint line's text size (CSS px), and on a field shown less than
+// HINT_BAR_COMPACT_BELOW_PX tall the smaller size.
+export const HINT_BAR_FONT_PX = 13;
+export const HINT_BAR_FONT_COMPACT_PX = 12;
+export const HINT_BAR_COMPACT_BELOW_PX = 200;
+// After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
+// buttons) are dropped for this many ticks, so the key that closed it does
+// not also start a run.
+export const HOW_TO_CLOSE_GUARD_TICKS = 12;
+
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
 // to spot (real-playtest feedback). These constants only enlarge the drawn
