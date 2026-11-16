@@ -5,7 +5,6 @@
 // are exact.
 import { test, expect, type Page, type BrowserContext, type Browser } from '@playwright/test';
 import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
-
 interface HintMarks {
   rings: Array<{ x: number; y: number; radius: number; alpha: number }>;
   arrow: { x0: number; y0: number; x1: number; y1: number; alpha: number } | null;
@@ -355,19 +354,48 @@ test.describe('the hints do not change the run', () => {
     // Every live tick (hit-stopped ones included) goes through fx.tick():
     // counting them lets each key land right after the same tick in both
     // runs, whatever the frame phase.
+    //
+    // What the script did is watched in the page, at the end of every frame
+    // (after each requestAnimationFrame callback, so after the frame's
+    // render): the hint line's text, each claim raising the occupancy (and
+    // the score) once, and the Igniter showing on the field. The test reads
+    // the record once at the end, so the clock can run in long stretches.
     await page.evaluate(() => {
-      const g = window.__game__ as unknown as { fx: { tick: () => void } };
-      const w = window as unknown as { __ticks__: number };
+      const g = window.__game__!;
+      const fx = (g as unknown as { fx: { tick: () => void } }).fx;
+      const w = window as unknown as { __ticks__: number; __watch__: unknown };
       w.__ticks__ = 0;
-      const tick = g.fx.tick.bind(g.fx);
-      g.fx.tick = () => {
+      const tick = fx.tick.bind(fx);
+      fx.tick = () => {
         w.__ticks__++;
         tick();
       };
+      const watch = { hintsShown: [] as string[], claims: 0, scoreRises: 0, igniterSeen: false };
+      w.__watch__ = watch;
+      let last = { status: 'title', occupancy: 0, score: 0 };
+      const bar = document.getElementById('hint-bar')!;
+      const observe = () => {
+        const text = bar.style.display === 'none' ? '' : bar.textContent ?? '';
+        if (text !== '' && !watch.hintsShown.includes(text)) watch.hintsShown.push(text);
+        const s = g.session;
+        const game = s.getGame();
+        const now = { status: s.getStatus(), occupancy: game.getOccupancy(), score: s.getScore() };
+        if (now.status === 'playing' && last.status === 'playing') {
+          if (now.occupancy > last.occupancy) watch.claims++;
+          if (now.score > last.score) watch.scoreRises++;
+        }
+        if (game.getIgniterPosition() !== null) watch.igniterSeen = true;
+        last = now;
+      };
+      const raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) =>
+        raf((time) => {
+          callback(time);
+          observe();
+        });
     });
     const ticks = () => page.evaluate(() => (window as unknown as { __ticks__: number }).__ticks__);
     const checkpoints: string[] = [];
-    const hintsShown = new Set<string>();
     const snapshot = async (label: string) => {
       const state = await page.evaluate(() => {
         const s = window.__game__!.session;
@@ -384,32 +412,16 @@ test.describe('the hints do not change the run', () => {
       });
       checkpoints.push(`${label} ${JSON.stringify(state)}`);
     };
-    // What the script did, watched frame by frame: each claim raises the
-    // occupancy (and the score) once, and the Igniter shows on the field.
-    let claims = 0;
-    let scoreRises = 0;
-    let igniterSeen = false;
-    let last = { status: 'title', occupancy: 0, score: 0, igniter: false };
-    // Advances `n` ticks a frame at a time (a 16ms frame runs at most one
-    // 16.7ms tick), noting the hint line's text.
+    // Advances `n` counted ticks and stops right after the frame that runs
+    // the n-th. A 16ms frame runs at most one 16.7ms tick, so `left` frames
+    // at once (the clock's frames sit on a 16ms grid) run at most the `left`
+    // ticks still due: never past the target, and they reach it only on
+    // their last frame. Repeating that until the target is reached stops on
+    // the same frame as stepping a frame at a time would, in a few calls.
     const hold = async (n: number) => {
+      if (n === 0) return;
       const target = (await ticks()) + n;
-      while ((await ticks()) < target) {
-        await page.clock.runFor(FRAME_MS);
-        const text = await barText(page);
-        if (text !== '') hintsShown.add(text);
-        const now = await page.evaluate(() => {
-          const s = window.__game__!.session;
-          const g = s.getGame();
-          return { status: s.getStatus(), occupancy: g.getOccupancy(), score: s.getScore(), igniter: g.getIgniterPosition() !== null };
-        });
-        if (now.status === 'playing' && last.status === 'playing') {
-          if (now.occupancy > last.occupancy) claims++;
-          if (now.score > last.score) scoreRises++;
-        }
-        if (now.igniter) igniterSeen = true;
-        last = now;
-      }
+      for (let left = n; left > 0; left = target - (await ticks())) await page.clock.runFor(FRAME_MS * left);
     };
     // [key, down/up, ticks before]. The marker moves about a cell a tick.
     const script: Array<[string, 'down' | 'up', number]> = [
@@ -438,14 +450,17 @@ test.describe('the hints do not change the run', () => {
     }
     await hold(120);
     await snapshot('end');
-    return { checkpoints, hintsShown: [...hintsShown], claims, scoreRises, igniterSeen };
+    const watched = await page.evaluate(
+      () => (window as unknown as { __watch__: { hintsShown: string[]; claims: number; scoreRises: number; igniterSeen: boolean } }).__watch__
+    );
+    return { checkpoints, ...watched };
   }
 
   test('reads the same with every hint shown and with none', async ({ browser }) => {
-    const first = await (await browser.newContext()).newPage();
-    const shown = await runScript(first, []);
-    const second = await (await browser.newContext()).newPage();
-    const quiet = await runScript(second, ALL_HINTS);
+    // Each run has its own context (its own storage) and its own faked
+    // clock, so the two run side by side.
+    const [first, second] = await Promise.all([1, 2].map(async () => (await browser.newContext()).newPage()));
+    const [shown, quiet] = await Promise.all([runScript(first, []), runScript(second, ALL_HINTS)]);
     expect(shown.hintsShown).toEqual(
       expect.arrayContaining([TEXT['en-US'].drawKey, TEXT['en-US'].claimSide, 'IGNITER: CHASES YOU WHEN YOU STOP ON A LINE'])
     );
