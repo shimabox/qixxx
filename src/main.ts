@@ -1839,7 +1839,8 @@ function renderFrame(): void {
   renderer.render(
     boardGame.getField(),
     boardGame.getMarker().getPosition(),
-    boardGame.getWisps().map((wisp) => wisp.getTrailRef()),
+    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
+    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
     boardGame.getEmbers(),
     boardGame.getIgniterPosition(),
     markerVisible,
