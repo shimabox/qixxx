@@ -81,7 +81,7 @@ async function expectStartedWithHints(page: Page, drawText: string): Promise<voi
 
 for (const locale of ['en-US', 'ja-JP'] as const) {
   for (const viewport of VIEWPORTS) {
-    test(`PLAY WITH HINTS sits left of CLOSE in one row, on the panel, at ${viewport.width}x${viewport.height} (${locale})`, async ({ browser }) => {
+    test(`CLOSE sits left of PLAY WITH HINTS in one row, on the panel, Tab going CLOSE then PLAY WITH HINTS, at ${viewport.width}x${viewport.height} (${locale})`, async ({ browser }) => {
       const page = await newPage(browser, locale, viewport);
       await open(page, '');
       await openPanel(page);
@@ -107,10 +107,10 @@ for (const locale of ['en-US', 'ja-JP'] as const) {
           };
         });
       const m = await measure();
-      // One row, PLAY WITH HINTS on the left, the two apart and the same height.
+      // One row, CLOSE on the left, the two apart and the same height.
       expect(Math.abs(m.play.top - m.close.top)).toBeLessThanOrEqual(1);
       expect(Math.abs(m.play.height - m.close.height)).toBeLessThanOrEqual(1);
-      expect(m.play.right).toBeLessThanOrEqual(m.close.left);
+      expect(m.close.right).toBeLessThanOrEqual(m.play.left);
       expect(intersects(m.play, m.close)).toBe(false);
       expect(m.textFits).toBe(true);
       for (const px of m.fontPx) expect(px).toBeGreaterThanOrEqual(12);
@@ -129,6 +129,12 @@ for (const locale of ['en-US', 'ja-JP'] as const) {
       const scrolled = await measure();
       expect(scrolled.play).toEqual(m.play);
       expect(scrolled.close).toEqual(m.close);
+      // Tab goes the way they read: focus starts on CLOSE, then PLAY WITH HINTS.
+      const focusedId = () => page.evaluate(() => document.activeElement?.id ?? '');
+      expect(await focusedId()).toBe('how-to-play-close');
+      await page.keyboard.press('Tab');
+      expect(await focusedId()).toBe('how-to-play-with-hints');
+      await expect(page.locator('#how-to-play')).toBeVisible();
       await page.context().close();
     });
   }

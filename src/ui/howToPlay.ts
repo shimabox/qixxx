@@ -580,8 +580,9 @@ export class HowToPlayUI {
     balanceLines(pause);
     body.appendChild(pause);
 
-    // PLAY WITH HINTS and CLOSE, in one row below the contents: never
-    // scrolled away with them.
+    // CLOSE and PLAY WITH HINTS, in one row below the contents: never
+    // scrolled away with them. CLOSE (back) on the left, PLAY WITH HINTS
+    // (forward) on the right, and Tab goes in the same order.
     const actions = document.createElement('div');
     actions.id = 'how-to-play-actions';
     actions.style.flex = '0 0 auto';
@@ -601,6 +602,11 @@ export class HowToPlayUI {
       return button;
     };
 
+    const close = actionButton(t('howTo.closeButton'));
+    close.id = 'how-to-play-close';
+    close.addEventListener('click', () => this.close());
+    this.closeButton = close;
+
     // Forgets the seen hints and starts a run, so they are shown again from
     // the first one. The pale accent sets it apart from CLOSE.
     const playWithHints = actionButton(t('howTo.playWithHints'));
@@ -608,11 +614,6 @@ export class HowToPlayUI {
     playWithHints.style.background = HOW_TO_PLAY_WITH_HINTS_BACKGROUND;
     playWithHints.addEventListener('click', () => this.playWithHints());
     this.playWithHintsButton = playWithHints;
-
-    const close = actionButton(t('howTo.closeButton'));
-    close.id = 'how-to-play-close';
-    close.addEventListener('click', () => this.close());
-    this.closeButton = close;
     panel.appendChild(actions);
 
     backdrop.appendChild(panel);
