@@ -19,7 +19,8 @@ import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
 import { StageResultTally, StageResultCounter, stageResultScreen } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
-import { initRankingUI, RankingUI } from './ui/ranking';
+import { base64ToBytes, initRankingUI, isReplayPayloadPlayable, RankingUI } from './ui/ranking';
+import { TitleDemo } from './titleDemo';
 import { FxDirector, FxFrame } from './fx/director';
 import { missReasonKey } from './fx/missReason';
 import type { MissFeedback } from './core/feedback';
@@ -62,6 +63,14 @@ import {
   GAMEOVER_MODAL_TINY_BELOW_PX,
   TITLE_BUTTONS_COMPACT_BELOW_PX,
   TITLE_TEXT_COMPACT_OFFSET_PX,
+  TITLE_DEMO_START_DELAY_TICKS,
+  TITLE_DEMO_END_HOLD_TICKS,
+  TITLE_DEMO_DIM_ALPHA,
+  TITLE_DEMO_LABEL_FONT_PX,
+  TITLE_DEMO_LABEL_FONT_COMPACT_PX,
+  TITLE_DEMO_LABEL_INSET_PX,
+  TITLE_DEMO_LABEL_INSET_COMPACT_PX,
+  TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -97,6 +106,17 @@ declare global {
       getHintMarks: () => HintMarkShapes | null;
       /** Forgets every seen hint (the debug panel's RESET HINTS). */
       resetHints: () => void;
+      /** The Title demo (src/titleDemo.ts): its state, and what the last frame drew. */
+      getTitleDemo: () => {
+        state: string;
+        /** The demo board is the one on screen. */
+        shown: boolean;
+        /** The demo session's played ticks and marker, while it is shown. */
+        ticks: number | null;
+        marker: { x: number; y: number } | null;
+        /** The veil's opacity on the last frame drawn (0 for none). */
+        veil: number;
+      };
     };
   }
 }
@@ -276,6 +296,37 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     wrap.appendChild(screen);
   }
   return screen;
+}
+
+// Get or create the Title demo's DEMO tag: small text pinned to the field's
+// bottom-left corner while the demo board is on screen (see `titleDemo`).
+// Never clickable, so a tap there still reaches the field and starts a run.
+// Its size and distance from the corner follow the field's size
+// (applyTitleButtonsCompact()).
+function getTitleDemoLabelElement(wrap: HTMLDivElement): HTMLDivElement {
+  let label = document.getElementById('title-demo-label') as HTMLDivElement | null;
+  if (!label) {
+    label = document.createElement('div');
+    label.id = 'title-demo-label';
+    label.textContent = t('titleDemo.label');
+    label.style.position = 'absolute';
+    label.style.left = `${TITLE_DEMO_LABEL_INSET_PX}px`;
+    label.style.bottom = `${TITLE_DEMO_LABEL_INSET_PX}px`;
+    label.style.font = HUD_FONT;
+    label.style.fontSize = `${TITLE_DEMO_LABEL_FONT_PX}px`;
+    // #canvas-wrap's line-height is 0; the tag needs a box of its own height.
+    label.style.lineHeight = '1';
+    label.style.letterSpacing = '0.1em';
+    label.style.color = HUD_TEXT_COLOR;
+    label.style.opacity = '0.7';
+    label.style.textShadow = `0 0 6px ${HUD_ACCENT_COLOR}`;
+    label.style.whiteSpace = 'nowrap';
+    label.style.pointerEvents = 'none';
+    label.style.userSelect = 'none';
+    label.style.display = 'none';
+    wrap.appendChild(label);
+  }
+  return label;
 }
 
 // Get or create the credit link (author attribution). It sits between #hud and
@@ -498,6 +549,16 @@ const replayAutoAdvanceLog: boolean[] = [];
 // Keeps a cleared stage on screen for REPLAY_STAGE_CLEAR_HOLD_TICKS before
 // playback moves on — see update()'s replay branch.
 const replayStageClearHold = new ReplayStageClearHold(REPLAY_STAGE_CLEAR_HOLD_TICKS);
+// THE TITLE DEMO (src/titleDemo.ts): one of the board's best runs, replayed
+// on its own ReplayEngine behind the live Title screen. Only the board is
+// drawn from it (under a veil, with the DEMO tag); the HUD, the title text,
+// the sounds, the input and everything the live run keeps stay the live
+// run's. Stepped once per tick in update(), after the live tick, so the tick
+// that starts a run already draws the live board.
+let titleDemo: TitleDemo<ReplayEngine>;
+let titleDemoLabel: HTMLDivElement;
+let titleDemoWasShown = false;
+let titleDemoLabelShown = false;
 // TIME countdown warning sounds for the live run — see src/timeWarningCue.ts.
 const timeWarningCueTracker = new TimeWarningCueTracker();
 // Impact feedback of the live run (src/fx/): the hit stop that briefly
@@ -823,6 +884,24 @@ function init(): void {
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
   if (runMode === 'normal') rankingUI.loadRankInThreshold();
+  // The Title demo plays from that same board (no request of its own for it):
+  // each candidate's replay is fetched once and checked against this build's
+  // versions, like the ranking's REPLAY. Failures are silent: the Title
+  // screen simply keeps its still board.
+  titleDemoLabel = getTitleDemoLabelElement(canvasWrap);
+  titleDemo = new TitleDemo<ReplayEngine>({
+    fetchReplay: async (id) => {
+      const res = await fetch(`/api/ranking/${encodeURIComponent(id)}/replay`);
+      return res.ok ? ((await res.json()) as unknown) : null;
+    },
+    isPlayable: (payload): payload is { seed: number; rleBase64: string } =>
+      isReplayPayloadPlayable(payload, RULESET_VERSION, REPLAY_FORMAT_VERSION),
+    decode: base64ToBytes,
+    createEngine: (record, signal) => ReplayEngine.create(record.seed, record.rle, { signal }),
+    startDelayTicks: TITLE_DEMO_START_DELAY_TICKS,
+    endHoldTicks: TITLE_DEMO_END_HOLD_TICKS,
+    stageClearHoldTicks: REPLAY_STAGE_CLEAR_HOLD_TICKS,
+  });
 
   sfx = new SfxEngine(loadMuted());
   creditLink = getCreditLinkElement(hudRow);
@@ -856,6 +935,17 @@ function init(): void {
     },
     getHintMarks: () => lastHintMarks,
     resetHints: () => hintSeen.reset(),
+    getTitleDemo: () => {
+      const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
+      const marker = demoSession?.getGame().getMarker().getPosition() ?? null;
+      return {
+        state: titleDemo.getState(),
+        shown: demoSession !== null,
+        ticks: demoSession?.getTotalTicks() ?? null,
+        marker: marker ? { x: marker.x, y: marker.y } : null,
+        veil: renderer.getLastVeilAlpha(),
+      };
+    },
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -1366,11 +1456,39 @@ function fitCanvasToViewport(): void {
 
 // Update logic (fixed timestep)
 function update(): void {
-  if (viewMode !== 'replay') {
-    updateLive();
-    return;
-  }
+  if (viewMode !== 'replay') updateLive();
+  else updateReplay();
+  stepTitleDemo();
+}
 
+// The Title demo's engine whose board is on screen now, or null. Only ever
+// on the live Title screen: the tick that starts a run, or a ranking replay
+// opening between ticks, already shows the board it switches to.
+function shownTitleDemoEngine(): ReplayEngine | null {
+  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return null;
+  return titleDemo.getShownEngine();
+}
+
+// One Title demo tick (see `titleDemo`), after the live tick: it plays only
+// while the live run is on Title with no ranking replay open, and not at all
+// with reduced motion or on a `?seed=` page, which is kept quiet for checks.
+function stepTitleDemo(): void {
+  titleDemo.step({
+    onTitle: viewMode === 'live' && replayEngine === null && session.getStatus() === 'title',
+    allowed: runMode === 'normal' && !reducedMotion,
+    candidates: rankingUI.getDemoCandidateIds(),
+  });
+  // The board on screen switched between the demo's and the live one's: the
+  // fill reveal must not compare the two.
+  const shown = shownTitleDemoEngine() !== null;
+  if (shown !== titleDemoWasShown) {
+    titleDemoWasShown = shown;
+    renderer.resetBoard();
+  }
+}
+
+// One replay-viewing tick.
+function updateReplay(): void {
   // Polled exactly once per tick (KeyboardInput.getInput() consumes the
   // edge-triggered `confirm` pulse on read — calling it twice in the same
   // tick would silently swallow a real confirm press).
@@ -1558,6 +1676,10 @@ function applyTitleButtonsCompact(): void {
   titleButtonsCompact = fieldCssHeight < TITLE_BUTTONS_COMPACT_BELOW_PX;
   rankingUI.setTitleButtonCompact(titleButtonsCompact);
   howToPlay?.setCompact(titleButtonsCompact);
+  // The DEMO tag shrinks on the same small fields, nearer its corner.
+  titleDemoLabel.style.fontSize = `${titleButtonsCompact ? TITLE_DEMO_LABEL_FONT_COMPACT_PX : TITLE_DEMO_LABEL_FONT_PX}px`;
+  titleDemoLabel.style.left = `${titleButtonsCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
+  titleDemoLabel.style.bottom = `${titleButtonsCompact ? TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
 }
 
 // Steps the in-play hints once per live tick (src/hints/director.ts).
@@ -1609,7 +1731,12 @@ function resolveHintMark(view: HintView<Ember> | null): ResolvedHintMark | null 
 function renderFrame(): void {
   const activeSession = currentSession();
   const game = activeSession.getGame();
-  const graceTicks = game.getGraceTicks();
+  // The board drawn: the Title demo's while it plays, otherwise the active
+  // session's. Everything else below (HUD, overlay, sounds, hints) keeps
+  // reading `activeSession` / `game`.
+  const demoEngine = shownTitleDemoEngine();
+  const boardGame = demoEngine ? demoEngine.getSession().getGame() : game;
+  const graceTicks = boardGame.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
   // period lasts; otherwise always visible.
@@ -1621,17 +1748,23 @@ function renderFrame(): void {
   renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
   // The in-play hint: live play only.
   const hintView = viewMode === 'replay' ? null : hintDirector.current();
-  lastHintMarks = hintView ? hintMarkShapes(resolveHintMark(hintView), hintView.age, reducedMotion) : null;
+  lastHintMarks = hintView && !demoEngine ? hintMarkShapes(resolveHintMark(hintView), hintView.age, reducedMotion) : null;
   renderer.setHintMarks(lastHintMarks);
+  // The demo board: no impact feedback, under the veil, with the DEMO tag.
+  renderer.setVeil(demoEngine ? TITLE_DEMO_DIM_ALPHA : 0);
+  if ((demoEngine !== null) !== titleDemoLabelShown) {
+    titleDemoLabelShown = demoEngine !== null;
+    titleDemoLabel.style.display = titleDemoLabelShown ? 'block' : 'none';
+  }
 
   renderer.render(
-    game.getField(),
-    game.getMarker().getPosition(),
-    game.getWisps().map((wisp) => wisp.getTrailRef()),
-    game.getEmbers(),
-    game.getIgniterPosition(),
+    boardGame.getField(),
+    boardGame.getMarker().getPosition(),
+    boardGame.getWisps().map((wisp) => wisp.getTrailRef()),
+    boardGame.getEmbers(),
+    boardGame.getIgniterPosition(),
     markerVisible,
-    fxFrame ?? undefined
+    demoEngine ? undefined : fxFrame ?? undefined
   );
   renderMultiplierFx(fxFrame);
   if (viewMode === 'replay') {

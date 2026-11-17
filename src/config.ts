@@ -528,6 +528,28 @@ export const TITLE_BUTTON_COMPACT_INSET_PX = 4;
 // With the small buttons, the Title screen's text sits this much lower than
 // the field's middle (CSS px), clear of them.
 export const TITLE_TEXT_COMPACT_OFFSET_PX = 12;
+// The Title screen's demo: a top-ranked run's replay played silently behind
+// the title text (src/titleDemo.ts). It starts this many ticks after the
+// Title screen appears, trying at most this many of the board's best replays
+// (one fetch each, kept for the page), and holds a finished run's last board
+// this many ticks before playing it again from the start.
+export const TITLE_DEMO_START_DELAY_TICKS = 60;
+export const TITLE_DEMO_MAX_CANDIDATES = 3;
+export const TITLE_DEMO_END_HOLD_TICKS = 120;
+// The demo board is drawn under a veil of the background color (COLOR_BACKGROUND)
+// at this opacity, so the title text and the buttons over it stay readable.
+export const TITLE_DEMO_DIM_ALPHA = 0.55;
+// The DEMO tag in the field's bottom-left corner: its text size (CSS px), the
+// smaller size on a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall,
+// and its distance from the field's left and bottom edges for each. On the
+// small field the title text, lowered by TITLE_TEXT_COMPACT_OFFSET_PX and
+// wrapped to the field's width, leaves only about the tag's own height below
+// it, so the small tag sits on the field's bottom edge.
+export const TITLE_DEMO_LABEL_FONT_PX = 12;
+export const TITLE_DEMO_LABEL_FONT_COMPACT_PX = 10;
+export const TITLE_DEMO_LABEL_INSET_PX = 8;
+export const TITLE_DEMO_LABEL_INSET_COMPACT_PX = 4;
+export const TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX = 0;
 // After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
 // buttons) are dropped for this many ticks, so the key that closed it does
 // not also start a run.

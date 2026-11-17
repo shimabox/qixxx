@@ -33,6 +33,8 @@ export const messages = {
   'title.heading': same('QIXXX'),
   'title.hiScore': same((hiScore: number) => `HI SCORE: ${hiScore}`),
   'title.start': tr('PRESS ANY KEY OR TAP TO START', 'キーを押すかタップでスタート'),
+  // The tag over the Title screen's demo playback: a label, English on both pages.
+  'titleDemo.label': same('DEMO'),
   'mute.mute': same('MUTE'),
   'mute.unmute': same('UNMUTE'),
 

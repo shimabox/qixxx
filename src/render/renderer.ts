@@ -110,6 +110,8 @@ export class Renderer {
   private fxTextMinFontPx = 0;
   private missReasonMinFontPx = 0;
   private hintMarks: HintMarkShapes | null = null;
+  private veilAlpha = 0;
+  private lastVeilAlpha = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -282,6 +284,26 @@ export class Renderer {
     // The in-play hint's mark (live play only — main.ts never sets one for a
     // replay): on top, and outside the shake like the miss reason.
     if (this.hintMarks) drawHintMarks(this.ctx, this.hintMarks);
+    // The Title demo's veil (setVeil()): last, over the board and its frame,
+    // so the title text and the buttons above the canvas stay readable.
+    this.lastVeilAlpha = this.veilAlpha;
+    if (this.veilAlpha > 0) {
+      this.ctx.save();
+      this.ctx.globalAlpha = this.veilAlpha;
+      this.ctx.fillStyle = COLOR_BACKGROUND;
+      this.ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      this.ctx.restore();
+    }
+  }
+
+  /** A veil of the background color over the whole frame at `alpha` (0 for none), from the next render() on. */
+  setVeil(alpha: number): void {
+    this.veilAlpha = Number.isFinite(alpha) && alpha > 0 ? Math.min(alpha, 1) : 0;
+  }
+
+  /** The veil's opacity on the last frame drawn (0 for none). */
+  getLastVeilAlpha(): number {
+    return this.lastVeilAlpha;
   }
 
   /** The in-play hint's ring or arrow for the next frames (src/render/hintLayer.ts), or null for none. */
