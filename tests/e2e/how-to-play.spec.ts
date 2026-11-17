@@ -43,6 +43,11 @@ const GOAL = {
   'en-US': 'FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES',
   'ja-JP': '目標の % まで囲むとクリア。1 プレイは 3 分',
 } as const;
+// The line below the goal on how to pause, per input.
+const PAUSE_LINE = {
+  key: { 'en-US': 'PRESS P OR ESC TO PAUSE', 'ja-JP': 'P か Esc キーで一時停止' },
+  touch: { 'en-US': 'TAP PAUSE TO PAUSE', 'ja-JP': 'PAUSE を押すと一時停止' },
+} as const;
 
 async function open(page: Page, query = ''): Promise<void> {
   await page.clock.install({ time: CLOCK_START });
@@ -137,7 +142,7 @@ test.describe('the HOW TO PLAY button', () => {
 
 for (const locale of ['en-US', 'ja-JP'] as const) {
   for (const viewport of VIEWPORTS) {
-    test(`the panel (${locale}, ${viewport.width}x${viewport.height}): four pictures and lines, the goal line and CLOSE, on screen, 12px or more`, async ({ browser }) => {
+    test(`the panel (${locale}, ${viewport.width}x${viewport.height}): four pictures and lines, the goal and pause lines and CLOSE, on screen, 12px or more`, async ({ browser }) => {
       const page = await newPage(browser, locale, viewport);
       await open(page);
       await page.locator('#how-to-play-button').click();
@@ -148,6 +153,28 @@ for (const locale of ['en-US', 'ja-JP'] as const) {
       if (viewport.hasTouch) lines[0] = TOUCH_FIRST_LINE[locale];
       await expect(panel.locator('figcaption')).toHaveText(lines);
       await expect(page.locator('#how-to-play-goal')).toHaveText(GOAL[locale]);
+      await expect(page.locator('#how-to-play-pause')).toHaveText(PAUSE_LINE[viewport.hasTouch ? 'touch' : 'key'][locale]);
+      // Read like the goal line, right below it, overlapping nothing.
+      const pauseLine = await page.evaluate(() => {
+        const style = (id: string) => {
+          const s = getComputedStyle(document.getElementById(id)!);
+          return { fontSize: s.fontSize, color: s.color, opacity: s.opacity };
+        };
+        const pause = document.getElementById('how-to-play-pause')!;
+        const box = pause.getBoundingClientRect();
+        const others = [...document.querySelectorAll<HTMLElement>('#how-to-play-body > div:first-child, .how-to-play-step, #how-to-play-goal, #how-to-play-close')];
+        return {
+          goal: style('how-to-play-goal'),
+          pause: style('how-to-play-pause'),
+          afterGoal: pause.previousElementSibling?.id,
+          overlaps: others
+            .map((el) => el.getBoundingClientRect())
+            .filter((r) => r.left < box.right && box.left < r.right && r.top < box.bottom && box.top < r.bottom).length,
+          overflows: pause.scrollWidth > pause.clientWidth + 1,
+        };
+      });
+      expect(pauseLine.pause).toEqual(pauseLine.goal);
+      expect(pauseLine).toMatchObject({ afterGoal: 'how-to-play-goal', overlaps: 0, overflows: false });
       await expect(panel.getByText('HOW TO PLAY', { exact: true })).toBeVisible();
       await expect(panel.locator('#how-to-play-close')).toHaveText('CLOSE');
 
@@ -157,7 +184,7 @@ for (const locale of ['en-US', 'ja-JP'] as const) {
       expect(box.right).toBeLessThanOrEqual(viewport.width);
       expect(box.bottom).toBeLessThanOrEqual(viewport.height);
       const fonts = await panel.evaluate((el) =>
-        [...el.querySelectorAll<HTMLElement>('figcaption, #how-to-play-goal, #how-to-play-close, div')].map((node) => parseFloat(getComputedStyle(node).fontSize))
+        [...el.querySelectorAll<HTMLElement>('figcaption, #how-to-play-goal, #how-to-play-pause, #how-to-play-close, div')].map((node) => parseFloat(getComputedStyle(node).fontSize))
       );
       for (const px of fonts) expect(px).toBeGreaterThanOrEqual(12);
       if (locale === 'ja-JP') {
@@ -165,13 +192,13 @@ for (const locale of ['en-US', 'ja-JP'] as const) {
       }
 
       // All of it on screen at once, without scrolling: the heading, the four
-      // pictures and lines, the goal line and CLOSE.
+      // pictures and lines, the goal and pause lines and CLOSE.
       const boxes = await page.evaluate(() =>
-        [...document.querySelectorAll<HTMLElement>('#how-to-play-body > div:first-child, .how-to-play-step, .how-to-play-step svg, #how-to-play-goal, #how-to-play-close')].map(
+        [...document.querySelectorAll<HTMLElement>('#how-to-play-body > div:first-child, .how-to-play-step, .how-to-play-step svg, #how-to-play-goal, #how-to-play-pause, #how-to-play-close')].map(
           (el) => ({ id: el.id || el.className || el.tagName, ...(el.getBoundingClientRect().toJSON() as { left: number; right: number; top: number; bottom: number }) })
         )
       );
-      expect(boxes).toHaveLength(1 + 4 + 4 + 1 + 1);
+      expect(boxes).toHaveLength(1 + 4 + 4 + 1 + 1 + 1);
       for (const b of boxes) {
         expect(b.left, b.id).toBeGreaterThanOrEqual(0);
         expect(b.top, b.id).toBeGreaterThanOrEqual(0);
@@ -248,7 +275,7 @@ for (const viewport of VIEWPORTS) {
         };
       })
     );
-    expect(texts).toHaveLength(5);
+    expect(texts).toHaveLength(6);
     for (const { text, wrap, fontPx, widths } of texts) {
       expect(wrap, text).toBe('balance');
       if (widths.length < 2) continue;

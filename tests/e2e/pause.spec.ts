@@ -394,7 +394,8 @@ test.describe('where the run cannot be paused', () => {
     await page.clock.runFor(2500);
     await expect(page.locator('#gameover-modal')).toBeVisible();
     await expect(page.locator('#pause-button')).toBeHidden();
-    await expect(page.locator('#title-sound-button')).toBeHidden();
+    // The sound toggle's Title-screen glow is not on GAME OVER either.
+    await expect(page.locator('#mute-button')).not.toHaveAttribute('data-attention', 'true');
     await page.keyboard.press('KeyP');
     await page.clock.runFor(200);
     const p = await probe(page);
