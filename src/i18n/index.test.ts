@@ -113,6 +113,8 @@ const JAPANESE_SENTENCES: Record<string, string | ((...args: never[]) => string)
   'howTo.side': '敵のいない側が自分の陣地',
   'howTo.split': 'ウィスプを切り分けると一発クリア',
   'howTo.goal': '目標の % まで囲むとクリア。1 プレイは 3 分',
+  'pause.hint.key': 'P か Esc キーで再開',
+  'pause.hint.touch': 'RESUME を押すと再開',
 };
 
 // Placeholder arguments for the keys that take them: each `{name}` of the
@@ -202,5 +204,17 @@ describe('messages', () => {
     expect(t('howTo.button')).toBe('HOW TO PLAY');
     expect(t('howTo.heading')).toBe('HOW TO PLAY');
     expect(t('howTo.closeButton')).toBe('CLOSE');
+  });
+
+  it('has the pause and the Title sound toggle as designed', () => {
+    expect(messages['pause.hint.key'].en).toBe('PRESS P OR ESC TO RESUME');
+    expect(messages['pause.hint.touch'].en).toBe('TAP RESUME TO CONTINUE');
+    // The heading and the buttons stay English.
+    setLocale('ja');
+    expect(t('pause.title')).toBe('PAUSED');
+    expect(t('pause.resume')).toBe('RESUME');
+    expect(t('pause.button')).toBe('PAUSE');
+    expect(t('titleSound.off')).toBe('SOUND: OFF');
+    expect(t('titleSound.on')).toBe('SOUND: ON');
   });
 });

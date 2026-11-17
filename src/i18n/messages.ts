@@ -37,6 +37,17 @@ export const messages = {
   'titleDemo.label': same('DEMO'),
   'mute.mute': same('MUTE'),
   'mute.unmute': same('UNMUTE'),
+  // The Title screen's sound toggle: a button, so English on both pages.
+  'titleSound.off': same('SOUND: OFF'),
+  'titleSound.on': same('SOUND: ON'),
+
+  // --- Pause -----------------------------------------------------------------
+  'pause.title': same('PAUSED'),
+  'pause.resume': same('RESUME'),
+  'pause.button': same('PAUSE'),
+  // `.key` reads for a keyboard, `.touch` for the on-screen buttons.
+  'pause.hint.key': tr('PRESS P OR ESC TO RESUME', 'P か Esc キーで再開'),
+  'pause.hint.touch': tr('TAP RESUME TO CONTINUE', 'RESUME を押すと再開'),
 
   // --- HUD -------------------------------------------------------------------
   'hud.stage': same((stage: number) => `STAGE ${stage}`),
