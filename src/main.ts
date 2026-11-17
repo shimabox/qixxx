@@ -84,6 +84,7 @@ import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
 import { PauseControl, type PauseContext, type PauseToggle } from './pause';
 import { PauseOverlay } from './ui/pauseOverlay';
+import { TitleSoundButton } from './ui/titleSoundButton';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
@@ -543,6 +544,8 @@ let creditLink: HTMLAnchorElement;
 const pauseControl = new PauseControl();
 let pauseOverlay: PauseOverlay;
 let touchControlsUI: TouchControls;
+// The Title screen's SOUND: OFF / ON toggle (src/ui/titleSoundButton.ts).
+let titleSoundButton: TitleSoundButton;
 
 // REPLAY VIEWING isolates all live-run side effects. While
 // `viewMode === 'replay'`, update()/renderFrame()
@@ -950,6 +953,7 @@ function init(): void {
   sfx = new SfxEngine(loadMuted());
   creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
+  titleSoundButton = new TitleSoundButton({ anchor: canvasWrap, onToggle: toggleMute });
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
   // start/resume from within a user-gesture handler. Every keydown (real or
@@ -1050,8 +1054,11 @@ function applyPauseToggle(change: PauseToggle | null): void {
   }
 }
 
+// Both sound toggles — MUTE / UNMUTE in the corner and the Title screen's
+// SOUND: OFF / ON — show the same state, whichever was pressed.
 function updateMuteButtonLabel(): void {
   muteButton.textContent = sfx.isMuted() ? t('mute.unmute') : t('mute.mute');
+  titleSoundButton.setMuted(sfx.isMuted());
 }
 
 function updateTouchLayout(): void {
@@ -1867,7 +1874,10 @@ function renderFrame(): void {
   // the call is a no-op unless that availability actually flipped.
   rankingUI.syncAvailability();
   // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
-  howToPlay.syncAvailability(viewMode === 'live' && replayEngine === null && status === 'title');
+  const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
+  howToPlay.syncAvailability(liveTitle);
+  // So is the sound toggle, on a field with room for it below the title text.
+  titleSoundButton.setShown(liveTitle && fieldCssHeight >= TITLE_BUTTONS_COMPACT_BELOW_PX);
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
