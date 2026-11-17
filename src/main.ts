@@ -71,6 +71,7 @@ import {
   TITLE_DEMO_LABEL_INSET_PX,
   TITLE_DEMO_LABEL_INSET_COMPACT_PX,
   TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX,
+  PAUSE_OVERLAY_COMPACT_BELOW_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -81,6 +82,8 @@ import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
+import { PauseControl, type PauseContext, type PauseToggle } from './pause';
+import { PauseOverlay } from './ui/pauseOverlay';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
@@ -117,6 +120,8 @@ declare global {
         /** The veil's opacity on the last frame drawn (0 for none). */
         veil: number;
       };
+      /** The live run is paused (src/pause.ts). */
+      isPaused: () => boolean;
     };
   }
 }
@@ -530,6 +535,15 @@ let howToPlay: HowToPlayUI;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
 
+// THE PAUSE (src/pause.ts): P / Escape, the touch PAUSE button and the page
+// being hidden pause live play; while paused the fixed-step loop runs no
+// tick at all — no input read or recorded, no session step, no effect, hint
+// or sound — and the field is covered by the pause screen. Resuming carries
+// on from the very tick it stopped at.
+const pauseControl = new PauseControl();
+let pauseOverlay: PauseOverlay;
+let touchControlsUI: TouchControls;
+
 // REPLAY VIEWING isolates all live-run side effects. While
 // `viewMode === 'replay'`, update()/renderFrame()
 // branch almost entirely away from the live-run path below — no keyboard
@@ -790,15 +804,38 @@ function init(): void {
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
+  // The pause keys, listened to before KeyboardInput below so that a press
+  // which pauses or resumes is already known to it as one to leave out.
+  window.addEventListener('keydown', (event) => {
+    applyPauseToggle(pauseControl.keyDown(event.code, event.repeat, pauseContext()));
+  });
+  window.addEventListener('keyup', (event) => pauseControl.keyUp(event.code));
+  window.addEventListener('blur', () => pauseControl.releaseKeys());
   // A key pressed while HOW TO PLAY is open is not counted until it is
   // released (src/ui/howToPlay.ts), so holding the key that closed it does
-  // not start a run.
-  keyboard = new KeyboardInput(window, (event) => howToPlay?.keepsKeyDown(event) ?? false);
+  // not start a run. A pause key that pauses or resumes is not counted
+  // either: it never reaches the run as a press (src/pause.ts).
+  keyboard = new KeyboardInput(
+    window,
+    (event) =>
+      (howToPlay?.keepsKeyDown(event) ?? false) ||
+      pauseControl.consumesKey((event as KeyboardEvent).code, pauseContext())
+  );
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
   // default target), exactly matching KeyboardInput's own listening target
   // above — see input/touch.ts's module comment for how that's a complete
   // merge of the two input sources with no extra glue code.
-  new TouchControls(window, document.body);
+  touchControlsUI = new TouchControls(window, document.body, {
+    onPause: () => applyPauseToggle(pauseControl.toggle(pauseContext())),
+  });
+  // The page hidden (another tab, the app in the background) pauses a
+  // playing run; coming back leaves it paused. The draw tone stops at once,
+  // whatever is on screen: no frame is drawn while the page is hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    if (pauseControl.requestPause(pauseContext())) applyPauseToggle('paused');
+    sfx.setDrawing(false, null);
+  });
   attachTapToConfirm(canvas);
   // English-only text keeps the Latin monospace on a Japanese page, so the
   // HUD and the field keep their size (src/ui/sentenceFont.ts).
@@ -840,6 +877,13 @@ function init(): void {
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
   hintBar = new HintBar(canvasWrap);
+  pauseOverlay = new PauseOverlay({
+    anchor: canvasWrap,
+    touch: touchDevice,
+    onResume: () => {
+      if (pauseControl.requestResume()) applyPauseToggle('resumed');
+    },
+  });
   gameOverModal = initGameOverModal(canvasWrap, {
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
@@ -946,6 +990,7 @@ function init(): void {
         veil: renderer.getLastVeilAlpha(),
       };
     },
+    isPaused: () => pauseControl.isPaused(),
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -983,6 +1028,26 @@ function toggleMute(): void {
   const muted = sfx.toggleMuted();
   saveMuted(muted);
   updateMuteButtonLabel();
+}
+
+// What decides whether the live run may be paused now (src/pause.ts): live
+// play only — never Title (or its demo), STAGE CLEAR, GAME OVER or a replay.
+function pauseContext(): PauseContext {
+  return { live: viewMode === 'live' && replayEngine === null, status: session.getStatus() };
+}
+
+// The run was just paused or resumed. Pausing stops the draw tone at once.
+// Resuming lines the loop's clock up with now and drops the leftover
+// fraction of a tick, so the time spent paused never turns into ticks: the
+// run carries on from the tick it stopped at. The pause screen and the
+// PAUSE button follow in renderFrame().
+function applyPauseToggle(change: PauseToggle | null): void {
+  if (change === 'paused') {
+    sfx.setDrawing(false, null);
+  } else if (change === 'resumed') {
+    lastTime = performance.now();
+    accumulator = 0;
+  }
 }
 
 function updateMuteButtonLabel(): void {
@@ -1443,6 +1508,8 @@ function fitCanvasToViewport(): void {
   // The ranking submission panel, over the modal, packs tighter on the same
   // small fields.
   rankingUI.setSubmitPanelCompact(tinyField);
+  // The pause screen's heading, RESUME and hint stay on a small field.
+  pauseOverlay.setCompact(cssHeight < PAUSE_OVERLAY_COMPACT_BELOW_PX);
   // On a small field the Title screen's two buttons shrink into one row
   // along the top edge, clear of the title text.
   applyTitleButtonsCompact();
@@ -1736,6 +1803,11 @@ function renderFrame(): void {
   // reading `activeSession` / `game`.
   const demoEngine = shownTitleDemoEngine();
   const boardGame = demoEngine ? demoEngine.getSession().getGame() : game;
+  // The pause screen covers the field while paused; the touch PAUSE button
+  // shows wherever the run can be paused, and while it is.
+  const paused = pauseControl.isPaused();
+  pauseOverlay.setShown(paused);
+  touchControlsUI.setPauseButtonShown(paused || PauseControl.canPause(pauseContext()));
   const graceTicks = boardGame.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
@@ -1766,7 +1838,9 @@ function renderFrame(): void {
     markerVisible,
     demoEngine ? undefined : fxFrame ?? undefined
   );
-  renderMultiplierFx(fxFrame);
+  // The travelling multiplier crosses the field outside #canvas-wrap, so the
+  // pause screen does not cover it: it is not drawn while paused.
+  renderMultiplierFx(paused && fxFrame ? { ...fxFrame, multiplierFly: null } : fxFrame);
   if (viewMode === 'replay') {
     hintBar.hide();
   } else {
@@ -1838,8 +1912,9 @@ function renderFrame(): void {
 
   // Continuous line-drawing drone (docs/plan.md §3.8): driven off the
   // marker's actual drawing state plus whichever speed button the most
-  // recent tick's merged input held.
-  sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
+  // recent tick's merged input held. Silent while paused.
+  const drawToneOn = !paused && game.getMarker().isDrawing();
+  sfx.setDrawing(drawToneOn, drawToneOn ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   updateHud();
 
@@ -1982,15 +2057,22 @@ function screenText(status: ReturnType<GameSession['getStatus']>): ScreenText {
 // Game loop with fixed timestep (accumulator pattern)
 function gameLoop(currentTime: number): void {
   // Clamp delta so returning from an inactive tab doesn't trigger
-  // thousands of catch-up updates (spiral of death)
-  const deltaTime = Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA);
+  // thousands of catch-up updates (spiral of death). Never negative: a
+  // resume sets lastTime to now, which may be later than this frame's own
+  // timestamp.
+  const deltaTime = Math.max(0, Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA));
   lastTime = currentTime;
 
-  // Accumulate time and run fixed updates
-  accumulator += deltaTime;
-  while (accumulator >= TICK_DURATION) {
-    update();
-    accumulator -= TICK_DURATION;
+  // Accumulate time and run fixed updates — none while paused, when no time
+  // is kept for later either (see applyPauseToggle()).
+  if (pauseControl.shouldStep()) {
+    accumulator += deltaTime;
+    while (accumulator >= TICK_DURATION) {
+      update();
+      accumulator -= TICK_DURATION;
+    }
+  } else {
+    accumulator = 0;
   }
 
   // Render

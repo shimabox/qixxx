@@ -554,6 +554,17 @@ export const TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX = 0;
 // buttons) are dropped for this many ticks, so the key that closed it does
 // not also start a run.
 export const HOW_TO_CLOSE_GUARD_TICKS = 12;
+// The pause (src/pause.ts): the touch PAUSE button's and the pause screen's
+// RESUME button's smallest pressable side (CSS px).
+export const PAUSE_BUTTON_MIN_SIZE_PX = 44;
+// The pause screen's PAUSED heading and its resume hint (CSS px), and their
+// smaller sizes on a field shown less than PAUSE_OVERLAY_COMPACT_BELOW_PX
+// tall, where the heading, RESUME and the hint must all still fit.
+export const PAUSE_OVERLAY_TITLE_FONT_PX = 28;
+export const PAUSE_OVERLAY_TITLE_FONT_COMPACT_PX = 16;
+export const PAUSE_OVERLAY_HINT_FONT_PX = 13;
+export const PAUSE_OVERLAY_HINT_FONT_COMPACT_PX = 11;
+export const PAUSE_OVERLAY_COMPACT_BELOW_PX = 200;
 
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard

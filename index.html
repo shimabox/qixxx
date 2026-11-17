@@ -90,6 +90,19 @@
         display: none;
       }
 
+      /* Bottom mode: the extras hold only the PAUSE button, pinned to the
+         control row's bottom-right corner below FAST / SLOW and out of the
+         flow, so showing or hiding it never moves the other controls. */
+      body:not([data-touch-layout='side']) #touch-controls {
+        position: relative;
+      }
+
+      body:not([data-touch-layout='side']) #touch-actions-extra {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+      }
+
       #touch-dpad {
         position: relative;
       }
@@ -152,6 +165,15 @@
 
       body[data-touch-layout='side'] #credit-link {
         font-size: 10px !important;
+      }
+
+      /* Side mode: the PAUSE button sits left of the credit, top-aligned and
+         out of the row's flow, so the taller button never moves the credit
+         and MUTE. */
+      body[data-touch-layout='side'] #pause-button {
+        position: absolute;
+        top: 0;
+        right: calc(100% + 8px);
       }
 
       /* A side layout with a narrow center column (main.ts sets the
