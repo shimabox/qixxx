@@ -40,8 +40,9 @@ const PANEL_MARGIN_PX = 8;
 // A landscape screen lower than this lays the four pictures in one row.
 const PANEL_ONE_ROW_BELOW_PX = 600;
 // The panel's height besides the pictures: padding, heading, goal line (two
-// lines), CLOSE and the gaps; and per row of pictures, its lines (three).
-const PANEL_TEXT_ALLOWANCE_PX = 150;
+// lines), pause line (one), CLOSE and the gaps; and per row of pictures, its
+// lines (three).
+const PANEL_TEXT_ALLOWANCE_PX = 176;
 const PANEL_CAPTION_ALLOWANCE_PX = 64;
 // The pictures' height (CSS px) at most, and at least however low the screen.
 const PICTURE_MAX_HEIGHT_PX = 150;
@@ -150,6 +151,11 @@ export function howToPlayPanelLayout(width: number, height: number): HowToPlayPa
 /** The four pictures and their lines, in order. */
 export function howToPlayLines(touch: boolean): MessageKey[] {
   return [touch ? 'howTo.draw.touch' : 'howTo.draw.key', 'howTo.close', 'howTo.side', 'howTo.split'];
+}
+
+/** The line below the goal on how to pause. */
+export function howToPlayPauseLine(touch: boolean): MessageKey {
+  return touch ? 'howTo.pause.touch' : 'howTo.pause.key';
 }
 
 function svg<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
@@ -531,6 +537,18 @@ export class HowToPlayUI {
     applySentenceFont(goal);
     balanceLines(goal);
     body.appendChild(goal);
+
+    // How to pause, read like the goal line: P / Esc on a keyboard, the PAUSE
+    // button on the touch controls (the same choice as the drawing line's).
+    const pause = document.createElement('div');
+    pause.id = 'how-to-play-pause';
+    pause.className = 'how-to-play-text';
+    pause.textContent = t(howToPlayPauseLine(this.options.touch));
+    pause.style.fontSize = '13px';
+    pause.style.opacity = '0.9';
+    applySentenceFont(pause);
+    balanceLines(pause);
+    body.appendChild(pause);
 
     const close = styledButton(t('howTo.closeButton'));
     close.id = 'how-to-play-close';

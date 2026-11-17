@@ -200,6 +200,8 @@ export const messages = {
   'howTo.side': tr('YOU GET THE SIDE WITHOUT ENEMIES', '敵のいない側が自分の陣地'),
   'howTo.split': tr('SPLIT THE WISPS TO CLEAR AT ONCE', 'ウィスプを切り分けると一発クリア'),
   'howTo.goal': tr('FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES', '目標の % まで囲むとクリア。1 プレイは 3 分'),
+  'howTo.pause.key': tr('PRESS P OR ESC TO PAUSE', 'P か Esc キーで一時停止'),
+  'howTo.pause.touch': tr('TAP PAUSE TO PAUSE', 'PAUSE を押すと一時停止'),
   'howTo.clearMark': same('CLEAR!'),
 
   // --- Touch controls --------------------------------------------------------

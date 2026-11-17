@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HowToConfirmGuard, howToPlayLines, howToPlayPanelLayout } from './howToPlay';
+import { HowToConfirmGuard, howToPlayLines, howToPlayPanelLayout, howToPlayPauseLine } from './howToPlay';
 import { HOW_TO_CLOSE_GUARD_TICKS } from '../config';
 
 describe('howToPlayPanelLayout', () => {
@@ -115,5 +115,12 @@ describe('howToPlayLines', () => {
   it('reads the touch wording of the first line on a touch device', () => {
     expect(howToPlayLines(false)).toEqual(['howTo.draw.key', 'howTo.close', 'howTo.side', 'howTo.split']);
     expect(howToPlayLines(true)).toEqual(['howTo.draw.touch', 'howTo.close', 'howTo.side', 'howTo.split']);
+  });
+});
+
+describe('howToPlayPauseLine', () => {
+  it('reads P / Esc on a keyboard and the PAUSE button on a touch device', () => {
+    expect(howToPlayPauseLine(false)).toBe('howTo.pause.key');
+    expect(howToPlayPauseLine(true)).toBe('howTo.pause.touch');
   });
 });

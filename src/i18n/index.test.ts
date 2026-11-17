@@ -113,6 +113,8 @@ const JAPANESE_SENTENCES: Record<string, string | ((...args: never[]) => string)
   'howTo.side': '敵のいない側が自分の陣地',
   'howTo.split': 'ウィスプを切り分けると一発クリア',
   'howTo.goal': '目標の % まで囲むとクリア。1 プレイは 3 分',
+  'howTo.pause.key': 'P か Esc キーで一時停止',
+  'howTo.pause.touch': 'PAUSE を押すと一時停止',
   'pause.hint.key': 'P か Esc キーで再開',
   'pause.hint.touch': 'RESUME を押すと再開',
 };
@@ -195,6 +197,8 @@ describe('messages', () => {
       'howTo.side': 'YOU GET THE SIDE WITHOUT ENEMIES',
       'howTo.split': 'SPLIT THE WISPS TO CLEAR AT ONCE',
       'howTo.goal': 'FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES',
+      'howTo.pause.key': 'PRESS P OR ESC TO PAUSE',
+      'howTo.pause.touch': 'TAP PAUSE TO PAUSE',
     };
     for (const [key, text] of Object.entries(english)) {
       expect((messages as Record<string, { en: unknown }>)[key]?.en, key).toBe(text);
