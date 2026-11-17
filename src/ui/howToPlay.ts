@@ -1,7 +1,9 @@
 // HOW TO PLAY: a button on the Title screen (the field's top-left corner,
 // across from RANKING) that opens a one-screen panel of four small pictures
 // — draw, close, the side without enemies, the split — each with one line,
-// and a line on the goal and the time. It never opens by itself.
+// and a line on the goal and the time. It never opens by itself. Its PLAY
+// WITH HINTS button forgets the in-play hints already seen and starts a run,
+// so they are shown again as on a first play.
 //
 // While the panel is open, and for HOW_TO_CLOSE_GUARD_TICKS ticks after it
 // closes, every confirm (a key, a tap on the field, a touch button) is
@@ -47,6 +49,10 @@ const PANEL_CAPTION_ALLOWANCE_PX = 64;
 // The pictures' height (CSS px) at most, and at least however low the screen.
 const PICTURE_MAX_HEIGHT_PX = 150;
 const PICTURE_MIN_HEIGHT_PX = 54;
+// PLAY WITH HINTS's ground: HUD_ACCENT_COLOR (#00ff41), faint.
+const HOW_TO_PLAY_WITH_HINTS_BACKGROUND = 'rgba(0, 255, 65, 0.16)';
+// The keys that press a focused button.
+const BUTTON_PRESS_KEYS: readonly string[] = ['Enter', 'NumpadEnter', 'Space'];
 
 export interface HowToPlayOptions {
   /** #canvas-wrap: the button sits in its top-left corner. */
@@ -57,6 +63,13 @@ export interface HowToPlayOptions {
   touch: boolean;
   /** Called when the panel opens (closes the ranking list). */
   onOpen: () => void;
+  /** PLAY WITH HINTS, before the panel closes: forgets every seen hint. */
+  resetHints: () => void;
+  /**
+   * PLAY WITH HINTS, once the panel has closed: starts a run as a confirm on
+   * the Title screen does. Not held back by the wait after closing.
+   */
+  startRun: () => void;
 }
 
 /**
@@ -262,6 +275,7 @@ export class HowToPlayUI {
   private panel!: HTMLDivElement;
   private grid!: HTMLDivElement;
   private closeButton!: HTMLButtonElement;
+  private playWithHintsButton!: HTMLButtonElement;
   // The page's elements made inert while the panel is open.
   private inerted: HTMLElement[] = [];
 
@@ -278,13 +292,18 @@ export class HowToPlayUI {
     // pressed while it is open, the closing key included, is kept from the
     // keyboard input (src/input/keyboard.ts) until it is released, so its
     // auto-repeat does not start a run (HowToConfirmGuard, keepsKeyDown()).
+    // Enter or Space on a focused PLAY WITH HINTS presses it here instead,
+    // its key held back the same way: held on, it neither confirms nor
+    // draws in the run it starts.
     window.addEventListener(
       'keydown',
       (event) => {
         if (event.code === 'Tab') return;
         const wasOpen = this.opened;
+        const presses = wasOpen && event.target === this.playWithHintsButton && BUTTON_PRESS_KEYS.includes(event.code);
         if (this.keepsKeyDown(event)) event.preventDefault();
-        if (wasOpen) this.close();
+        if (presses) this.playWithHints();
+        else if (wasOpen) this.close();
       },
       true
     );
@@ -359,6 +378,17 @@ export class HowToPlayUI {
     if (document.activeElement instanceof HTMLElement && this.backdrop.contains(document.activeElement)) {
       document.activeElement.blur();
     }
+  }
+
+  /**
+   * PLAY WITH HINTS: forgets every seen hint, closes the panel and starts a
+   * run, the way a confirm on the Title screen does.
+   */
+  private playWithHints(): void {
+    if (!this.opened) return;
+    this.options.resetHints();
+    this.close();
+    this.options.startRun();
   }
 
   /**
@@ -482,8 +512,8 @@ export class HowToPlayUI {
     panel.style.textAlign = 'center';
     panel.style.userSelect = 'none';
 
-    // Everything but CLOSE. Sized to fit the screen; should it still not,
-    // only this part scrolls and CLOSE stays at the panel's bottom.
+    // Everything but the buttons. Sized to fit the screen; should it still
+    // not, only this part scrolls and the buttons stay at the panel's bottom.
     const body = document.createElement('div');
     body.id = 'how-to-play-body';
     body.style.flex = '1 1 auto';
@@ -550,15 +580,40 @@ export class HowToPlayUI {
     balanceLines(pause);
     body.appendChild(pause);
 
-    const close = styledButton(t('howTo.closeButton'));
+    // PLAY WITH HINTS and CLOSE, in one row below the contents: never
+    // scrolled away with them.
+    const actions = document.createElement('div');
+    actions.id = 'how-to-play-actions';
+    actions.style.flex = '0 0 auto';
+    actions.style.display = 'flex';
+    actions.style.justifyContent = 'center';
+    actions.style.gap = '10px';
+    actions.style.maxWidth = '100%';
+    const actionButton = (label: string): HTMLButtonElement => {
+      const button = styledButton(label);
+      button.style.flex = '0 1 auto';
+      button.style.minWidth = '0';
+      button.style.fontSize = '14px';
+      button.style.padding = '6px 16px';
+      button.style.whiteSpace = 'nowrap';
+      markEnglishOnly(button);
+      actions.appendChild(button);
+      return button;
+    };
+
+    // Forgets the seen hints and starts a run, so they are shown again from
+    // the first one. The pale accent sets it apart from CLOSE.
+    const playWithHints = actionButton(t('howTo.playWithHints'));
+    playWithHints.id = 'how-to-play-with-hints';
+    playWithHints.style.background = HOW_TO_PLAY_WITH_HINTS_BACKGROUND;
+    playWithHints.addEventListener('click', () => this.playWithHints());
+    this.playWithHintsButton = playWithHints;
+
+    const close = actionButton(t('howTo.closeButton'));
     close.id = 'how-to-play-close';
-    close.style.flex = '0 0 auto';
-    close.style.fontSize = '14px';
-    close.style.padding = '6px 16px';
-    markEnglishOnly(close);
     close.addEventListener('click', () => this.close());
-    panel.appendChild(close);
     this.closeButton = close;
+    panel.appendChild(actions);
 
     backdrop.appendChild(panel);
     this.panel = panel;

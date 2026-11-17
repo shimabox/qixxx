@@ -122,6 +122,8 @@ declare global {
       };
       /** The live run is paused (src/pause.ts). */
       isPaused: () => boolean;
+      /** How many live ticks have passed the core a confirm, from the page load. */
+      getConfirmCount: () => number;
     };
   }
 }
@@ -755,6 +757,16 @@ const runTracker = new LiveRunTracker();
 // core's own release gate dropping the first ones.
 let modalAction: 'retry' | 'title' | null = null;
 
+// HOW TO PLAY's PLAY WITH HINTS asked for a run (src/ui/howToPlay.ts). Taken
+// by the next live tick as a confirm on the Title screen — the same path a
+// key or a tap there takes — past the wait HOW TO PLAY holds confirms for
+// after it closes.
+let titleStartRequested = false;
+
+// The live ticks that passed the core a confirm (window.__game__'s
+// getConfirmCount(), for the E2E suite: a held key must add none).
+let liveConfirmCount = 0;
+
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
 // a player, unlike `?seed=` mode's deliberately-reproducible one. Never
@@ -949,6 +961,13 @@ function init(): void {
     getRankingButton: () => rankingUI.getTitleButton(),
     touch: touchDevice,
     onOpen: () => rankingUI.hideList(),
+    resetHints: resetSeenHints,
+    startRun: () => {
+      // A press of a button on the panel, a user gesture: the sound may
+      // start, as on a key or a tap on the Title screen.
+      sfx.resume();
+      titleStartRequested = true;
+    },
   });
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
@@ -1004,7 +1023,7 @@ function init(): void {
       return view ? { id: view.id, textKey: view.textKey, glow: view.glow, age: view.age } : null;
     },
     getHintMarks: () => lastHintMarks,
-    resetHints: () => hintSeen.reset(),
+    resetHints: resetSeenHints,
     getTitleDemo: () => {
       const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
       const marker = demoSession?.getGame().getMarker().getPosition() ?? null;
@@ -1017,6 +1036,7 @@ function init(): void {
       };
     },
     isPaused: () => pauseControl.isPaused(),
+    getConfirmCount: () => liveConfirmCount,
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -1034,7 +1054,7 @@ function init(): void {
         playClaim: (claim) => sfx.playClaim(claim),
         playSplitImpact: () => sfx.playSplitImpact(),
         playMiss: () => sfx.handleEvents(['miss']),
-      }, () => hintSeen.reset());
+      }, resetSeenHints);
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,
@@ -1048,6 +1068,14 @@ function init(): void {
   }
 
   renderFrame();
+}
+
+// Forgets every seen hint, saved and in memory — the store hintDirector
+// itself reads — so each shows again as on a first play (the debug panel's
+// RESET HINTS, HOW TO PLAY's PLAY WITH HINTS). The director's own counts
+// start over with the run (stepHints()'s 'run').
+function resetSeenHints(): void {
+  hintSeen.reset();
 }
 
 function toggleMute(): void {
@@ -1156,6 +1184,8 @@ function enterReplayMode(engine: ReplayEngine): void {
   viewMode = 'replay';
   replayEngine = engine;
   replayAutoAdvance = true;
+  // A run asked for by PLAY WITH HINTS does not start behind the replay.
+  titleStartRequested = false;
   replayStageClearHold.reset();
   timeWarningCueTracker.reset();
   // Replays are silent, so stop any in-progress
@@ -1671,6 +1701,11 @@ function updateLive(): void {
   // is dropped (not kept for later), so the key or tap that closed it does
   // not also start a run. Counted every tick.
   if (howToPlay.dropsConfirm() && input.confirm) input = { ...input, confirm: false };
+  // PLAY WITH HINTS: a confirm on the Title screen, as if pressed there.
+  if (titleStartRequested) {
+    titleStartRequested = false;
+    if (statusBeforeThisTick === 'title') input = { ...input, confirm: true };
+  }
   // On STAGE CLEAR a confirm first completes the result's count-up (or, under
   // SPLIT!, has it appear complete); only the next one starts the next stage.
   if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
@@ -1679,6 +1714,7 @@ function updateLive(): void {
   }
 
   lastInput = input;
+  if (input.confirm) liveConfirmCount++;
 
   // Seed lifecycle: queue a fresh seed for the gameover-to-title reset.
   // It takes effect whenever

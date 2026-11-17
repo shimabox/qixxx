@@ -208,6 +208,7 @@ describe('messages', () => {
     expect(t('howTo.button')).toBe('HOW TO PLAY');
     expect(t('howTo.heading')).toBe('HOW TO PLAY');
     expect(t('howTo.closeButton')).toBe('CLOSE');
+    expect(t('howTo.playWithHints')).toBe('PLAY WITH HINTS');
   });
 
   it('has the pause and the sound toggle as designed', () => {

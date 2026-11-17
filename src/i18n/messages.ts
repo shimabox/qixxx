@@ -194,6 +194,7 @@ export const messages = {
   'howTo.button': same('HOW TO PLAY'),
   'howTo.heading': same('HOW TO PLAY'),
   'howTo.closeButton': same('CLOSE'),
+  'howTo.playWithHints': same('PLAY WITH HINTS'),
   'howTo.draw.key': tr('HOLD SPACE AND MOVE TO DRAW A LINE', 'Space を押しながら動くと線が引ける'),
   'howTo.draw.touch': tr('HOLD FAST AND MOVE TO DRAW A LINE', 'FAST を押しながら動くと線が引ける'),
   'howTo.close': tr('REACH THE BORDER AGAIN TO CLAIM THE AREA', '線を枠までつなぐと陣地になる'),
