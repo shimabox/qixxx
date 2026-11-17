@@ -18,6 +18,12 @@ export class KeyboardInput {
   // getInput() is called, so holding a key down doesn't fire more than one
   // Title/StageClear/GameOver transition (see SessionInput.confirm).
   private confirmPending = false;
+  // Keys that went down on a focused control (a button, a link, a field):
+  // the key that pressed a button, say. Until the key is released, none of
+  // its later key-downs count either — the auto-repeat of a key held past
+  // the button's own action lands on the page once the button gives the
+  // focus back (blur()), and must not start a run or draw a line.
+  private heldByControl = new Set<string>();
   private target: EventTarget;
   private ignoresKeyDown: (event: Event) => boolean;
 
@@ -44,16 +50,29 @@ export class KeyboardInput {
     this.pressed.clear();
     this.pressOrder = [];
     this.confirmPending = false;
+    this.heldByControl.clear();
   };
 
   private onKeyDown = (event: Event): void => {
-    if (isFromInteractiveElement(event) || this.ignoresKeyDown(event)) return;
     const code = (event as KeyboardEvent).code;
+    if (isFromInteractiveElement(event)) {
+      if (code !== 'Tab') this.heldByControl.add(code);
+      return;
+    }
+    // Asked first, as before, so its own bookkeeping sees every key-down
+    // that reaches the page (src/ui/howToPlay.ts's keepsKeyDown()).
+    if (this.ignoresKeyDown(event)) return;
+    if (this.heldByControl.has(code)) {
+      // Still kept from the page's own handling (scrolling on Space).
+      if (isTrackedKey(code)) event.preventDefault();
+      return;
+    }
     if (code === 'Tab') return;
     if (!this.pressed.has(code)) {
       this.pressed.add(code);
       this.pressOrder.push(code);
-      this.confirmPending = true;    }
+      this.confirmPending = true;
+    }
     // Prevent the page from scrolling on arrow keys / space while playing.
     if (isTrackedKey(code)) {
       event.preventDefault();
@@ -63,6 +82,7 @@ export class KeyboardInput {
   private onKeyUp = (event: Event): void => {
     const code = (event as KeyboardEvent).code;
     this.pressed.delete(code);
+    this.heldByControl.delete(code);
     this.pressOrder = this.pressOrder.filter((c) => c !== code);
   };
 
