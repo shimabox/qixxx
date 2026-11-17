@@ -504,48 +504,10 @@ test('a run paused twice along the way plays out exactly as the unpaused one', a
 
 // ---- Touch, and every screen size --------------------------------------------
 
-// The field and the six touch controls before the PAUSE button was added
-// (measured on the base commit): the button must move none of them.
-const BEFORE: Record<string, { canvas: number[]; hudTwoLine: boolean; buttons: Record<string, number[]> }> = {
-  '1280x800': { canvas: [129.5, 34, 1021, 766], hudTwoLine: false, buttons: {} },
-  '390x844': {
-    canvas: [0, 190, 390, 292],
-    hudTwoLine: true,
-    buttons: {
-      ArrowUp: [76, 634, 64, 64],
-      ArrowLeft: [8, 702, 64, 64],
-      ArrowRight: [144, 702, 64, 64],
-      ArrowDown: [76, 770, 64, 64],
-      KeyZ: [246, 738, 64, 64],
-      Space: [318, 666, 64, 64],
-    },
-  },
-  '844x390': {
-    canvas: [232, 82.5, 380, 285],
-    hudTwoLine: true,
-    buttons: {
-      ArrowUp: [84, 95, 64, 64],
-      ArrowLeft: [16, 163, 64, 64],
-      ArrowRight: [152, 163, 64, 64],
-      ArrowDown: [84, 231, 64, 64],
-      KeyZ: [628, 199, 64, 64],
-      Space: [700, 127, 64, 64],
-    },
-  },
-  '667x375': {
-    canvas: [232, 132.5, 203, 152],
-    hudTwoLine: true,
-    buttons: {
-      ArrowUp: [84, 87.5, 64, 64],
-      ArrowLeft: [16, 155.5, 64, 64],
-      ArrowRight: [152, 155.5, 64, 64],
-      ArrowDown: [84, 223.5, 64, 64],
-      KeyZ: [451, 191.5, 64, 64],
-      Space: [523, 119.5, 64, 64],
-    },
-  },
-};
-
+// The field and the six touch controls must not move for the PAUSE button or
+// the pause screen: compared with themselves on the Title screen (where PAUSE
+// is hidden) rather than with measured pixels, which follow the fonts a
+// machine has.
 const layout = (page: Page) =>
   page.evaluate(() => {
     const r = (el: Element) => {
@@ -579,10 +541,14 @@ for (const vp of VIEWPORTS) {
 
       test('the pause screen fits the field, and the field, HUD and controls stay where they were', async ({ page }) => {
         await open(page, `?seed=${SEED}&lang=${lang}`);
-        const before = BEFORE[`${vp.width}x${vp.height}`];
-        const atTitle = await layout(page);
+        const before = await layout(page);
+        // The field is 4:3 (rounded to whole pixels); the touch controls are
+        // the six, or none without touch.
+        expect(Math.abs(before.canvas[2] * 3 - before.canvas[3] * 4)).toBeLessThanOrEqual(4);
+        expect(Object.keys(before.buttons).sort()).toEqual(vp.touch ? ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'KeyZ', 'Space'] : []);
         await page.keyboard.press('Enter');
         await page.clock.runFor(300);
+        const playing = await layout(page);
         if (vp.touch) {
           await expect(page.locator('#pause-button')).toBeVisible();
           await page.locator('#pause-button').tap();
@@ -598,7 +564,7 @@ for (const vp of VIEWPORTS) {
             : lang === 'ja' ? 'P か Esc キーで再開' : 'PRESS P OR ESC TO RESUME'
         );
         const paused = await layout(page);
-        for (const state of [atTitle, paused]) {
+        for (const state of [before, playing, paused]) {
           expect(state.canvas).toEqual(before.canvas);
           expect(state.hudTwoLine).toBe(before.hudTwoLine);
           expect(state.buttons).toEqual(before.buttons);
