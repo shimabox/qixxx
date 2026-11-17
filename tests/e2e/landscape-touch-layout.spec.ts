@@ -141,7 +141,8 @@ test.describe('Pixel 5 portrait touch layout', () => {
   }) => {
     await page.goto(APP_URL);
     await expectLayout(page, 'bottom');
-    await expect(page.locator('#touch-controls button')).toHaveCount(6);
+    // The six controls and the PAUSE button (src/input/touch.ts).
+    await expect(page.locator('#touch-controls button')).toHaveCount(7);
 
     const positions = await page.evaluate(() => ({
       canvasBottom: document.querySelector('#game-canvas')!.getBoundingClientRect().bottom,

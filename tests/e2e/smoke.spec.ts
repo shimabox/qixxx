@@ -156,8 +156,9 @@ test.describe('mobile viewport', () => {
 
     const pad = page.locator('#touch-controls');
     await expect(pad).toBeVisible();
-    // All 4 d-pad directions + FAST/SLOW should be present as tappable buttons.
-    await expect(pad.locator('button')).toHaveCount(6);
+    // All 4 d-pad directions + FAST/SLOW should be present as tappable
+    // buttons, plus the PAUSE button (src/input/touch.ts).
+    await expect(pad.locator('button')).toHaveCount(7);
   });
 });
 
