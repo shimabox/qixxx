@@ -35,11 +35,10 @@ export const messages = {
   'title.start': tr('PRESS ANY KEY OR TAP TO START', 'キーを押すかタップでスタート'),
   // The tag over the Title screen's demo playback: a label, English on both pages.
   'titleDemo.label': same('DEMO'),
-  'mute.mute': same('MUTE'),
-  'mute.unmute': same('UNMUTE'),
-  // The Title screen's sound toggle: a button, so English on both pages.
-  'titleSound.off': same('SOUND: OFF'),
-  'titleSound.on': same('SOUND: ON'),
+  // The sound toggle (#mute-button) reads the current state: a button, so
+  // English on both pages.
+  'sound.off': same('SOUND: OFF'),
+  'sound.on': same('SOUND: ON'),
 
   // --- Pause -----------------------------------------------------------------
   'pause.title': same('PAUSED'),

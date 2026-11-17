@@ -160,6 +160,8 @@
       body[data-touch-layout='side'] #mute-button {
         font-size: 11px !important;
         padding: 2px 8px !important;
+        /* Not the HUD row's height (src/main.ts's getMuteButtonElement()). */
+        min-height: 0 !important;
         line-height: 1.4;
       }
 
@@ -196,6 +198,30 @@
         border: 2px solid #00ff41;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
+      }
+
+      /* While the sound is off on the live Title screen, the sound toggle
+         glows slowly in the HUD accent color (--sound-glow, set by
+         src/main.ts). A box-shadow only: the button's box never moves. */
+      @keyframes sound-attention {
+        0%,
+        100% {
+          box-shadow: 0 0 2px 0 var(--sound-glow);
+        }
+        50% {
+          box-shadow: 0 0 10px 3px var(--sound-glow);
+        }
+      }
+
+      #mute-button[data-attention='true'] {
+        box-shadow: 0 0 8px 2px var(--sound-glow);
+        animation: sound-attention 1.6s ease-in-out infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #mute-button[data-attention='true'] {
+          animation: none;
+        }
       }
 
     </style>

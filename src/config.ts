@@ -568,12 +568,6 @@ export const TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX = 0;
 // buttons) are dropped for this many ticks, so the key that closed it does
 // not also start a run.
 export const HOW_TO_CLOSE_GUARD_TICKS = 12;
-// The Title screen's sound toggle (src/ui/titleSoundButton.ts): centered
-// across the field, its bottom edge this share of the field's height above
-// the field's bottom edge, below the title text. Not shown on a field less
-// than TITLE_BUTTONS_COMPACT_BELOW_PX tall, which has no room for it (the
-// MUTE button in the corner still toggles the sound there).
-export const TITLE_SOUND_BUTTON_BOTTOM_RATIO = 0.12;
 // The pause (src/pause.ts): the touch PAUSE button's and the pause screen's
 // RESUME button's smallest pressable side (CSS px).
 export const PAUSE_BUTTON_MIN_SIZE_PX = 44;

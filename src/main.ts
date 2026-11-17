@@ -84,7 +84,6 @@ import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
 import { PauseControl, type PauseContext, type PauseToggle } from './pause';
 import { PauseOverlay } from './ui/pauseOverlay';
-import { TitleSoundButton } from './ui/titleSoundButton';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
@@ -370,6 +369,9 @@ function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
 // into the viewport's fixed top-right corner via #touch-actions-extra in side
 // mode. It remains outside #hud itself (which
 // has pointer-events: none), so it stays clickable/tappable in both locations.
+// The sound toggle's label size in the HUD row (CSS px).
+const SOUND_BUTTON_FONT_PX = 12;
+
 function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
   if (!button) {
@@ -382,6 +384,9 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     button.style.color = HUD_ACCENT_COLOR;
     button.style.background = 'rgba(10, 14, 39, 0.7)';
     button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    // The glow while the sound is off on the live Title screen (index.html's
+    // #mute-button[data-attention='true'], see setMuteButtonAttention()).
+    button.style.setProperty('--sound-glow', HUD_ACCENT_COLOR);
     button.style.borderRadius = '4px';
     button.style.padding = '4px 10px';
     button.style.cursor = 'pointer';
@@ -397,23 +402,43 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     });
     row.appendChild(button);
 
-    // Reserve the width of the longer label ("UNMUTE") up front; toggleMute()/updateMuteButtonLabel() below
-    // swap this button's text between "MUTE" and "UNMUTE" without ever
+    // SOUND: OFF at the HUD's 16px would take width the HUD text needs (a
+    // narrow phone's long SEED line, a borderline single-line desktop row), so
+    // the label is set smaller and tighter, the button keeping the height
+    // the 16px label gave it so the row (and with it the field) keeps its
+    // size. Side mode sets its own size in the corner (index.html).
+    button.textContent = t('sound.off');
+    button.style.minHeight = `${button.getBoundingClientRect().height}px`;
+    button.style.fontSize = `${SOUND_BUTTON_FONT_PX}px`;
+    button.style.padding = '4px 4px';
+
+    // Reserve the width of the longer label ("SOUND: OFF") up front; toggleMute()/updateMuteButtonLabel() below
+    // swap this button's text between "SOUND: OFF" and "SOUND: ON" without ever
     // calling fitCanvasToViewport() again, so — before this fix — flipping
-    // to the wider "UNMUTE" label grew the button in place, silently
+    // to the wider label grew the button in place, silently
     // invalidating measureNonHudRowWidth()'s already-computed single-line
     // decision (a borderline viewport could clip only *after* the player
     // muted). Sizing the button to its widest possible content from the
     // start instead means neither label ever changes its rendered width, so
     // toggling can't move anything else in the row and needs no re-layout
     // of its own. Safe to measure here (rather than a hardcoded pixel
-    // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
+    // guess): its font is a fixed px size, not the HUD's own
     // vw-based clamp(), so this button's natural width never depends on
-    // window size either.
-    button.textContent = t('mute.unmute');
-    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+    // window size either. Measured again when the button moves into side
+    // mode's corner, whose font is smaller (updateTouchLayout()).
+    reserveMuteButtonWidth(button);
   }
   return button;
+}
+
+// Sets the sound toggle's min-width to its longer label's ("SOUND: OFF")
+// width at its current font, keeping whichever label it shows.
+function reserveMuteButtonWidth(button: HTMLButtonElement): void {
+  const label = button.textContent;
+  button.style.minWidth = '';
+  button.textContent = t('sound.off');
+  button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+  button.textContent = label;
 }
 
 // Get or create the travelling-multiplier element (see `multiplierFly`).
@@ -544,8 +569,6 @@ let creditLink: HTMLAnchorElement;
 const pauseControl = new PauseControl();
 let pauseOverlay: PauseOverlay;
 let touchControlsUI: TouchControls;
-// The Title screen's SOUND: OFF / ON toggle (src/ui/titleSoundButton.ts).
-let titleSoundButton: TitleSoundButton;
 
 // REPLAY VIEWING isolates all live-run side effects. While
 // `viewMode === 'replay'`, update()/renderFrame()
@@ -953,7 +976,6 @@ function init(): void {
   sfx = new SfxEngine(loadMuted());
   creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
-  titleSoundButton = new TitleSoundButton({ anchor: canvasWrap, onToggle: toggleMute });
   updateMuteButtonLabel();
   // Mobile autoplay restrictions (docs/plan.md §3.8): AudioContext can only
   // start/resume from within a user-gesture handler. Every keydown (real or
@@ -1054,11 +1076,20 @@ function applyPauseToggle(change: PauseToggle | null): void {
   }
 }
 
-// Both sound toggles — MUTE / UNMUTE in the corner and the Title screen's
-// SOUND: OFF / ON — show the same state, whichever was pressed.
+// The sound toggle reads the current state: SOUND: OFF while muted, SOUND: ON
+// otherwise.
 function updateMuteButtonLabel(): void {
-  muteButton.textContent = sfx.isMuted() ? t('mute.unmute') : t('mute.mute');
-  titleSoundButton.setMuted(sfx.isMuted());
+  muteButton.textContent = sfx.isMuted() ? t('sound.off') : t('sound.on');
+}
+
+// data-attention="true" makes index.html's CSS pulse a glow around the sound
+// toggle (a steady glow under prefers-reduced-motion: reduce). A box-shadow
+// only, so the button's box and the HUD row never move. A no-op unless it
+// changes.
+function setMuteButtonAttention(on: boolean): void {
+  if ((muteButton.dataset.attention === 'true') === on) return;
+  if (on) muteButton.dataset.attention = 'true';
+  else delete muteButton.dataset.attention;
 }
 
 function updateTouchLayout(): void {
@@ -1091,6 +1122,9 @@ function updateTouchLayout(): void {
     hudRow.appendChild(creditLink);
     hudRow.appendChild(muteButton);
   }
+  // Side mode sets a smaller font on the button (index.html), so its reserved
+  // width is measured again for where it now is.
+  reserveMuteButtonWidth(muteButton);
 }
 
 // The modal's buttons: only meaningful while the live run is on GAME OVER.
@@ -1877,8 +1911,9 @@ function renderFrame(): void {
   // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
   const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
   howToPlay.syncAvailability(liveTitle);
-  // So is the sound toggle, on a field with room for it below the title text.
-  titleSoundButton.setShown(liveTitle && fieldCssHeight >= TITLE_BUTTONS_COMPACT_BELOW_PX);
+  // While the sound is off on the live Title screen, the sound toggle glows
+  // so it is noticed before a run starts.
+  setMuteButtonAttention(liveTitle && sfx.isMuted());
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that

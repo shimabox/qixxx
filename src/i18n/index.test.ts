@@ -206,7 +206,7 @@ describe('messages', () => {
     expect(t('howTo.closeButton')).toBe('CLOSE');
   });
 
-  it('has the pause and the Title sound toggle as designed', () => {
+  it('has the pause and the sound toggle as designed', () => {
     expect(messages['pause.hint.key'].en).toBe('PRESS P OR ESC TO RESUME');
     expect(messages['pause.hint.touch'].en).toBe('TAP RESUME TO CONTINUE');
     // The heading and the buttons stay English.
@@ -214,7 +214,7 @@ describe('messages', () => {
     expect(t('pause.title')).toBe('PAUSED');
     expect(t('pause.resume')).toBe('RESUME');
     expect(t('pause.button')).toBe('PAUSE');
-    expect(t('titleSound.off')).toBe('SOUND: OFF');
-    expect(t('titleSound.on')).toBe('SOUND: ON');
+    expect(t('sound.off')).toBe('SOUND: OFF');
+    expect(t('sound.on')).toBe('SOUND: ON');
   });
 });
