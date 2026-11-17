@@ -291,9 +291,23 @@ export const GLOW_BLUR_FIELD_EDGE = 10; // px, for the single cached outer-borde
 // Wisp trail afterimage fade (docs/plan.md §6 M5 "Wispの残像表現の強化"):
 // each successively older trail cell is drawn more transparent, from
 // WISP_TRAIL_ALPHA_NEAR (just behind the head) down to WISP_TRAIL_ALPHA_FAR
-// (oldest cell), interpolated linearly across the trail's length.
-export const WISP_TRAIL_ALPHA_NEAR = 0.55;
-export const WISP_TRAIL_ALPHA_FAR = 0.05;
+// (oldest cell), interpolated linearly across the trail's length. Every
+// cell the trail can hit is drawn (src/render/wispShape.ts) — the cells
+// between two trail points take a value between theirs — and even the
+// oldest is plainly visible, since all of it is deadly.
+export const WISP_TRAIL_ALPHA_NEAR = 0.8;
+export const WISP_TRAIL_ALPHA_FAR = 0.35;
+// A faint glow of the trail's own color around its cells, WISP_TRAIL_GLOW_CELLS
+// wide on each side at WISP_TRAIL_GLOW_ALPHA_RATIO of the cells' opacity, so the
+// trail reads thicker than a line. Drawing only: the cells themselves are
+// the part that hits, and the glow stays clearly fainter than them.
+export const WISP_TRAIL_GLOW_CELLS = 0.5;
+export const WISP_TRAIL_GLOW_ALPHA_RATIO = 0.35;
+// The trail's color follows the Wisp's speed multiplier: COLOR_WISP_HEAD at
+// x1, COLOR_WISP_TRAIL_FAST from WISP_TRAIL_FAST_AT_MULTIPLIER up, mixed
+// linearly between. The head keeps COLOR_WISP_HEAD.
+export const COLOR_WISP_TRAIL_FAST = '#ffd6f5'; // Whitish pink
+export const WISP_TRAIL_FAST_AT_MULTIPLIER = 5.0;
 
 // Miss feedback (docs/plan.md §6 M5 "ミス時の簡易フィードバック"): the
 // marker blinks (alternates hidden/visible) every MISS_BLINK_INTERVAL_TICKS
@@ -593,11 +607,12 @@ export const MARKER_GLOW_BLUR = 10; // px
 export const MARKER_PULSE_AMPLITUDE = 0.12; // +/- fraction of the base radius
 export const MARKER_PULSE_SPEED = 0.025; // radians per rendered frame (~4s period at 60fps)
 
-// Wisp head, drawn as a bright core + softer halo circle (~2x2 cells across,
-// up from the former 1-cell dot). The afterimage trail behind it is
-// unchanged (still per-cell fillRect, see WISP_TRAIL_ALPHA_* above).
-export const WISP_HEAD_HALO_RADIUS_CELLS = 1.0;
-export const WISP_HEAD_CORE_RADIUS_CELLS = 0.55;
+// Wisp head, drawn as a bright core + softer halo circle (~4x4 cells across).
+// Only the head's own cell hits, so the drawn head is larger than what can
+// hit, never smaller. The afterimage trail behind it is per-cell fillRect
+// (see WISP_TRAIL_ALPHA_* above).
+export const WISP_HEAD_HALO_RADIUS_CELLS = 2.0;
+export const WISP_HEAD_CORE_RADIUS_CELLS = 1.1;
 export const WISP_HEAD_HALO_ALPHA = 0.35;
 
 // Ember, drawn as a bright core + halo circle (~2x2 cells across) with a
