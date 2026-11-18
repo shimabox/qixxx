@@ -424,7 +424,7 @@ test.describe('impact feedback', () => {
       }))
     ).toEqual({ tainted: false, overrides: false, status: 'playing' });
 
-    await page.locator('#debug-panel button', { hasText: 'EXPORT' }).click();
+    await page.locator('#debug-panel button', { hasText: /^EXPORT$/ }).click();
     const exported = JSON.parse(await page.locator('#debug-export-output').inputValue());
     expect(exported.FX_HITSTOP_CLAIM_SMALL_TICKS).toBe(15);
     expect(exported.FX_SHAKE_LARGE).toEqual({ ticks: 16, amplitudePx: 6, axes: 'xy' });

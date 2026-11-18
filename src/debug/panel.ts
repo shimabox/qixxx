@@ -15,8 +15,24 @@ import type { Point } from '../core/field';
 import type { FxDirector } from '../fx/director';
 import type { HitStop } from '../fx/hitStop';
 import type { FxParams } from '../fx/params';
-import { TICK_RATE, SPLIT_MULTIPLIER_CAP } from '../config';
+import { TICK_RATE, SPLIT_MULTIPLIER_CAP, PLAY_LOG_MAX_RUNS, PLAY_LOG_STREAK_STAGE } from '../config';
 import { t } from '../i18n';
+import type { PlayLogFile } from '../playLog/record';
+import { summarizePlayLog, trailingRunsAtOrBelow } from '../playLog/summary';
+
+/**
+ * What the panel's PLAY LOG section works on: the on-device play log
+ * (src/storage/playLog.ts). Reading or clearing it never touches the
+ * GameSession, so it never counts as a debug override.
+ */
+export interface DebugPlayLogHooks {
+  /** The kept runs as stored, `{ v: 1, runs }`. */
+  getFile: () => PlayLogFile;
+  /** Forgets every kept run. */
+  clear: () => void;
+  /** `listener` is called whenever a run is kept or the log is cleared. */
+  onChange: (listener: () => void) => void;
+}
 
 /**
  * What the panel's FX section works on: the live fxParams it tunes, and the
@@ -420,6 +436,96 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
   return section;
 }
 
+/** Groups `items` into lines of `perLine`, each joined by two spaces. */
+function chunkLines(items: string[], perLine: number, indent: string): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < items.length; i += perLine) lines.push(indent + items.slice(i, i + perLine).join('  '));
+  return lines;
+}
+
+/** The PLAY LOG summary as fixed English text, one item per line or block. */
+export function playLogSummaryText(file: PlayLogFile): string {
+  const runs = file.runs;
+  if (runs.length === 0) return 'NO RUNS YET';
+  const s = summarizePlayLog(runs);
+  const lines = [
+    `RUNS ${s.runs} / ${PLAY_LOG_MAX_RUNS}`,
+    'END STAGE',
+    ...chunkLines(s.endByStage.map((e) => `ST${e.stage} ${e.runs}`), 4, '  '),
+    `END BY  LIFE ${s.endReasons.life}  TIME ${s.endReasons.time}`,
+    'MISSES',
+  ];
+  for (const m of s.missesByStage) {
+    lines.push(`  ST${m.stage}  (runs ${m.runs})`);
+    lines.push(`    WISP ${m.misses.wisp}  EMBER ${m.misses.ember}  IGNITER ${m.misses.igniter}`);
+  }
+  lines.push('SCORE', `  AVG ${s.score.average}  MED ${s.score.median}  MAX ${s.score.max}`);
+  lines.push('PER RUN', `  CLAIMS ${s.claimsPerRun.toFixed(1)}  SPLITS ${s.splitsPerRun.toFixed(1)}`);
+  lines.push(`STREAK ≤ ST${PLAY_LOG_STREAK_STAGE}  ${trailingRunsAtOrBelow(runs, PLAY_LOG_STREAK_STAGE)}`);
+  return lines.join('\n');
+}
+
+/**
+ * The PLAY LOG section: the summary of the runs kept on this device, EXPORT
+ * LOG (the stored `{ v: 1, runs }` as JSON, into the panel's output box and
+ * the clipboard) and CLEAR LOG (no confirmation: a dev panel). Returns the
+ * section and a function redrawing its summary.
+ */
+function buildPlayLogSection(hooks: DebugPlayLogHooks, exportOutput: HTMLTextAreaElement): { section: HTMLDivElement; render: () => void } {
+  const section = document.createElement('div');
+  section.id = 'debug-play-log';
+  section.style.marginTop = '10px';
+  section.style.paddingTop = '8px';
+  section.style.borderTop = '1px solid rgba(255, 224, 102, 0.4)';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'PLAY LOG';
+  heading.style.fontWeight = 'bold';
+  heading.style.color = '#ffe066';
+  heading.style.marginBottom = '6px';
+  section.appendChild(heading);
+
+  const summary = document.createElement('div');
+  summary.id = 'debug-play-log-summary';
+  summary.style.font = '10px monospace';
+  summary.style.lineHeight = '1.4';
+  summary.style.color = '#00ff41';
+  summary.style.whiteSpace = 'pre-wrap';
+  summary.style.overflowWrap = 'anywhere';
+  summary.style.marginBottom = '8px';
+  section.appendChild(summary);
+
+  const render = (): void => {
+    summary.textContent = playLogSummaryText(hooks.getFile());
+  };
+
+  const buttons = document.createElement('div');
+  buttons.style.display = 'flex';
+  buttons.style.gap = '6px';
+  // Each blurs itself after a click, so a later Enter or Space for the game
+  // does not press it again.
+  const exportButton = buildButton('EXPORT LOG', () => {
+    const json = JSON.stringify(hooks.getFile(), null, 2);
+    exportOutput.value = json;
+    void copyToClipboard(json);
+    exportButton.blur();
+  });
+  exportButton.id = 'debug-play-log-export';
+  const clearButton = buildButton('CLEAR LOG', () => {
+    hooks.clear();
+    render();
+    clearButton.blur();
+  });
+  clearButton.id = 'debug-play-log-clear';
+  buttons.appendChild(exportButton);
+  buttons.appendChild(clearButton);
+  section.appendChild(buttons);
+
+  hooks.onChange(render);
+  render();
+  return { section, render };
+}
+
 /**
  * Handle returned by initDebugPanel() for a caller to re-sync the panel's
  * sliders if it ever swaps the `GameSession` instance the `getSession`
@@ -479,7 +585,9 @@ export function initDebugPanel(
   // RESET HINTS: forgets which in-play hints this device has seen (saved and
   // in memory), so the next play shows them again. Display only — not a
   // debug override, the run is untouched.
-  resetHints?: () => void
+  resetHints?: () => void,
+  // PLAY LOG: the runs kept on this device, summarized, exported and cleared.
+  playLogHooks?: DebugPlayLogHooks
 ): DebugPanelHandle {
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
@@ -496,10 +604,11 @@ export function initDebugPanel(
     isOpen = open;
     panel.style.display = isOpen ? 'block' : 'none';
     badge.textContent = `DEBUG ${isOpen ? '▾' : '▸'}`; // open / closed caret
+    if (isOpen) renderPlayLog();
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const { panel, sync } = buildPanel(getSession, () => setOpen(false), fxHooks, resetHints);
+  const { panel, sync, renderPlayLog } = buildPanel(getSession, () => setOpen(false), fxHooks, resetHints, playLogHooks);
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
@@ -566,8 +675,9 @@ function buildPanel(
   getSession: () => GameSession,
   onClose: () => void,
   fxHooks?: DebugFxHooks,
-  resetHints?: () => void
-): { panel: HTMLDivElement; sync: () => void } {
+  resetHints?: () => void,
+  playLogHooks?: DebugPlayLogHooks
+): { panel: HTMLDivElement; sync: () => void; renderPlayLog: () => void } {
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
@@ -731,7 +841,14 @@ function buildPanel(
     panel.appendChild(buildFxSection(getSession, fxHooks));
   }
 
-  return { panel, sync: syncAll };
+  let renderPlayLog = (): void => {};
+  if (playLogHooks) {
+    const playLogSection = buildPlayLogSection(playLogHooks, exportOutput);
+    panel.appendChild(playLogSection.section);
+    renderPlayLog = playLogSection.render;
+  }
+
+  return { panel, sync: syncAll, renderPlayLog };
 }
 
 function buildSliderRow(
