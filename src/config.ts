@@ -743,3 +743,12 @@ export const MAX_VERIFIED_CLAIMS = 300;
 // the HUD's goal slot (src/hudGoal.ts) and the submission offer's
 // provisional in-range check (src/ui/ranking.ts).
 export const RANKING_BOARD_SIZE = 10;
+
+// The on-device play log (src/playLog/, src/storage/playLog.ts): the finished
+// normal runs kept in localStorage for the debug panel's PLAY LOG summary.
+// Nothing leaves the device. The newest PLAY_LOG_MAX_RUNS runs are kept; older
+// ones are dropped as new ones come in.
+export const PLAY_LOG_MAX_RUNS = 50;
+// The debug panel's `STREAK ≤ ST<n>`: how many of the newest runs in a row
+// ended on this stage or earlier.
+export const PLAY_LOG_STREAK_STAGE = 2;
