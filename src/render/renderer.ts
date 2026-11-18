@@ -3,6 +3,13 @@ import type { Ember } from '../core/patrol';
 import type { FxFrame, FxFillReveal, FxPopup } from '../fx/director';
 import { drawFlash, drawLineGlows, drawMissReason, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
 import { drawHintMarks, type HintMarkShapes } from './hintLayer';
+import { wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
+
+/** One Wisp to draw: its trail (Wisp.getTrailRef()) and speed multiplier (Wisp.getSpeedMultiplier()). */
+export interface WispDraw {
+  trail: ReadonlyArray<Readonly<Point>>;
+  speedMultiplier: number;
+}
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -21,8 +28,7 @@ import {
   GLOW_BLUR_ENTITY,
   GLOW_BLUR_LINE,
   GLOW_BLUR_FIELD_EDGE,
-  WISP_TRAIL_ALPHA_NEAR,
-  WISP_TRAIL_ALPHA_FAR,
+  WISP_TRAIL_GLOW_CELLS,
   MARKER_DIAMOND_RADIUS_CELLS,
   MARKER_GLOW_BLUR,
   MARKER_PULSE_AMPLITUDE,
@@ -112,6 +118,7 @@ export class Renderer {
   private hintMarks: HintMarkShapes | null = null;
   private veilAlpha = 0;
   private lastVeilAlpha = 0;
+  private readonly wispTrailColors = new Map<number, string>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -215,7 +222,7 @@ export class Renderer {
   render(
     field: Field,
     markerPosition?: Point,
-    wispTrails?: ReadonlyArray<ReadonlyArray<Readonly<Point>>>,
+    wisps?: ReadonlyArray<WispDraw>,
     embers?: ReadonlyArray<Ember>,
     igniterPosition?: Point | null,
     markerVisible = true,
@@ -241,12 +248,12 @@ export class Renderer {
     // render() parameter.
     const hasLineCells = this.drawField(field, fx !== undefined);
     this.drawFieldEdgeGlow();
-    if (wispTrails) {
+    if (wisps) {
       // docs/plan.md §12.7/§4.2: stage n has n Wisps (2+ from stage 2); each
       // gets its own afterimage trail + head, drawn independently.
-      for (const trail of wispTrails) {
-        if (trail.length > 0) {
-          this.drawWisp(trail);
+      for (const wisp of wisps) {
+        if (wisp.trail.length > 0) {
+          this.drawWisp(wisp.trail, wisp.speedMultiplier);
         }
       }
     }
@@ -504,38 +511,68 @@ export class Renderer {
     return hasLineCells;
   }
 
+  // The trail color for a speed multiplier (wispTrailColor()), built once per
+  // multiplier rather than every frame.
+  private wispTrailColorFor(speedMultiplier: number): string {
+    let color = this.wispTrailColors.get(speedMultiplier);
+    if (color === undefined) {
+      color = wispTrailColor(speedMultiplier);
+      this.wispTrailColors.set(speedMultiplier, color);
+    }
+    return color;
+  }
+
   // Draws the Wisp's afterimage trail (older history first, more transparent
   // — docs/plan.md §6 M5 "Wispの残像表現の強化") followed by a glowing head,
-  // so the head is always painted on top and brightest.
-  private drawWisp(trail: ReadonlyArray<Readonly<Point>>): void {
-    // COLOR_WISP_HEAD is already an opaque color string, so painting it
-    // through ctx.globalAlpha reproduces exactly the same composite as the
-    // old per-segment `rgba(r, g, b, alpha)` fillStyle would have — without
-    // building a new string every segment, every frame (docs/plan.md §13.3
-    // P3). Reset to 1 once the (variable-alpha) trail segments are done so
-    // it doesn't leak into the (opaque, save/restore-scoped) head below.
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
-    for (let i = trail.length - 1; i >= 1; i--) {
-      const p = trail[i];
-      // Older (higher index) segments fade toward WISP_TRAIL_ALPHA_FAR;
-      // the segment right behind the head sits near WISP_TRAIL_ALPHA_NEAR.
-      const t = trail.length > 2 ? (i - 1) / (trail.length - 2) : 0;
-      const alpha = WISP_TRAIL_ALPHA_NEAR + (WISP_TRAIL_ALPHA_FAR - WISP_TRAIL_ALPHA_NEAR) * t;
-      this.ctx.globalAlpha = alpha;
-      // Physical-pixel-snapped span, same as drawField()'s cell fills and
-      // for the same reason (fractional devicePixelRatio seams) — this is
-      // also a grid of adjacent single-cell fillRect() calls.
-      const px = this.cellBoundaries[p.x];
-      const py = this.cellBoundaries[p.y];
-      const cw = this.cellBoundaries[p.x + 1] - px;
-      const ch = this.cellBoundaries[p.y + 1] - py;
+  // so the head is always painted on top and brightest. The trail covers
+  // every cell it can hit (src/render/wispShape.ts) — the cells between two
+  // trail points too, which a fast Wisp leaves — in a color that follows the
+  // Wisp's speed, over a fainter glow that makes it read thicker than a line.
+  private drawWisp(trail: ReadonlyArray<Readonly<Point>>, speedMultiplier: number): void {
+    const cells = wispTrailFillCells(trail);
+    const count = trail.length;
+    this.ctx.save();
+    // An opaque color string painted through ctx.globalAlpha, rather than a
+    // new `rgba(r, g, b, alpha)` string per cell, every frame (docs/plan.md
+    // §13.3 P3).
+    this.ctx.fillStyle = this.wispTrailColorFor(speedMultiplier);
+
+    // The glow: each stretch of the trail (a trail point and the cells
+    // between it and the point before) is one path of cells grown by
+    // WISP_TRAIL_GLOW_CELLS on every side, filled once, so overlapping
+    // neighbors never pile their glow up. Drawing only.
+    const grow = WISP_TRAIL_GLOW_CELLS * RENDER_SCALE;
+    const size = RENDER_SCALE + grow * 2;
+    let stretch = -1;
+    for (const cell of cells) {
+      const at = Math.ceil(cell.at);
+      if (at !== stretch) {
+        if (stretch !== -1) this.ctx.fill();
+        stretch = at;
+        this.ctx.globalAlpha = wispTrailGlowAlpha(wispTrailAlpha(at, count));
+        this.ctx.beginPath();
+      }
+      this.ctx.rect(cell.x * RENDER_SCALE - grow, cell.y * RENDER_SCALE - grow, size, size);
+    }
+    if (stretch !== -1) this.ctx.fill();
+
+    // The cells themselves, which are what hits. Physical-pixel-snapped
+    // spans, same as drawField()'s cell fills and for the same reason
+    // (fractional devicePixelRatio seams).
+    for (const cell of cells) {
+      this.ctx.globalAlpha = wispTrailAlpha(cell.at, count);
+      const px = this.cellBoundaries[cell.x];
+      const py = this.cellBoundaries[cell.y];
+      const cw = this.cellBoundaries[cell.x + 1] - px;
+      const ch = this.cellBoundaries[cell.y + 1] - py;
       this.ctx.fillRect(px, py, cw, ch);
     }
-    this.ctx.globalAlpha = 1;
+    this.ctx.restore();
 
-    // Head enlarged to a ~2x2-cell halo + bright core (docs/plan.md §6 M9 /
-    // §12.3), centered on the head's grid cell so the visible footprint
-    // grows without moving the collision-relevant position.
+    // Head enlarged to a halo + bright core (docs/plan.md §6 M9 / §12.3),
+    // centered on the head's grid cell so the visible footprint grows
+    // without moving the collision-relevant position. Its color stays
+    // COLOR_WISP_HEAD whatever the speed.
     const head = trail[0];
     const cx = (head.x + 0.5) * RENDER_SCALE;
     const cy = (head.y + 0.5) * RENDER_SCALE;

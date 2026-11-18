@@ -64,14 +64,14 @@ test('advances from the Title screen to Playing on a key press', async ({ page }
   await expect(page.locator('#screen')).toHaveText('');
 });
 
-test('MUTE releases focus so the next Enter confirms without unmuting', async ({ page }) => {
+test('the sound toggle releases focus so the next Enter confirms without unmuting', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('qixxx.muted', 'false'));
   await page.goto(APP_URL);
 
   const muteButton = page.locator('#mute-button');
-  await expect(muteButton).toHaveText('MUTE');
+  await expect(muteButton).toHaveText('SOUND: ON');
   await muteButton.click();
-  await expect(muteButton).toHaveText('UNMUTE');
+  await expect(muteButton).toHaveText('SOUND: OFF');
   expect(await muteButton.evaluate((button) => document.activeElement === button)).toBe(false);
 
   // Title and StageClear consume the same KeyboardInput confirm pulse.
@@ -81,7 +81,7 @@ test('MUTE releases focus so the next Enter confirms without unmuting', async ({
   await expect
     .poll(() => page.evaluate(() => window.__game__?.session.getStatus()))
     .toBe('playing');
-  await expect(muteButton).toHaveText('UNMUTE');
+  await expect(muteButton).toHaveText('SOUND: OFF');
   expect(await page.evaluate(() => localStorage.getItem('qixxx.muted'))).toBe('true');
 });
 
@@ -156,8 +156,9 @@ test.describe('mobile viewport', () => {
 
     const pad = page.locator('#touch-controls');
     await expect(pad).toBeVisible();
-    // All 4 d-pad directions + FAST/SLOW should be present as tappable buttons.
-    await expect(pad.locator('button')).toHaveCount(6);
+    // All 4 d-pad directions + FAST/SLOW should be present as tappable
+    // buttons, plus the PAUSE button (src/input/touch.ts).
+    await expect(pad.locator('button')).toHaveCount(7);
   });
 });
 

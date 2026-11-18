@@ -154,7 +154,7 @@ test.describe('in a Japanese browser', () => {
         expect(hud.some((l) => l.clipped)).toBe(false);
         const field = await page.locator('#game-canvas').boundingBox();
         expect({ width: field!.width, height: field!.height }).toEqual(c.field);
-        await expect(page.locator('#mute-button')).toHaveText(/^(MUTE|UNMUTE)$/);
+        await expect(page.locator('#mute-button')).toHaveText(/^SOUND: (ON|OFF)$/);
       });
     });
   }

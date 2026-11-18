@@ -35,8 +35,18 @@ export const messages = {
   'title.start': tr('PRESS ANY KEY OR TAP TO START', 'キーを押すかタップでスタート'),
   // The tag over the Title screen's demo playback: a label, English on both pages.
   'titleDemo.label': same('DEMO'),
-  'mute.mute': same('MUTE'),
-  'mute.unmute': same('UNMUTE'),
+  // The sound toggle (#mute-button) reads the current state: a button, so
+  // English on both pages.
+  'sound.off': same('SOUND: OFF'),
+  'sound.on': same('SOUND: ON'),
+
+  // --- Pause -----------------------------------------------------------------
+  'pause.title': same('PAUSED'),
+  'pause.resume': same('RESUME'),
+  'pause.button': same('PAUSE'),
+  // `.key` reads for a keyboard, `.touch` for the on-screen buttons.
+  'pause.hint.key': tr('PRESS P OR ESC TO RESUME', 'P か Esc キーで再開'),
+  'pause.hint.touch': tr('TAP RESUME TO CONTINUE', 'RESUME を押すと再開'),
 
   // --- HUD -------------------------------------------------------------------
   'hud.stage': same((stage: number) => `STAGE ${stage}`),
@@ -184,12 +194,15 @@ export const messages = {
   'howTo.button': same('HOW TO PLAY'),
   'howTo.heading': same('HOW TO PLAY'),
   'howTo.closeButton': same('CLOSE'),
+  'howTo.playWithHints': same('PLAY WITH HINTS'),
   'howTo.draw.key': tr('HOLD SPACE AND MOVE TO DRAW A LINE', 'Space を押しながら動くと線が引ける'),
   'howTo.draw.touch': tr('HOLD FAST AND MOVE TO DRAW A LINE', 'FAST を押しながら動くと線が引ける'),
   'howTo.close': tr('REACH THE BORDER AGAIN TO CLAIM THE AREA', '線を枠までつなぐと陣地になる'),
   'howTo.side': tr('YOU GET THE SIDE WITHOUT ENEMIES', '敵のいない側が自分の陣地'),
   'howTo.split': tr('SPLIT THE WISPS TO CLEAR AT ONCE', 'ウィスプを切り分けると一発クリア'),
   'howTo.goal': tr('FILL UP TO THE GOAL % TO CLEAR. ONE RUN IS 3 MINUTES', '目標の % まで囲むとクリア。1 プレイは 3 分'),
+  'howTo.pause.key': tr('PRESS P OR ESC TO PAUSE', 'P か Esc キーで一時停止'),
+  'howTo.pause.touch': tr('TAP PAUSE TO PAUSE', 'PAUSE を押すと一時停止'),
   'howTo.clearMark': same('CLEAR!'),
 
   // --- Touch controls --------------------------------------------------------

@@ -71,6 +71,7 @@ import {
   TITLE_DEMO_LABEL_INSET_PX,
   TITLE_DEMO_LABEL_INSET_COMPACT_PX,
   TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX,
+  PAUSE_OVERLAY_COMPACT_BELOW_PX,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -81,6 +82,8 @@ import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
+import { PauseControl, type PauseContext, type PauseToggle } from './pause';
+import { PauseOverlay } from './ui/pauseOverlay';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
@@ -117,6 +120,10 @@ declare global {
         /** The veil's opacity on the last frame drawn (0 for none). */
         veil: number;
       };
+      /** The live run is paused (src/pause.ts). */
+      isPaused: () => boolean;
+      /** How many live ticks have passed the core a confirm, from the page load. */
+      getConfirmCount: () => number;
     };
   }
 }
@@ -364,6 +371,9 @@ function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
 // into the viewport's fixed top-right corner via #touch-actions-extra in side
 // mode. It remains outside #hud itself (which
 // has pointer-events: none), so it stays clickable/tappable in both locations.
+// The sound toggle's label size in the HUD row (CSS px).
+const SOUND_BUTTON_FONT_PX = 12;
+
 function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
   if (!button) {
@@ -376,6 +386,9 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     button.style.color = HUD_ACCENT_COLOR;
     button.style.background = 'rgba(10, 14, 39, 0.7)';
     button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    // The glow while the sound is off on the live Title screen (index.html's
+    // #mute-button[data-attention='true'], see setMuteButtonAttention()).
+    button.style.setProperty('--sound-glow', HUD_ACCENT_COLOR);
     button.style.borderRadius = '4px';
     button.style.padding = '4px 10px';
     button.style.cursor = 'pointer';
@@ -391,23 +404,43 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     });
     row.appendChild(button);
 
-    // Reserve the width of the longer label ("UNMUTE") up front; toggleMute()/updateMuteButtonLabel() below
-    // swap this button's text between "MUTE" and "UNMUTE" without ever
+    // SOUND: OFF at the HUD's 16px would take width the HUD text needs (a
+    // narrow phone's long SEED line, a borderline single-line desktop row), so
+    // the label is set smaller and tighter, the button keeping the height
+    // the 16px label gave it so the row (and with it the field) keeps its
+    // size. Side mode sets its own size in the corner (index.html).
+    button.textContent = t('sound.off');
+    button.style.minHeight = `${button.getBoundingClientRect().height}px`;
+    button.style.fontSize = `${SOUND_BUTTON_FONT_PX}px`;
+    button.style.padding = '4px 4px';
+
+    // Reserve the width of the longer label ("SOUND: OFF") up front; toggleMute()/updateMuteButtonLabel() below
+    // swap this button's text between "SOUND: OFF" and "SOUND: ON" without ever
     // calling fitCanvasToViewport() again, so — before this fix — flipping
-    // to the wider "UNMUTE" label grew the button in place, silently
+    // to the wider label grew the button in place, silently
     // invalidating measureNonHudRowWidth()'s already-computed single-line
     // decision (a borderline viewport could clip only *after* the player
     // muted). Sizing the button to its widest possible content from the
     // start instead means neither label ever changes its rendered width, so
     // toggling can't move anything else in the row and needs no re-layout
     // of its own. Safe to measure here (rather than a hardcoded pixel
-    // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
+    // guess): its font is a fixed px size, not the HUD's own
     // vw-based clamp(), so this button's natural width never depends on
-    // window size either.
-    button.textContent = t('mute.unmute');
-    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+    // window size either. Measured again when the button moves into side
+    // mode's corner, whose font is smaller (updateTouchLayout()).
+    reserveMuteButtonWidth(button);
   }
   return button;
+}
+
+// Sets the sound toggle's min-width to its longer label's ("SOUND: OFF")
+// width at its current font, keeping whichever label it shows.
+function reserveMuteButtonWidth(button: HTMLButtonElement): void {
+  const label = button.textContent;
+  button.style.minWidth = '';
+  button.textContent = t('sound.off');
+  button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+  button.textContent = label;
 }
 
 // Get or create the travelling-multiplier element (see `multiplierFly`).
@@ -529,6 +562,15 @@ let rankingUI: RankingUI;
 let howToPlay: HowToPlayUI;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
+
+// THE PAUSE (src/pause.ts): P / Escape, the touch PAUSE button and the page
+// being hidden pause live play; while paused the fixed-step loop runs no
+// tick at all — no input read or recorded, no session step, no effect, hint
+// or sound — and the field is covered by the pause screen. Resuming carries
+// on from the very tick it stopped at.
+const pauseControl = new PauseControl();
+let pauseOverlay: PauseOverlay;
+let touchControlsUI: TouchControls;
 
 // REPLAY VIEWING isolates all live-run side effects. While
 // `viewMode === 'replay'`, update()/renderFrame()
@@ -715,6 +757,16 @@ const runTracker = new LiveRunTracker();
 // core's own release gate dropping the first ones.
 let modalAction: 'retry' | 'title' | null = null;
 
+// HOW TO PLAY's PLAY WITH HINTS asked for a run (src/ui/howToPlay.ts). Taken
+// by the next live tick as a confirm on the Title screen — the same path a
+// key or a tap there takes — past the wait HOW TO PLAY holds confirms for
+// after it closes.
+let titleStartRequested = false;
+
+// The live ticks that passed the core a confirm (window.__game__'s
+// getConfirmCount(), for the E2E suite: a held key must add none).
+let liveConfirmCount = 0;
+
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
 // a player, unlike `?seed=` mode's deliberately-reproducible one. Never
@@ -790,15 +842,38 @@ function init(): void {
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
+  // The pause keys, listened to before KeyboardInput below so that a press
+  // which pauses or resumes is already known to it as one to leave out.
+  window.addEventListener('keydown', (event) => {
+    applyPauseToggle(pauseControl.keyDown(event.code, event.repeat, pauseContext()));
+  });
+  window.addEventListener('keyup', (event) => pauseControl.keyUp(event.code));
+  window.addEventListener('blur', () => pauseControl.releaseKeys());
   // A key pressed while HOW TO PLAY is open is not counted until it is
   // released (src/ui/howToPlay.ts), so holding the key that closed it does
-  // not start a run.
-  keyboard = new KeyboardInput(window, (event) => howToPlay?.keepsKeyDown(event) ?? false);
+  // not start a run. A pause key that pauses or resumes is not counted
+  // either: it never reaches the run as a press (src/pause.ts).
+  keyboard = new KeyboardInput(
+    window,
+    (event) =>
+      (howToPlay?.keepsKeyDown(event) ?? false) ||
+      pauseControl.consumesKey((event as KeyboardEvent).code, pauseContext())
+  );
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
   // default target), exactly matching KeyboardInput's own listening target
   // above — see input/touch.ts's module comment for how that's a complete
   // merge of the two input sources with no extra glue code.
-  new TouchControls(window, document.body);
+  touchControlsUI = new TouchControls(window, document.body, {
+    onPause: () => applyPauseToggle(pauseControl.toggle(pauseContext())),
+  });
+  // The page hidden (another tab, the app in the background) pauses a
+  // playing run; coming back leaves it paused. The draw tone stops at once,
+  // whatever is on screen: no frame is drawn while the page is hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    if (pauseControl.requestPause(pauseContext())) applyPauseToggle('paused');
+    sfx.setDrawing(false, null);
+  });
   attachTapToConfirm(canvas);
   // English-only text keeps the Latin monospace on a Japanese page, so the
   // HUD and the field keep their size (src/ui/sentenceFont.ts).
@@ -840,6 +915,13 @@ function init(): void {
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
   hintBar = new HintBar(canvasWrap);
+  pauseOverlay = new PauseOverlay({
+    anchor: canvasWrap,
+    touch: touchDevice,
+    onResume: () => {
+      if (pauseControl.requestResume()) applyPauseToggle('resumed');
+    },
+  });
   gameOverModal = initGameOverModal(canvasWrap, {
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
@@ -879,6 +961,13 @@ function init(): void {
     getRankingButton: () => rankingUI.getTitleButton(),
     touch: touchDevice,
     onOpen: () => rankingUI.hideList(),
+    resetHints: resetSeenHints,
+    startRun: () => {
+      // A press of a button on the panel, a user gesture: the sound may
+      // start, as on a key or a tap on the Title screen.
+      sfx.resume();
+      titleStartRequested = true;
+    },
   });
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
@@ -934,7 +1023,7 @@ function init(): void {
       return view ? { id: view.id, textKey: view.textKey, glow: view.glow, age: view.age } : null;
     },
     getHintMarks: () => lastHintMarks,
-    resetHints: () => hintSeen.reset(),
+    resetHints: resetSeenHints,
     getTitleDemo: () => {
       const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
       const marker = demoSession?.getGame().getMarker().getPosition() ?? null;
@@ -946,6 +1035,8 @@ function init(): void {
         veil: renderer.getLastVeilAlpha(),
       };
     },
+    isPaused: () => pauseControl.isPaused(),
+    getConfirmCount: () => liveConfirmCount,
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -963,7 +1054,7 @@ function init(): void {
         playClaim: (claim) => sfx.playClaim(claim),
         playSplitImpact: () => sfx.playSplitImpact(),
         playMiss: () => sfx.handleEvents(['miss']),
-      }, () => hintSeen.reset());
+      }, resetSeenHints);
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,
@@ -979,14 +1070,54 @@ function init(): void {
   renderFrame();
 }
 
+// Forgets every seen hint, saved and in memory — the store hintDirector
+// itself reads — so each shows again as on a first play (the debug panel's
+// RESET HINTS, HOW TO PLAY's PLAY WITH HINTS). The director's own counts
+// start over with the run (stepHints()'s 'run').
+function resetSeenHints(): void {
+  hintSeen.reset();
+}
+
 function toggleMute(): void {
   const muted = sfx.toggleMuted();
   saveMuted(muted);
   updateMuteButtonLabel();
 }
 
+// What decides whether the live run may be paused now (src/pause.ts): live
+// play only — never Title (or its demo), STAGE CLEAR, GAME OVER or a replay.
+function pauseContext(): PauseContext {
+  return { live: viewMode === 'live' && replayEngine === null, status: session.getStatus() };
+}
+
+// The run was just paused or resumed. Pausing stops the draw tone at once.
+// Resuming lines the loop's clock up with now and drops the leftover
+// fraction of a tick, so the time spent paused never turns into ticks: the
+// run carries on from the tick it stopped at. The pause screen and the
+// PAUSE button follow in renderFrame().
+function applyPauseToggle(change: PauseToggle | null): void {
+  if (change === 'paused') {
+    sfx.setDrawing(false, null);
+  } else if (change === 'resumed') {
+    lastTime = performance.now();
+    accumulator = 0;
+  }
+}
+
+// The sound toggle reads the current state: SOUND: OFF while muted, SOUND: ON
+// otherwise.
 function updateMuteButtonLabel(): void {
-  muteButton.textContent = sfx.isMuted() ? t('mute.unmute') : t('mute.mute');
+  muteButton.textContent = sfx.isMuted() ? t('sound.off') : t('sound.on');
+}
+
+// data-attention="true" makes index.html's CSS pulse a glow around the sound
+// toggle (a steady glow under prefers-reduced-motion: reduce). A box-shadow
+// only, so the button's box and the HUD row never move. A no-op unless it
+// changes.
+function setMuteButtonAttention(on: boolean): void {
+  if ((muteButton.dataset.attention === 'true') === on) return;
+  if (on) muteButton.dataset.attention = 'true';
+  else delete muteButton.dataset.attention;
 }
 
 function updateTouchLayout(): void {
@@ -1019,6 +1150,9 @@ function updateTouchLayout(): void {
     hudRow.appendChild(creditLink);
     hudRow.appendChild(muteButton);
   }
+  // Side mode sets a smaller font on the button (index.html), so its reserved
+  // width is measured again for where it now is.
+  reserveMuteButtonWidth(muteButton);
 }
 
 // The modal's buttons: only meaningful while the live run is on GAME OVER.
@@ -1050,6 +1184,8 @@ function enterReplayMode(engine: ReplayEngine): void {
   viewMode = 'replay';
   replayEngine = engine;
   replayAutoAdvance = true;
+  // A run asked for by PLAY WITH HINTS does not start behind the replay.
+  titleStartRequested = false;
   replayStageClearHold.reset();
   timeWarningCueTracker.reset();
   // Replays are silent, so stop any in-progress
@@ -1443,6 +1579,8 @@ function fitCanvasToViewport(): void {
   // The ranking submission panel, over the modal, packs tighter on the same
   // small fields.
   rankingUI.setSubmitPanelCompact(tinyField);
+  // The pause screen's heading, RESUME and hint stay on a small field.
+  pauseOverlay.setCompact(cssHeight < PAUSE_OVERLAY_COMPACT_BELOW_PX);
   // On a small field the Title screen's two buttons shrink into one row
   // along the top edge, clear of the title text.
   applyTitleButtonsCompact();
@@ -1563,6 +1701,11 @@ function updateLive(): void {
   // is dropped (not kept for later), so the key or tap that closed it does
   // not also start a run. Counted every tick.
   if (howToPlay.dropsConfirm() && input.confirm) input = { ...input, confirm: false };
+  // PLAY WITH HINTS: a confirm on the Title screen, as if pressed there.
+  if (titleStartRequested) {
+    titleStartRequested = false;
+    if (statusBeforeThisTick === 'title') input = { ...input, confirm: true };
+  }
   // On STAGE CLEAR a confirm first completes the result's count-up (or, under
   // SPLIT!, has it appear complete); only the next one starts the next stage.
   if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
@@ -1571,6 +1714,7 @@ function updateLive(): void {
   }
 
   lastInput = input;
+  if (input.confirm) liveConfirmCount++;
 
   // Seed lifecycle: queue a fresh seed for the gameover-to-title reset.
   // It takes effect whenever
@@ -1736,6 +1880,11 @@ function renderFrame(): void {
   // reading `activeSession` / `game`.
   const demoEngine = shownTitleDemoEngine();
   const boardGame = demoEngine ? demoEngine.getSession().getGame() : game;
+  // The pause screen covers the field while paused; the touch PAUSE button
+  // shows wherever the run can be paused, and while it is.
+  const paused = pauseControl.isPaused();
+  pauseOverlay.setShown(paused);
+  touchControlsUI.setPauseButtonShown(paused || PauseControl.canPause(pauseContext()));
   const graceTicks = boardGame.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
@@ -1760,13 +1909,16 @@ function renderFrame(): void {
   renderer.render(
     boardGame.getField(),
     boardGame.getMarker().getPosition(),
-    boardGame.getWisps().map((wisp) => wisp.getTrailRef()),
+    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
+    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
     boardGame.getEmbers(),
     boardGame.getIgniterPosition(),
     markerVisible,
     demoEngine ? undefined : fxFrame ?? undefined
   );
-  renderMultiplierFx(fxFrame);
+  // The travelling multiplier crosses the field outside #canvas-wrap, so the
+  // pause screen does not cover it: it is not drawn while paused.
+  renderMultiplierFx(paused && fxFrame ? { ...fxFrame, multiplierFly: null } : fxFrame);
   if (viewMode === 'replay') {
     hintBar.hide();
   } else {
@@ -1793,7 +1945,11 @@ function renderFrame(): void {
   // the call is a no-op unless that availability actually flipped.
   rankingUI.syncAvailability();
   // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
-  howToPlay.syncAvailability(viewMode === 'live' && replayEngine === null && status === 'title');
+  const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
+  howToPlay.syncAvailability(liveTitle);
+  // While the sound is off on the live Title screen, the sound toggle glows
+  // so it is noticed before a run starts.
+  setMuteButtonAttention(liveTitle && sfx.isMuted());
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
@@ -1838,8 +1994,9 @@ function renderFrame(): void {
 
   // Continuous line-drawing drone (docs/plan.md §3.8): driven off the
   // marker's actual drawing state plus whichever speed button the most
-  // recent tick's merged input held.
-  sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
+  // recent tick's merged input held. Silent while paused.
+  const drawToneOn = !paused && game.getMarker().isDrawing();
+  sfx.setDrawing(drawToneOn, drawToneOn ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   updateHud();
 
@@ -1982,15 +2139,22 @@ function screenText(status: ReturnType<GameSession['getStatus']>): ScreenText {
 // Game loop with fixed timestep (accumulator pattern)
 function gameLoop(currentTime: number): void {
   // Clamp delta so returning from an inactive tab doesn't trigger
-  // thousands of catch-up updates (spiral of death)
-  const deltaTime = Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA);
+  // thousands of catch-up updates (spiral of death). Never negative: a
+  // resume sets lastTime to now, which may be later than this frame's own
+  // timestamp.
+  const deltaTime = Math.max(0, Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA));
   lastTime = currentTime;
 
-  // Accumulate time and run fixed updates
-  accumulator += deltaTime;
-  while (accumulator >= TICK_DURATION) {
-    update();
-    accumulator -= TICK_DURATION;
+  // Accumulate time and run fixed updates — none while paused, when no time
+  // is kept for later either (see applyPauseToggle()).
+  if (pauseControl.shouldStep()) {
+    accumulator += deltaTime;
+    while (accumulator >= TICK_DURATION) {
+      update();
+      accumulator -= TICK_DURATION;
+    }
+  } else {
+    accumulator = 0;
   }
 
   // Render

@@ -27,7 +27,7 @@
 // - P2 (stale non-#hud width after the mode decision): wouldSingleLineFit()
 //   only ever measured hudRow's non-#hud siblings (credit link, mute
 //   button) once, at decision time — so a change to any of them afterward
-//   (the mute button's label growing MUTE -> UNMUTE, or the dev-only DEBUG
+//   (the mute button's label growing SOUND: ON -> SOUND: OFF, or the dev-only DEBUG
 //   badge mounting asynchronously after `?debug`'s dynamic import resolves)
 //   could invalidate an already-committed single-line decision without ever
 //   re-checking it. Fixed by reserving the mute button's widest possible
@@ -233,18 +233,18 @@ test.describe('short-viewport normal/seeded HUD (P2 fix, 2026-08-12 follow-up)',
 });
 
 test.describe('non-#hud row width changing after the mode decision (P2 fix, 2026-08-13 follow-up)', () => {
-  test('toggling MUTE/UNMUTE repeatedly never clips a near-worst-case single-line HUD', async ({ page }) => {
+  test('toggling SOUND: ON / SOUND: OFF repeatedly never clips a near-worst-case single-line HUD', async ({ page }) => {
     // A borderline single-line viewport (empirically found: the
     // single/stacked transition sits at 871-872px wide at this height with
     // this fix applied — comfortable margin above that, not a razor's-edge
     // pixel, for CI stability) reproducing the reviewer's report that a
     // moderate desktop-class viewport, not just a narrow phone, clips once
-    // MUTE grows the HUD's non-text neighbor.
+    // the sound toggle grows the HUD's non-text neighbor.
     await page.setViewportSize({ width: 880, height: 700 });
     // Start unmuted ("音声ON" in the report) — loadMuted() (src/storage/
     // settings.ts) defaults to muted unless localStorage explicitly says
-    // 'false', and the bug only showed up going *from* the shorter "MUTE"
-    // label *to* the longer "UNMUTE" one (the direction that grows the
+    // 'false', and the bug only showed up going *from* the shorter "SOUND: ON"
+    // label *to* the longer "SOUND: OFF" one (the direction that grows the
     // button and steals width from the HUD text).
     await page.addInitScript(() => localStorage.setItem('qixxx.muted', 'false'));
     await page.goto(APP_URL);

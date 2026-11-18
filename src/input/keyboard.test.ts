@@ -97,6 +97,90 @@ describe('KeyboardInput — confirm keys', () => {
   });
 });
 
+describe('KeyboardInput — a key that went down on a control', () => {
+  /** A key-down from `source` (a focused control or the page) reaching `target`, the listened-to window. */
+  function keyDownFrom(target: EventTarget, source: EventTarget, code: string, repeat = false): Event {
+    const event = new Event('keydown', { cancelable: true });
+    Object.assign(event, { code, repeat });
+    Object.defineProperty(event, 'target', { value: source });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  function setUp() {
+    const window = new EventTarget();
+    const body = new ElementTarget('body');
+    const button = new ElementTarget('button');
+    const input = new KeyboardInput(window);
+    return { window, body, button, input };
+  }
+
+  it('does not count its auto-repeat on the page once the button gave the focus back, nor a non-repeat key-down, until it is released', () => {
+    const { window, body, button, input } = setUp();
+    keyDownFrom(window, button, 'Enter');
+    keyDownFrom(window, body, 'Enter', true);
+    expect(input.getInput().confirm).toBe(false);
+    keyDownFrom(window, body, 'Enter', false);
+    expect(input.getInput().confirm).toBe(false);
+
+    keyFrom(window, body, 'keyup', 'Enter');
+    keyDownFrom(window, body, 'Enter');
+    expect(input.getInput().confirm).toBe(true);
+    input.dispose();
+  });
+
+  it('keeps a held draw key from drawing, and from scrolling the page', () => {
+    const { window, body, button, input } = setUp();
+    keyDownFrom(window, button, 'Space');
+    const repeat = keyDownFrom(window, body, 'Space', true);
+    const state = input.getInput();
+    expect(state.drawHeld).toBe(false);
+    expect(state.confirm).toBe(false);
+    expect(repeat.defaultPrevented).toBe(true);
+
+    keyFrom(window, body, 'keyup', 'Space');
+    keyDownFrom(window, body, 'Space');
+    expect(input.getInput().drawHeld).toBe(true);
+    input.dispose();
+  });
+
+  it('leaves every other key alone', () => {
+    const { window, body, button, input } = setUp();
+    keyDownFrom(window, button, 'Enter');
+    keyDownFrom(window, body, 'ArrowRight');
+    const state = input.getInput();
+    expect(state.dx).toBe(1);
+    expect(state.confirm).toBe(true);
+    input.dispose();
+  });
+
+  it('is let go on blur, as no key can still be held', () => {
+    const { window, body, button, input } = setUp();
+    keyDownFrom(window, button, 'Enter');
+    window.dispatchEvent(new Event('blur'));
+    keyDownFrom(window, body, 'Enter');
+    expect(input.getInput().confirm).toBe(true);
+    input.dispose();
+  });
+
+  it('agrees with the ignoresKeyDown filter: each keeps the key until it is released', () => {
+    const window = new EventTarget();
+    const body = new ElementTarget('body');
+    const button = new ElementTarget('button');
+    let ignoring = true;
+    const input = new KeyboardInput(window, () => ignoring);
+    keyDownFrom(window, button, 'Enter');
+    keyDownFrom(window, body, 'Enter', true);
+    ignoring = false;
+    keyDownFrom(window, body, 'Enter', true);
+    expect(input.getInput().confirm).toBe(false);
+    keyFrom(window, body, 'keyup', 'Enter');
+    keyDownFrom(window, body, 'Enter');
+    expect(input.getInput().confirm).toBe(true);
+    input.dispose();
+  });
+});
+
 describe('KeyboardInput — ignored key-downs', () => {
   it('does not count a key-down the filter ignores, then counts the same key once it is pressed afresh', () => {
     const target = new EventTarget();
