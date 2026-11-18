@@ -15,7 +15,7 @@ import { HitStop } from './hitStop';
 import { createDefaultFxParams } from './params';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource, RetryHold } from './liveTick';
 import { ScoreRoll } from './scoreRoll';
-import type { ClaimFeedback } from '../core/feedback';
+import type { ClaimFeedback, MissFeedback } from '../core/feedback';
 import {
   FX_SCORE_ROLL_TICKS,
   FX_GAMEOVER_HOLD_TICKS,
@@ -282,6 +282,25 @@ describe('claim sounds and the chain', () => {
       { kind: 'claim', chain: 2, share: expect.closeTo(0.03, 10) },
       { kind: 'split' },
     ]);
+  });
+
+  it('returns the claim and miss notices it drained, each queue drained once per call', () => {
+    const claims = [notice({}), notice({ split: true, stageCleared: true })];
+    const misses: MissFeedback[] = [{ cause: 'ember', position: { x: 2, y: 2 }, line: [] }];
+    let claimDrains = 0;
+    let missDrains = 0;
+    const source: FeedbackSource = {
+      drainClaimFeedback: () => (claimDrains++ === 0 ? claims : []),
+      drainMissFeedback: () => (missDrains++ === 0 ? misses : []),
+      getMultiplier: () => 2,
+      getStatus: () => 'playing',
+      getGameOverReason: () => null,
+    };
+    const sounds = { playClaim: () => {}, playSplitImpact: () => {} };
+    const fx = new FxDirector(createDefaultFxParams());
+    expect(applyImpactNotices(source, fx, new HitStop(), sounds)).toEqual({ claims, misses });
+    expect([claimDrains, missDrains]).toEqual([1, 1]);
+    expect(applyImpactNotices(source, fx, new HitStop(), sounds)).toEqual({ claims: [], misses: [] });
   });
 
   it('a real run: the first claim of the run plays at chain 1', () => {

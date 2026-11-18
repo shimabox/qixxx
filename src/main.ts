@@ -80,6 +80,9 @@ import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from
 import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
 import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
+import { PlayLogStore } from './storage/playLog';
+import { PlayLogRecorder } from './playLog/recorder';
+import type { PlayRecord } from './playLog/record';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
 import { PauseControl, type PauseContext, type PauseToggle } from './pause';
@@ -124,6 +127,8 @@ declare global {
       isPaused: () => boolean;
       /** How many live ticks have passed the core a confirm, from the page load. */
       getConfirmCount: () => number;
+      /** The on-device play log's runs, oldest first (src/storage/playLog.ts). */
+      getPlayLog: () => PlayRecord[];
     };
   }
 }
@@ -767,6 +772,18 @@ let titleStartRequested = false;
 // getConfirmCount(), for the E2E suite: a held key must add none).
 let liveConfirmCount = 0;
 
+// THE PLAY LOG (src/playLog/, src/storage/playLog.ts): every live run that
+// plays on to GAME OVER is recorded tick by tick from the notices the impact
+// feedback drains, and kept on this device only if it is a normal run with
+// no debug override at any point — not a `?seed=` run, a ranking replay or
+// the Title demo, which never go through updateLive(). Read-only: it never
+// feeds anything back into the run, its inputs or its ranking submission.
+// A run left before GAME OVER (the page closed or reloaded) is not kept. The
+// debug panel's PLAY LOG section reads and clears it.
+const playLog = new PlayLogStore();
+const playLogRecorder = new PlayLogRecorder();
+const playLogListeners: Array<() => void> = [];
+
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
 // a player, unlike `?seed=` mode's deliberately-reproducible one. Never
@@ -824,6 +841,8 @@ function init(): void {
   }
   // captureFeedback only adds read-only claim/miss notices for the impact
   // feedback below; the run itself (and so its replay) is unchanged.
+  // The page's first run; every later one starts in updateLive()'s onFreshRun.
+  playLogRecorder.startRun();
 
   // Reduced motion (the OS/browser setting): no shake and no flash. Read at
   // start-up and followed when it changes.
@@ -1037,6 +1056,7 @@ function init(): void {
     },
     isPaused: () => pauseControl.isPaused(),
     getConfirmCount: () => liveConfirmCount,
+    getPlayLog: () => playLog.list(),
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -1076,6 +1096,25 @@ function init(): void {
 // start over with the run (stepHints()'s 'run').
 function resetSeenHints(): void {
   hintSeen.reset();
+}
+
+// The live run just reached GAME OVER (see `playLog`): its record is closed,
+// and kept if the run may be. Called on the tick the status turns 'gameover',
+// not when the modal appears after the game-ending miss.
+function finishPlayLogRun(): void {
+  const record = playLogRecorder.finish({
+    stage: session.getStage(),
+    score: session.getScore(),
+    end: session.getGameOverReason() ?? 'life',
+    endedAt: Date.now(),
+  });
+  if (!record || runMode !== 'normal' || session.isRunTainted()) return;
+  playLog.append(record);
+  notifyPlayLogChanged();
+}
+
+function notifyPlayLogChanged(): void {
+  for (const listener of playLogListeners) listener();
 }
 
 function toggleMute(): void {
@@ -1741,6 +1780,7 @@ function updateLive(): void {
     // includes the run that just ended).
     onFreshRun: () => {
       runTracker.startFreshRun();
+      playLogRecorder.startRun();
       hitStop.clear();
       fx.reset();
       renderer.resetBoard();
@@ -1772,8 +1812,12 @@ function updateLive(): void {
   // and a miss's reason, told apart by the Embers of this same tick (a Blaze
   // or a plain Ember on the contact cell).
   const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
-  const claims = applyImpactNotices(session, fx, hitStop, sfx, missReason);
+  const { claims, misses } = applyImpactNotices(session, fx, hitStop, sfx, missReason);
   for (const notice of claims) stageResultTally.add(notice);
+  // The play log counts this tick for the stage it started on, and closes
+  // the run on the tick it reaches GAME OVER.
+  playLogRecorder.observeTick({ stageBefore: stageBeforeThisTick, statusBefore: statusBeforeThisTick, claims, misses });
+  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') finishPlayLogRun();
   // The hints read what this tick did. A stage's play starts when the status
   // turns 'playing': a new run's from Title or GAME OVER, a later stage's
   // from STAGE CLEAR.
