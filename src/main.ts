@@ -1074,7 +1074,14 @@ function init(): void {
         playClaim: (claim) => sfx.playClaim(claim),
         playSplitImpact: () => sfx.playSplitImpact(),
         playMiss: () => sfx.handleEvents(['miss']),
-      }, resetSeenHints);
+      }, resetSeenHints, {
+        getFile: () => playLog.toFile(),
+        clear: () => {
+          playLog.clear();
+          notifyPlayLogChanged();
+        },
+        onChange: (listener) => playLogListeners.push(listener),
+      });
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,

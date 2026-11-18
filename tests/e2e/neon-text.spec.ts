@@ -343,7 +343,7 @@ test.describe('neon text', () => {
       }))
     ).toEqual({ tainted: false, overrides: false });
 
-    await page.locator('#debug-panel button', { hasText: 'EXPORT' }).click();
+    await page.locator('#debug-panel button', { hasText: /^EXPORT$/ }).click();
     const exported = JSON.parse(await page.locator('#debug-export-output').inputValue());
     expect(exported.FX_SPARK_MAX).toBe(7);
     expect(exported.FX_SCORE_ROLL_TICKS).toBe(18);
