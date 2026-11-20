@@ -5,7 +5,7 @@
 // — this test only exercises Phase 1's DOM layer (modal, button wiring,
 // intent-URL construction), not the real share backend.
 import { test, expect } from '@playwright/test';
-import { advanceUntil } from './support/fakeClock';
+import { advanceUntil, finishGameOverResult } from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes
 // (docs/plan.md §7.2), extended with the session getters/debug-override
@@ -121,6 +121,8 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
   const modal = page.locator('#gameover-modal');
   await expect(modal).toBeVisible();
   await expect(modal).toContainText('GAME OVER');
+  // The modal's score counts up from 0 to the final one.
+  await finishGameOverResult(page);
   await expect(modal).toContainText(`SCORE: ${score}`);
   await expect(modal).toContainText(`STAGE: ${stage}`);
   await expect(modal).toContainText(`HI SCORE: ${hi}`);

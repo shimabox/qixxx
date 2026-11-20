@@ -9,7 +9,7 @@
 // which main.ts calls once per live tick (stopped ticks included). Nothing
 // waits on the wall clock.
 import { test, expect, type Page } from '@playwright/test';
-import { advanceUntil } from './support/fakeClock';
+import { advanceUntil, finishGameOverResult } from './support/fakeClock';
 
 interface Point {
   x: number;
@@ -242,6 +242,8 @@ test.describe('neon text', () => {
     expect(await page.evaluate(() => window.__game__!.session.getGameOverReason())).toBe('time');
     expect(await ticksSinceClaim(page)).toBeLessThan(SCORE_ROLL_TICKS);
     expect((await hudScore(page)).value).toBeLessThan(score); // still counting
+    // The modal's own score counts up from 0 to the real one.
+    await finishGameOverResult(page);
     await expect(page.locator('#gameover-modal')).toContainText(`SCORE: ${score}`);
     await expect(page.locator('#gameover-modal')).toContainText(`HI SCORE: ${score}`);
   });
