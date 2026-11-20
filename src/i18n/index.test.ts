@@ -211,6 +211,16 @@ describe('messages', () => {
     expect(t('howTo.playWithHints')).toBe('PLAY WITH HINTS');
   });
 
+  it('has the GAME OVER highlight and the distance to the best in English in both languages', () => {
+    for (const locale of ['en', 'ja'] as const) {
+      setLocale(locale);
+      expect(t('gameOver.highlight.split', 2)).toBe('SPLIT ×2');
+      expect(t('gameOver.highlight.bestClaim', 23)).toBe('BEST CLAIM 23%');
+      expect(t('gameOver.highlight.stage', 3)).toBe('REACHED STAGE 3');
+      expect(t('gameOver.toBest', 1200)).toBe('1200 TO HI SCORE');
+    }
+  });
+
   it('has the pause and the sound toggle as designed', () => {
     expect(messages['pause.hint.key'].en).toBe('PRESS P OR ESC TO RESUME');
     expect(messages['pause.hint.touch'].en).toBe('TAP RESUME TO CONTINUE');

@@ -77,6 +77,12 @@ export const messages = {
   'gameOver.score': same((score: number) => `SCORE: ${score}`),
   'gameOver.stage': same((stage: number) => `STAGE: ${stage}`),
   'gameOver.hiScore': same((hiScore: number) => `HI SCORE: ${hiScore}`),
+  // The run's one highlight under the score, and how far the run fell short
+  // of the best it started from: English in both languages, like SCORE:.
+  'gameOver.highlight.split': same((splits: number) => `SPLIT ×${splits}`),
+  'gameOver.highlight.bestClaim': same((percent: number) => `BEST CLAIM ${percent}%`),
+  'gameOver.highlight.stage': same((stage: number) => `REACHED STAGE ${stage}`),
+  'gameOver.toBest': same((points: number) => `${points} TO HI SCORE`),
   'gameOver.retry': same('RETRY'),
   'gameOver.title': same('TITLE'),
   'gameOver.share': same('POST TO X'),
