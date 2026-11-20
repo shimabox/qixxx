@@ -189,7 +189,7 @@ export const messages = {
   'hint.draw.key': tr('HOLD SPACE + ARROW KEYS TO DRAW A LINE', 'Space を押しながら矢印キーで線を引こう'),
   'hint.draw.touch': tr('HOLD FAST + A DIRECTION TO DRAW A LINE', 'FAST を押しながら方向ボタンで線を引こう'),
   'hint.claimSide': tr('THE SIDE WITHOUT ENEMIES BECOMES YOURS', '敵のいない側が自分の陣地になる'),
-  'hint.slow.key': tr('DRAW THE WHOLE LINE WITH Z FOR DOUBLE POINTS', 'Z を押したまま最後まで引くと点が 2 倍'),
+  'hint.slow.key': tr('DRAW THE WHOLE LINE WITH SHIFT FOR DOUBLE POINTS', 'Shift を押したまま最後まで引くと点が 2 倍'),
   'hint.slow.touch': tr('DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS', 'SLOW だけで最後まで引くと点が 2 倍'),
   'hint.split': tr('SPLIT THE WISPS WITH A LINE TO CLEAR AT ONCE', 'ウィスプを線で切り分けると一発クリア'),
   'hint.ember': tr('EMBER: PATROLS THE BORDER', 'エンバー: 枠の上を回ってくる'),
