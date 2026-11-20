@@ -45,14 +45,16 @@ const TEXT = {
     drawTouch: 'HOLD FAST + A DIRECTION TO DRAW A LINE',
     claimSide: 'THE SIDE WITHOUT ENEMIES BECOMES YOURS',
     slowTouch: 'DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS',
-    longest: 'DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS',
+    // The longest sentences. The line's font is proportional, so the one with
+    // fewer letters can still be wider: both are checked.
+    longest: ['DRAW THE WHOLE LINE WITH SHIFT FOR DOUBLE POINTS', 'DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS'],
   },
   'ja-JP': {
     drawKey: 'Space を押しながら矢印キーで線を引こう',
     drawTouch: 'FAST を押しながら方向ボタンで線を引こう',
     claimSide: '敵のいない側が自分の陣地になる',
     slowTouch: 'SLOW だけで最後まで引くと点が 2 倍',
-    longest: 'イグナイター: 線の途中で止まると追ってくる',
+    longest: ['イグナイター: 線の途中で止まると追ってくる', 'Shift を押したまま最後まで引くと点が 2 倍'],
   },
 } as const;
 
@@ -202,22 +204,24 @@ for (const viewport of [
       await open(page);
       await start(page);
       const sizeBefore = await page.evaluate(() => document.getElementById('game-canvas')!.getBoundingClientRect().toJSON());
-      // Put the longest sentence in the line, in its own styles.
-      const longest = TEXT[locale].longest;
-      for (const top of [false, true]) {
+      // Put each longest sentence in the line, in its own styles, at the
+      // bottom where the line starts and then at the top.
+      const home = await page.evaluate(() => {
+        const bar = document.getElementById('hint-bar')!;
+        return { top: bar.style.top, bottom: bar.style.bottom };
+      });
+      for (const longest of TEXT[locale].longest) for (const top of [false, true]) {
         const box = await page.evaluate(
-          ({ text, atTop }) => {
+          ({ text, atTop, home }) => {
             const bar = document.getElementById('hint-bar')!;
             bar.textContent = text;
-            if (atTop) {
-              bar.style.top = '6%';
-              bar.style.bottom = '';
-            }
+            bar.style.top = atTop ? '6%' : home.top;
+            bar.style.bottom = atTop ? '' : home.bottom;
             const field = document.getElementById('game-canvas')!.getBoundingClientRect();
             const rect = bar.getBoundingClientRect();
             return { rect: rect.toJSON(), field: field.toJSON(), fontPx: parseFloat(getComputedStyle(bar).fontSize) };
           },
-          { text: longest, atTop: top }
+          { text: longest, atTop: top, home }
         );
         expect(box.rect.left).toBeGreaterThanOrEqual(box.field.left - 0.5);
         expect(box.rect.right).toBeLessThanOrEqual(box.field.right + 0.5);

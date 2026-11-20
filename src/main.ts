@@ -72,6 +72,8 @@ import {
   TITLE_DEMO_LABEL_INSET_COMPACT_PX,
   TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX,
   PAUSE_OVERLAY_COMPACT_BELOW_PX,
+  BGM_FADE_SEC,
+  BGM_GAMEOVER_FADE_SEC,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
@@ -91,6 +93,11 @@ import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedH
 import type { Ember } from './core/patrol';
 import type { GameEvent } from './core/events';
 import type { ClaimFeedback } from './core/feedback';
+import { GameOverResult, GameOverRunTally, gameOverHighlightText, type GameOverCue } from './gameOverResult';
+import { sfxLevels } from './audio/sfxLevels';
+import type { SoundTestId } from './debug/panel';
+import { BgmPlayer, type BgmState, type BgmUpdate } from './audio/bgm';
+import { bgmTrackForStage } from './audio/bgmScore';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -129,6 +136,21 @@ declare global {
       getConfirmCount: () => number;
       /** The on-device play log's runs, oldest first (src/storage/playLog.ts). */
       getPlayLog: () => PlayRecord[];
+      /** The GAME OVER result as shown now (src/gameOverResult.ts). */
+      getGameOverResult: () => {
+        active: boolean;
+        /** The score the modal shows now. */
+        score: number;
+        finished: boolean;
+        /** The highlight line's text once it shows, else null. */
+        highlight: string | null;
+        /** Which best line shows: 'new-record', 'to-best', 'to-best-near', or null before it shows / for none. */
+        best: 'new-record' | 'to-best' | 'to-best-near' | null;
+      };
+      /** The names of the last 64 sounds played (src/audio/sfx.ts's getLog()). */
+      getSfxLog: () => string[];
+      /** The music (src/audio/bgm.ts): playing in live play while the sound is on. */
+      getBgmState: () => BgmState;
     };
   }
 }
@@ -784,6 +806,28 @@ const playLog = new PlayLogStore();
 const playLogRecorder = new PlayLogRecorder();
 const playLogListeners: Array<() => void> = [];
 
+// THE GAME OVER RESULT (src/gameOverResult.ts): what the live run did, from
+// its claim notices (reset where the play log starts a run), and the modal's
+// count-up, highlight and best line with their sounds, from the frame the
+// modal appears. Display and sound only: the retry, the share and the
+// ranking never wait for it or read its counting score. It stops as soon as
+// the run leaves GAME OVER or a replay opens, so no cue of it plays after.
+const gameOverTally = new GameOverRunTally();
+const gameOverResult = new GameOverResult();
+
+// THE MUSIC (src/audio/bgm.ts): on every page, playing through the sound
+// effects' context and master gain, so the SOUND button turns both on and off
+// together (muted, it creates nothing). The debug panel's BGM switch (on on
+// every page load, never saved) can silence it alone while developing. It
+// follows the live run from renderFrame(): on through play and STAGE CLEAR,
+// off while paused, muted, on GAME OVER (fading under the close), Title, a
+// replay and the Title demo. Every way it stops also stops it at once from
+// where it happens (stopBgmIfUnwanted()), so it never waits for a frame — a
+// hidden page draws none. Each stage has its tune (bgmTrackForStage()): a
+// run starts the first stage's from the top, and the tick a later stage's
+// play starts from STAGE CLEAR switches to that stage's.
+let bgm: BgmPlayer | null = null;
+
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
 // a player, unlike `?seed=` mode's deliberately-reproducible one. Never
@@ -843,6 +887,7 @@ function init(): void {
   // feedback below; the run itself (and so its replay) is unchanged.
   // The page's first run; every later one starts in updateLive()'s onFreshRun.
   playLogRecorder.startRun();
+  gameOverTally.reset();
 
   // Reduced motion (the OS/browser setting): no shake and no flash. Read at
   // start-up and followed when it changes.
@@ -886,12 +931,14 @@ function init(): void {
     onPause: () => applyPauseToggle(pauseControl.toggle(pauseContext())),
   });
   // The page hidden (another tab, the app in the background) pauses a
-  // playing run; coming back leaves it paused. The draw tone stops at once,
-  // whatever is on screen: no frame is drawn while the page is hidden.
+  // playing run; coming back leaves it paused. The draw tone and the
+  // music stop at once, whatever is on screen: no frame is drawn while the
+  // page is hidden.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'hidden') return;
     if (pauseControl.requestPause(pauseContext())) applyPauseToggle('paused');
     sfx.setDrawing(false, null);
+    stopBgmIfUnwanted();
   });
   attachTapToConfirm(canvas);
   // English-only text keeps the Latin monospace on a Japanese page, so the
@@ -1012,6 +1059,12 @@ function init(): void {
   });
 
   sfx = new SfxEngine(loadMuted());
+  // The music plays through the sound effects' context and master gain, so
+  // it follows the SOUND button; switched on from the start (only the debug
+  // panel's BGM switch turns it off).
+  const music = new BgmPlayer(() => sfx.getAudioGraph());
+  music.setEnabled(true);
+  bgm = music;
   creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
@@ -1057,6 +1110,39 @@ function init(): void {
     isPaused: () => pauseControl.isPaused(),
     getConfirmCount: () => liveConfirmCount,
     getPlayLog: () => playLog.list(),
+    getGameOverResult: () => {
+      const view = gameOverResult.view();
+      const best = view.bestLine;
+      return {
+        active: view.active,
+        score: view.score,
+        finished: view.finished,
+        highlight: view.highlight && view.highlightShown ? gameOverHighlightText(view.highlight) : null,
+        best:
+          !best || !view.bestLineShown
+            ? null
+            : best.kind === 'new-record'
+              ? 'new-record'
+              : best.near
+                ? 'to-best-near'
+                : 'to-best',
+      };
+    },
+    getSfxLog: () => sfx.getLog(),
+    getBgmState: () =>
+      bgm?.state() ?? {
+        enabled: false,
+        playing: false,
+        generation: 0,
+        track: bgmTrackForStage(1),
+        intensity: 0,
+        bpm: 0,
+        scheduled: 0,
+        step: 0,
+        liveNodes: 0,
+        lastBatch: null,
+        lastStop: null,
+      },
   };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
@@ -1081,6 +1167,16 @@ function init(): void {
           notifyPlayLogChanged();
         },
         onChange: (listener) => playLogListeners.push(listener),
+      }, {
+        levels: sfxLevels,
+        applyMaster: () => sfx.applyMasterLevel(),
+        play: playSoundTest,
+        bgm: {
+          isEnabled: () => music.isEnabled(),
+          setEnabled: (on) => music.setEnabled(on),
+          getLevel: () => music.getLevel(),
+          setLevel: (level) => music.setLevel(level),
+        },
       });
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
@@ -1095,6 +1191,52 @@ function init(): void {
   }
 
   renderFrame();
+}
+
+// The debug panel's SOUND TEST: one sound by itself, straight to the engine —
+// no effect, no notice, nothing the run or its input sees. Silent while
+// muted: the panel never unmutes.
+function playSoundTest(id: SoundTestId): void {
+  switch (id) {
+    case 'claim-small':
+      return sfx.playClaim({ share: 0.02, speed: 'fast' });
+    case 'claim-mid':
+      return sfx.playClaim({ share: 0.1, speed: 'fast' });
+    case 'claim-large':
+      return sfx.playClaim({ share: 0.3, speed: 'fast' });
+    case 'split':
+      return sfx.playSplitImpact();
+    case 'miss':
+      return sfx.handleEvents(['miss']);
+    case 'stage-clear':
+      return sfx.handleEvents(['stage-clear']);
+    case 'gameover-life':
+      return sfx.playGameOver('life');
+    case 'gameover-time':
+      return sfx.playGameOver('time');
+    case 'count':
+      return sfx.playCountSample();
+    case 'new-record':
+      return sfx.playNewRecord();
+    case 'alarm':
+    case 'beep':
+    case 'beep-high':
+      return sfx.playTimeWarning(id);
+    case 'igniter-spawn':
+      return sfx.handleEvents(['igniter-spawned']);
+    case 'igniter-approach':
+      return sfx.handleEvents(['igniter-approaching']);
+    case 'ember-spawn':
+      return sfx.handleEvents(['ember-spawned']);
+    case 'blaze-spawn':
+      return sfx.handleEvents(['ember-blaze-spawned']);
+    case 'ember-line':
+      return sfx.handleEvents(['ember-entered-line']);
+    case 'ember-out':
+      return sfx.handleEvents(['ember-despawned']);
+    case 'draw':
+      return sfx.playDrawSample();
+  }
 }
 
 // Forgets every seen hint, saved and in memory — the store hintDirector
@@ -1128,6 +1270,7 @@ function toggleMute(): void {
   const muted = sfx.toggleMuted();
   saveMuted(muted);
   updateMuteButtonLabel();
+  stopBgmIfUnwanted();
 }
 
 // What decides whether the live run may be paused now (src/pause.ts): live
@@ -1136,14 +1279,16 @@ function pauseContext(): PauseContext {
   return { live: viewMode === 'live' && replayEngine === null, status: session.getStatus() };
 }
 
-// The run was just paused or resumed. Pausing stops the draw tone at once.
+// The run was just paused or resumed (a key, the PAUSE button, the page
+// hidden). Pausing stops the draw tone and the music at once.
 // Resuming lines the loop's clock up with now and drops the leftover
 // fraction of a tick, so the time spent paused never turns into ticks: the
-// run carries on from the tick it stopped at. The pause screen and the
-// PAUSE button follow in renderFrame().
+// run carries on from the tick it stopped at. The pause screen, the PAUSE
+// button and the music starting again follow in renderFrame().
 function applyPauseToggle(change: PauseToggle | null): void {
   if (change === 'paused') {
     sfx.setDrawing(false, null);
+    stopBgmIfUnwanted();
   } else if (change === 'resumed') {
     lastTime = performance.now();
     accumulator = 0;
@@ -1238,8 +1383,11 @@ function enterReplayMode(engine: ReplayEngine): void {
   // continuous draw tone left over from live play — otherwise the live
   // run's audio state leaks into playback.
   sfx.setDrawing(false, null);
+  // The music too, at once.
+  stopBgmIfUnwanted();
   gameOverModal.hide();
   gameOverModalShown = false;
+  gameOverResult.stop();
   // The live run's impact feedback does not carry into the replay.
   hitStop.clear();
   fx.reset();
@@ -1724,6 +1872,7 @@ function updateLive(): void {
   // The clear screen's count-up runs from the tick it is on screen (once
   // SPLIT! has gone), through hit stops like the other display effects.
   stageResultCounter.step(session.getStatus() === 'stageclear', !fx.isSplitBannerActive(), fxParams.stageResultRollTicks);
+  stepGameOverResult();
   const polled = beginLiveTick({
     fx,
     hitStop,
@@ -1788,6 +1937,8 @@ function updateLive(): void {
     onFreshRun: () => {
       runTracker.startFreshRun();
       playLogRecorder.startRun();
+      gameOverTally.reset();
+      gameOverResult.stop();
       hitStop.clear();
       fx.reset();
       renderer.resetBoard();
@@ -1820,7 +1971,10 @@ function updateLive(): void {
   // or a plain Ember on the contact cell).
   const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
   const { claims, misses } = applyImpactNotices(session, fx, hitStop, sfx, missReason);
-  for (const notice of claims) stageResultTally.add(notice);
+  for (const notice of claims) {
+    stageResultTally.add(notice);
+    gameOverTally.add(notice);
+  }
   // The play log counts this tick for the stage it started on, and closes
   // the run on the tick it reaches GAME OVER.
   playLogRecorder.observeTick({ stageBefore: stageBeforeThisTick, statusBefore: statusBeforeThisTick, claims, misses });
@@ -1831,6 +1985,14 @@ function updateLive(): void {
   const startedPlaying = statusBeforeThisTick !== 'playing' && session.getStatus() === 'playing';
   const stageStart = !startedPlaying ? null : statusBeforeThisTick === 'stageclear' && !step.freshRun ? 'stage' : 'run';
   stepHints(stageStart, claims, events, true);
+  // A new run (from Title, PLAY WITH HINTS or a retry): the first stage's
+  // tune from the top. A later stage's play, from STAGE CLEAR: that stage's
+  // tune, from its top (the one playing stops right here). Through STAGE
+  // CLEAR the cleared stage's tune plays on.
+  if (stageStart === 'run') bgm?.restart(bgmTrackForStage(session.getStage()));
+  else if (stageStart === 'stage') bgm?.setTrack(bgmTrackForStage(session.getStage()));
+  // The tick that reaches GAME OVER (or Title) stops the music right here.
+  stopBgmIfUnwanted();
   // The HUD's SCORE number follows the real score: counting up after points
   // are added, at once when it falls back to 0 for a new run.
   hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
@@ -1862,6 +2024,27 @@ function updateLive(): void {
       lastSavedHighScore = currentHighScore;
       saveHighScore(currentHighScore);
     }
+  }
+}
+
+// One live tick of the GAME OVER result, through hit stops like the other
+// display effects. Stopped first if the run has left GAME OVER on an
+// earlier tick of this frame, so a retried run never hears the last one's
+// count.
+function stepGameOverResult(): void {
+  if (!gameOverResult.isActive()) return;
+  if (session.getStatus() !== 'gameover') {
+    gameOverResult.stop();
+    return;
+  }
+  playGameOverCues(gameOverResult.step());
+}
+
+function playGameOverCues(cues: readonly GameOverCue[]): void {
+  for (const cue of cues) {
+    if (cue === 'count-tick') sfx.playCountTick();
+    else if (cue === 'count-end') sfx.playCountEnd();
+    else sfx.playNewRecord();
   }
 }
 
@@ -1986,6 +2169,7 @@ function renderFrame(): void {
   }
 
   const status = activeSession.getStatus();
+  updateBgm();
 
   // RANKING button/list availability: browsing the ranking
   // — and therefore starting a replay, which suspends the live session
@@ -2070,6 +2254,23 @@ function renderFrame(): void {
       // run with no debug override at any point), against the best it
       // started from.
       const recordsHighScore = shouldPersistHighScore(runMode) && !session.isRunTainted();
+      const reason = session.getGameOverReason() ?? 'life';
+      // The result counts up from this frame: the close plays now, the rest
+      // on the live ticks that follow (stepGameOverResult()).
+      const cues = gameOverResult.start({
+        score,
+        stage: session.getStage(),
+        bestAtStart: runBestAtStart,
+        recordsHighScore,
+        tally: gameOverTally.snapshot(),
+        reducedMotion,
+        timing: {
+          countTicks: fxParams.gameOverCountTicks,
+          popTicks: fxParams.gameOverPopTicks,
+          sparkTicks: fxParams.gameOverSparkTicks,
+        },
+      });
+      const view = gameOverResult.view();
       gameOverModal.show({
         score,
         stage: session.getStage(),
@@ -2078,8 +2279,11 @@ function renderFrame(): void {
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
         reason: session.getGameOverReason() ?? undefined,
-        newRecordDelta: recordsHighScore && score > runBestAtStart ? score - runBestAtStart : undefined,
+        highlight: view.highlight,
+        bestLine: view.bestLine,
       });
+      sfx.playGameOver(reason);
+      playGameOverCues(cues);
       // Ranking submission offer: a no-op if this run isn't POST-eligible
       // (`?seed=`/tainted, see
       // src/ui/ranking.ts's isSnapshotEligible()) or isn't provisionally in
@@ -2100,9 +2304,13 @@ function renderFrame(): void {
     }
     // The hint says what the keys do: retry, or wait for the submission panel
     // to be closed.
-    if (gameOverModalShown) gameOverModal.setSubmissionHold(currentRetryHold().formShown);
+    if (gameOverModalShown) {
+      gameOverModal.setSubmissionHold(currentRetryHold().formShown);
+      gameOverModal.renderResult(gameOverResult.view());
+    }
   } else {
     gameOverConfirmGate.reset();
+    gameOverResult.stop();
     if (gameOverModalShown) {
       gameOverModalShown = false;
       gameOverModal.hide();
@@ -2130,6 +2338,41 @@ function renderFrame(): void {
   const lowered = titleButtonsCompact && status === 'title' && viewMode === 'live' && replayEngine === null;
   const screenTop = lowered ? `calc(50% + ${TITLE_TEXT_COMPACT_OFFSET_PX}px)` : '50%';
   if (screen.style.top !== screenTop) screen.style.top = screenTop;
+}
+
+// The music, once per frame (see `bgm`): wanted through the live run's
+// play and STAGE CLEAR, unless paused or muted. Nothing is scheduled while the
+// page is hidden.
+function updateBgm(): void {
+  bgm?.update(bgmUpdate());
+}
+
+// Stops the music at once, without waiting for a frame (a hidden page
+// draws none): when it is no longer wanted (paused, GAME OVER, muted, a
+// replay, Title), or when the page is hidden. Starting again is left to the
+// next frame's updateBgm().
+function stopBgmIfUnwanted(): void {
+  if (!bgm) return;
+  const u = bgmUpdate();
+  if (!u.want) bgm.stop(u.fadeSec);
+  else if (!u.visible) bgm.hide();
+}
+
+function bgmUpdate(): BgmUpdate {
+  const liveStatus = session.getStatus();
+  const live = viewMode === 'live' && replayEngine === null;
+  return {
+    want:
+      live &&
+      !pauseControl.isPaused() &&
+      !sfx.isMuted() &&
+      (liveStatus === 'playing' || liveStatus === 'stageclear'),
+    visible: document.visibilityState !== 'hidden',
+    remainingSec: session.getRemainingTicks() / TICK_RATE,
+    // The live stage's: on STAGE CLEAR still the cleared stage's.
+    track: bgmTrackForStage(session.getStage()),
+    fadeSec: live && liveStatus === 'gameover' ? BGM_GAMEOVER_FADE_SEC : BGM_FADE_SEC,
+  };
 }
 
 // Writes the Title / STAGE CLEAR overlay. English: one text, exactly

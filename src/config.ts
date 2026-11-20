@@ -318,31 +318,54 @@ export const MISS_BLINK_INTERVAL_TICKS = 6;
 // asset files. Frequencies in Hz, durations in seconds, gains as linear
 // [0,1] envelope peaks (kept low since several can overlap the same frame).
 export const SFX_MASTER_GAIN = 0.25;
-export const SFX_DRAW_GAIN = 0.05;
+// How loud each sound is, as a tier and a share of it (src/audio/sfxLevels.ts):
+// a tier's value is the peak of its loudest sound, and the tiers run from the
+// most important moment down — the split, then claims / misses / clears /
+// GAME OVER, then the warnings, then the enemies appearing, then the drone
+// while drawing. Starting values: the debug panel's SOUND section tunes them
+// by ear.
+export const SFX_LEVEL_SPLIT = 0.36;
+export const SFX_LEVEL_IMPACT = 0.28;
+export const SFX_LEVEL_WARNING = 0.2;
+export const SFX_LEVEL_ENEMY = 0.13;
+export const SFX_LEVEL_DRAW = 0.04;
 export const SFX_DRAW_FREQ_FAST = 220;
 export const SFX_DRAW_FREQ_SLOW = 130;
 // The miss: a falling sawtooth that peaks at once (SFX_IMPACT_ATTACK). Its
-// envelope plus SFX_TONE_STOP_TAIL stays within 0.35s.
+// envelope plus SFX_TONE_STOP_TAIL stays within 0.35s. A quieter sawtooth an
+// octave up (SFX_MISS_OVERTONE_FREQ) falls with it over the same time, so the
+// miss is still heard on a laptop or phone speaker that cannot play 90 Hz.
 export const SFX_MISS_FREQ = 90;
+export const SFX_MISS_OVERTONE_FREQ = SFX_MISS_FREQ * 2;
 export const SFX_MISS_DURATION = 0.33;
 export const SFX_STAGE_CLEAR_NOTES = [523, 659, 784, 1047]; // C5 E5 G5 C6 arpeggio
-export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.14;
+// Both clear arpeggios peak at once (SFX_IMPACT_ATTACK) with short notes, so
+// they ring briefly after the moment instead of trailing over the next one.
+export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.11;
 export const SFX_SPLIT_CLEAR_NOTES = [784, 988, 1175, 1568, 1976]; // brighter/longer — a "special" clear
-export const SFX_SPLIT_CLEAR_NOTE_DURATION = 0.11;
+export const SFX_SPLIT_CLEAR_NOTE_DURATION = 0.09;
 export const SFX_IGNITER_SPAWN_FREQ = 340;
 export const SFX_IGNITER_SPAWN_DURATION = 0.1;
 export const SFX_IGNITER_APPROACH_FREQ = 500;
 export const SFX_IGNITER_APPROACH_DURATION = 0.05;
-export const SFX_EMBER_SPAWN_FREQ = 260;
-export const SFX_EMBER_SPAWN_DURATION = 0.08;
+// An Ember spawning: a short square-wave blip held high enough to be heard on
+// a laptop or phone speaker — the enemy tier is quiet, and a low, round tone
+// there was lost on small speakers.
+export const SFX_EMBER_SPAWN_FREQ = 520;
+export const SFX_EMBER_SPAWN_DURATION = 0.1;
 // A short descending "pop" for an Ember despawning after losing its BORDER
-// footing (docs/plan.md §6 M11 / §12.6) — lower/quicker than the spawn tone
-// so the two read as clearly distinct events.
-export const SFX_EMBER_DESPAWN_FREQ = 180;
-export const SFX_EMBER_DESPAWN_DURATION = 0.07;
-// A sharper, higher one-shot for a Blaze spawning (docs/plan.md §14 M6-1
-// "通常スポーン音より鋭い音") — higher-pitched and shorter than
-// SFX_EMBER_SPAWN_* so the two spawn sounds are clearly distinguishable.
+// footing (docs/plan.md §6 M11 / §12.6): a triangle falling from
+// SFX_EMBER_DESPAWN_FREQ to SFX_EMBER_DESPAWN_END_FREQ, so it reads as going
+// away where the spawn blip holds its pitch. It starts high enough to be
+// heard on small speakers, and stays clear of the 880 / 1320 Hz time warning
+// beeps and the 1047 Hz claim hit.
+export const SFX_EMBER_DESPAWN_FREQ = 620;
+export const SFX_EMBER_DESPAWN_END_FREQ = 250;
+export const SFX_EMBER_DESPAWN_DURATION = 0.1;
+// A sharper one-shot for a Blaze spawning (docs/plan.md §14 M6-1
+// "通常スポーン音より鋭い音") — a sawtooth, shorter than SFX_EMBER_SPAWN_*'s
+// square and at its own pitch, so the two spawn sounds are clearly
+// distinguishable.
 export const SFX_EMBER_BLAZE_SPAWN_FREQ = 420;
 export const SFX_EMBER_BLAZE_SPAWN_DURATION = 0.07;
 // A short 2-note alarm blip for the instant a Blaze steps from BORDER onto
@@ -375,6 +398,52 @@ export const SFX_SPLIT_IMPACT_FREQ = 70;
 export const SFX_SPLIT_IMPACT_DURATION = 0.1;
 // Every one-shot oscillator is stopped this long after its envelope ends.
 export const SFX_TONE_STOP_TAIL = 0.02;
+// GAME OVER (playGameOver()): a low falling hit, then three notes resolving
+// upward — a close, not a sad fall. Life lost: G4 B4 D5; time up: E4 G#4 B4.
+export const SFX_GAMEOVER_HIT_FREQ = 110;
+export const SFX_GAMEOVER_HIT_DURATION = 0.12;
+export const SFX_GAMEOVER_LIFE_NOTES = [392, 494, 587];
+export const SFX_GAMEOVER_TIME_NOTES = [330, 415, 494];
+export const SFX_GAMEOVER_NOTE_DURATION = 0.1;
+// The GAME OVER score count-up: a short tick while it counts, two notes when
+// it stops. Pitches clear of the time warning beeps (880 / 1320 Hz) and the
+// claim hit (1047 Hz).
+export const SFX_COUNT_TICK_FREQ = 1175; // D6
+export const SFX_COUNT_TICK_DURATION = 0.03;
+export const SFX_COUNT_END_NOTES = [784, 1175]; // G5 D6
+export const SFX_COUNT_END_NOTE_DURATION = 0.06;
+// A beaten best: a bright five-note fanfare.
+export const SFX_NEW_RECORD_NOTES = [659, 784, 988, 1319, 1568]; // E5 G5 B5 E6 G6
+export const SFX_NEW_RECORD_NOTE_DURATION = 0.08;
+// How many sounds the engine's own record keeps (SfxEngine.getLog()).
+export const SFX_LOG_MAX = 64;
+
+// The background music (src/audio/bgm.ts, src/audio/bgmScore.ts): plays in
+// live play while the sound is on, one of three tunes a stage in turn —
+// stage 1 the first, 2 the second, 3 the third, 4 the first again.
+export const BGM_TRACK_ORDER = ['tense', 'acid', 'hunt'] as const;
+// Each tune's own gain under the master (the debug panel's BGM slider scales
+// all three by the same factor). The levels of a tune's notes under it are
+// part of the tune (src/audio/bgmScore.ts).
+export const BGM_GAIN_TENSE = 0.2;
+export const BGM_GAIN_ACID = 0.18;
+export const BGM_GAIN_HUNT = 0.18;
+// Each tune's tempo, and the faster one from BGM_RUSH_FROM_SEC left.
+export const BGM_TEMPO = {
+  tense: { bpm: 126, rushBpm: 140 },
+  acid: { bpm: 130, rushBpm: 144 },
+  hunt: { bpm: 170, rushBpm: 178 },
+} as const;
+export const BGM_RUSH_FROM_SEC = 30;
+// The intensity (0-3) rises one step at each of these seconds left: 180-135s
+// is 0, 135-90s is 1, 90-30s is 2, 30s and below is 3.
+export const BGM_INTENSITY_FROM_SEC = [135, 90, 30] as const;
+// Notes are scheduled on the audio clock this far ahead of now.
+export const BGM_LOOKAHEAD_SEC = 0.2;
+// How long a stopped play-through fades out (seconds): quickly for a pause,
+// the switch, mute, a replay or Title; longer at GAME OVER, under its close.
+export const BGM_FADE_SEC = 0.05;
+export const BGM_GAMEOVER_FADE_SEC = 0.3;
 
 // Impact feedback (src/fx/): the short pause ("hit stop"), the fill reveal,
 // the score popup, flashes, shakes and shards that answer an area claim, a
@@ -468,6 +537,26 @@ export const RETRY_CONFIRM_GUARD_TICKS = 24;
 // (src/ui/gameOverModal.ts's setDensity()).
 export const GAMEOVER_MODAL_COMPACT_BELOW_PX = 400;
 export const GAMEOVER_MODAL_TINY_BELOW_PX = 200;
+// The GAME OVER result (src/gameOverResult.ts), in live ticks from the modal
+// appearing: the score counts up from 0 (ease-out) over
+// GAMEOVER_COUNT_TICKS with a tick sound every GAMEOVER_COUNT_TICK_EVERY,
+// then pops (GAMEOVER_POP_SCALE back to 1 over GAMEOVER_POP_TICKS); the run's
+// highlight follows GAMEOVER_HIGHLIGHT_DELAY_TICKS later, and NEW RECORD (with
+// GAMEOVER_SPARK_COUNT sparks for GAMEOVER_SPARK_TICKS) or the distance to the
+// best GAMEOVER_RECORD_DELAY_TICKS later. A distance within
+// GAMEOVER_NEAR_BEST_RATIO of the best glows like NEW RECORD. None of it holds
+// the retry: confirm works as soon as RETRY_CONFIRM_GUARD_TICKS have passed.
+export const GAMEOVER_COUNT_TICKS = 42;
+export const GAMEOVER_COUNT_TICK_EVERY = 4;
+export const GAMEOVER_POP_TICKS = 8;
+export const GAMEOVER_POP_SCALE = 1.25;
+export const GAMEOVER_HIGHLIGHT_DELAY_TICKS = 6;
+export const GAMEOVER_RECORD_DELAY_TICKS = 12;
+export const GAMEOVER_SPARK_TICKS = 30;
+export const GAMEOVER_SPARK_COUNT = 12;
+export const GAMEOVER_NEAR_BEST_RATIO = 0.1;
+// How far a GAME OVER spark travels from the NEW RECORD line (CSS px).
+export const GAMEOVER_SPARK_DISTANCE_PX = 26;
 // The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
 // this many CSS px on screen, however far the field is scaled down.
 export const FX_TEXT_MIN_DISPLAY_PX = 11;

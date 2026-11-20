@@ -24,6 +24,15 @@ export async function advanceUntil(
   throw new Error(`condition not met within ${maxMs}ms of game time`);
 }
 
+/**
+ * Runs the faked clock on through the GAME OVER result (src/gameOverResult.ts):
+ * the score's count-up, then the highlight and the best line after it — about
+ * 54 ticks from the modal appearing; 1.2s of game time covers it.
+ */
+export async function finishGameOverResult(page: Page): Promise<void> {
+  await page.clock.runFor(1_200);
+}
+
 interface IgniterProbe {
   status: string;
   drawing: boolean;

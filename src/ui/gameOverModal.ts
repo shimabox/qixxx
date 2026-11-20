@@ -2,16 +2,32 @@
 // while `session.getStatus() === 'gameover'`, layered on top of #screen
 // inside #canvas-wrap (see src/main.ts's getScreenElement()/getCanvasWrapElement()),
 // centered over the field exactly like #screen already is. Displays the
-// run's SCORE / STAGE / HI SCORE (with NEW RECORD when the run beat the best
-// it started from) and offers RETRY (the next run, at once), TITLE and
-// POST TO X (share).
+// run's SCORE (counting up from 0, see src/gameOverResult.ts) / STAGE /
+// HI SCORE, then the run's highlight and NEW RECORD (when the run beat the
+// best it started from) or how far it fell short, and offers RETRY (the next
+// run, at once), TITLE and POST TO X (share). The share always posts the
+// final score.
 //
 // DOM-only module — src/core/ is never imported here (docs/plan.md's "core
 // purity" invariant), matching input/keyboard.ts and input/touch.ts's
 // existing DOM-touching exemption.
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, HUD_TIME_WARNING_COLOR, COLOR_FX_NEON_CYAN } from '../config';
+import {
+  HUD_FONT,
+  HUD_TEXT_COLOR,
+  HUD_ACCENT_COLOR,
+  HUD_TIME_WARNING_COLOR,
+  COLOR_FX_NEON_CYAN,
+  GAMEOVER_SPARK_COUNT,
+  GAMEOVER_SPARK_DISTANCE_PX,
+} from '../config';
 import { t, type MessageKey } from '../i18n';
 import { applySentenceFont } from './sentenceFont';
+import {
+  gameOverHighlightText,
+  type GameOverBestLine,
+  type GameOverHighlight,
+  type GameOverResultView,
+} from '../gameOverResult';
 
 export interface GameOverScoreInfo {
   score: number;
@@ -26,12 +42,18 @@ export interface GameOverScoreInfo {
    */
   reason?: 'life' | 'time';
   /**
-   * How far the score beat the best the run started from, shown as
-   * `NEW RECORD +<n>` under the heading (and under TIME UP!). Omitted when
-   * it did not beat it, and for a run that never saves a high score (a
-   * seeded run, a run with debug overrides).
+   * The run's highlight line under the score lines (src/gameOverResult.ts),
+   * or null for none. Its place is kept from the start; it appears when
+   * renderResult() says so.
    */
-  newRecordDelta?: number;
+  highlight?: GameOverHighlight | null;
+  /**
+   * `NEW RECORD +<n>` or `<n> TO HI SCORE`, under the highlight, in one
+   * place; null for neither (a run that never saves a high score — a seeded
+   * run, a run with debug overrides — or a first run with no points). Its
+   * place is kept from the start; it appears when renderResult() says so.
+   */
+  bestLine?: GameOverBestLine | null;
 }
 
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
@@ -79,6 +101,13 @@ export class GameOverModal {
   private readonly reasonLine: HTMLDivElement;
   private readonly newRecordLine: HTMLDivElement;
   private readonly scoreLine: HTMLDivElement;
+  private readonly scoreValue: HTMLSpanElement;
+  private readonly highlightLine: HTMLDivElement;
+  private readonly bestSlot: HTMLDivElement;
+  private readonly toBestLine: HTMLDivElement;
+  private readonly sparkLayer: HTMLDivElement;
+  private readonly sparks: HTMLSpanElement[] = [];
+  private lastResultKey = '';
   private readonly stageLine: HTMLDivElement;
   private readonly hiLine: HTMLDivElement;
   // SCORE / STAGE / HI: laid out as three lines (display: contents), or as
@@ -136,18 +165,20 @@ export class GameOverModal {
     this.reasonLine.style.display = 'none';
     this.container.appendChild(this.reasonLine);
 
-    // NEW RECORD +<n>: right under the heading (under TIME UP! when both show).
-    this.newRecordLine = document.createElement('div');
-    this.newRecordLine.id = 'gameover-new-record';
-    this.newRecordLine.style.fontSize = '1.25em';
-    this.newRecordLine.style.fontWeight = 'bold';
-    this.newRecordLine.style.color = COLOR_FX_NEON_CYAN;
-    this.newRecordLine.style.textShadow = `0 0 8px ${COLOR_FX_NEON_CYAN}, 0 0 16px ${COLOR_FX_NEON_CYAN}`;
-    this.newRecordLine.style.display = 'none';
-    this.container.appendChild(this.newRecordLine);
-
     this.scoreRow = document.createElement('div');
     this.scoreLine = document.createElement('div');
+    this.scoreLine.id = 'gameover-score';
+    // SCORE: the counting text, at least as wide as the final one from the
+    // start (the line is monospace, so that is its length in ch), so the
+    // modal never changes width while it counts. The pop is a transform: it
+    // never moves anything else either.
+    this.scoreValue = document.createElement('span');
+    this.scoreValue.id = 'gameover-score-value';
+    this.scoreValue.style.display = 'inline-block';
+    this.scoreValue.style.whiteSpace = 'pre';
+    this.scoreValue.style.fontVariantNumeric = 'tabular-nums';
+    this.scoreValue.style.transformOrigin = 'center';
+    this.scoreLine.appendChild(this.scoreValue);
     this.stageLine = document.createElement('div');
     this.hiLine = document.createElement('div');
     // Spaced apart when they share one line (the tiny density).
@@ -157,6 +188,59 @@ export class GameOverModal {
     this.scoreRow.appendChild(this.stageLine);
     this.scoreRow.appendChild(this.hiLine);
     this.container.appendChild(this.scoreRow);
+
+    // The run's highlight (SPLIT ×n, BEST CLAIM n%, REACHED STAGE n), then
+    // NEW RECORD +<n> or <n> TO HI SCORE in one place under it. A line the run
+    // will show keeps its place (visibility: hidden) from the moment the modal
+    // appears, so the buttons never move when it does.
+    this.highlightLine = document.createElement('div');
+    this.highlightLine.id = 'gameover-highlight';
+    this.highlightLine.style.fontWeight = 'bold';
+    this.highlightLine.style.color = HUD_ACCENT_COLOR;
+    this.highlightLine.style.display = 'none';
+    this.container.appendChild(this.highlightLine);
+
+    this.bestSlot = document.createElement('div');
+    this.bestSlot.style.position = 'relative';
+    this.bestSlot.style.display = 'none';
+    this.newRecordLine = document.createElement('div');
+    this.newRecordLine.id = 'gameover-new-record';
+    this.newRecordLine.style.fontSize = '1.25em';
+    this.newRecordLine.style.fontWeight = 'bold';
+    this.newRecordLine.style.color = COLOR_FX_NEON_CYAN;
+    this.newRecordLine.style.textShadow = `0 0 8px ${COLOR_FX_NEON_CYAN}, 0 0 16px ${COLOR_FX_NEON_CYAN}`;
+    this.newRecordLine.style.transformOrigin = 'center';
+    this.newRecordLine.style.display = 'none';
+    this.bestSlot.appendChild(this.newRecordLine);
+    this.toBestLine = document.createElement('div');
+    this.toBestLine.id = 'gameover-to-best';
+    this.toBestLine.style.display = 'none';
+    this.bestSlot.appendChild(this.toBestLine);
+    // The sparks: small dots flying out from the line's middle at fixed
+    // angles, never taking a tap.
+    this.sparkLayer = document.createElement('div');
+    this.sparkLayer.style.position = 'absolute';
+    this.sparkLayer.style.left = '50%';
+    this.sparkLayer.style.top = '50%';
+    this.sparkLayer.style.width = '0';
+    this.sparkLayer.style.height = '0';
+    this.sparkLayer.style.pointerEvents = 'none';
+    this.sparkLayer.style.display = 'none';
+    for (let i = 0; i < GAMEOVER_SPARK_COUNT; i++) {
+      const spark = document.createElement('span');
+      spark.style.position = 'absolute';
+      spark.style.left = '-2px';
+      spark.style.top = '-2px';
+      spark.style.width = '4px';
+      spark.style.height = '4px';
+      spark.style.borderRadius = '2px';
+      spark.style.background = COLOR_FX_NEON_CYAN;
+      spark.style.boxShadow = `0 0 4px ${COLOR_FX_NEON_CYAN}`;
+      this.sparks.push(spark);
+      this.sparkLayer.appendChild(spark);
+    }
+    this.bestSlot.appendChild(this.sparkLayer);
+    this.container.appendChild(this.bestSlot);
 
     // Two rows: RETRY alone across the whole modal (the main action, filled),
     // then TITLE and POST TO X. The buttons ask main.ts for the transition
@@ -218,7 +302,12 @@ export class GameOverModal {
   /** Shows the modal populated with this run's final score info. Idempotent — safe to call again while already shown. */
   show(info: GameOverScoreInfo): void {
     this.current = info;
-    this.scoreLine.textContent = t('gameOver.score', info.score);
+    // The final score sizes the line; the shown one starts at the final value
+    // until renderResult() says otherwise.
+    const finalText = t('gameOver.score', info.score);
+    this.scoreValue.style.minWidth = `${finalText.length}ch`;
+    this.scoreValue.textContent = finalText;
+    this.scoreValue.style.transform = '';
     this.stageLine.textContent = t('gameOver.stage', info.stage);
     this.hiLine.textContent = t('gameOver.hiScore', info.hiScore);
     if (info.reason === 'time') {
@@ -228,13 +317,28 @@ export class GameOverModal {
       this.reasonLine.textContent = '';
       this.reasonLine.style.display = 'none';
     }
-    if (info.newRecordDelta !== undefined && info.newRecordDelta > 0) {
-      this.newRecordLine.textContent = t('gameOver.newRecord', info.newRecordDelta);
-      this.newRecordLine.style.display = 'block';
-    } else {
-      this.newRecordLine.textContent = '';
-      this.newRecordLine.style.display = 'none';
-    }
+    // The lines this run will show keep their place, hidden, from now on.
+    const highlight = info.highlight ?? null;
+    this.highlightLine.textContent = highlight ? gameOverHighlightText(highlight) : '';
+    this.highlightLine.style.display = highlight ? 'block' : 'none';
+    this.highlightLine.style.visibility = 'hidden';
+    const best = info.bestLine ?? null;
+    this.bestSlot.style.display = best ? 'block' : 'none';
+    this.newRecordLine.textContent = best?.kind === 'new-record' ? t('gameOver.newRecord', best.delta) : '';
+    this.newRecordLine.style.display = best?.kind === 'new-record' ? 'block' : 'none';
+    this.newRecordLine.style.visibility = 'hidden';
+    this.newRecordLine.style.transform = '';
+    this.toBestLine.textContent = best?.kind === 'to-best' ? t('gameOver.toBest', best.gap) : '';
+    this.toBestLine.style.display = best?.kind === 'to-best' ? 'block' : 'none';
+    this.toBestLine.style.visibility = 'hidden';
+    // Near the best: lit like NEW RECORD; otherwise as plain as HI SCORE:.
+    const near = best?.kind === 'to-best' && best.near;
+    this.toBestLine.dataset.near = near ? 'true' : 'false';
+    this.toBestLine.style.color = near ? COLOR_FX_NEON_CYAN : '';
+    this.toBestLine.style.fontWeight = near ? 'bold' : '';
+    this.toBestLine.style.textShadow = near ? `0 0 8px ${COLOR_FX_NEON_CYAN}, 0 0 16px ${COLOR_FX_NEON_CYAN}` : '';
+    this.sparkLayer.style.display = 'none';
+    this.lastResultKey = '';
     this.setSubmissionHold(false);
     this.resetShareButton();
     this.container.style.display = 'flex';
@@ -242,6 +346,45 @@ export class GameOverModal {
 
   hide(): void {
     this.container.style.display = 'none';
+  }
+
+  /**
+   * Draws the GAME OVER result as it is now (src/gameOverResult.ts): the
+   * counting score and its pop, the highlight and the best line once they
+   * are due, NEW RECORD's pop and its sparks. A no-op unless something
+   * changed.
+   */
+  renderResult(view: GameOverResultView): void {
+    const key = [
+      view.score,
+      view.popScale.toFixed(3),
+      view.highlightShown,
+      view.bestLineShown,
+      view.recordPopScale.toFixed(3),
+      view.sparkProgress === null ? '-' : view.sparkProgress.toFixed(3),
+    ].join('|');
+    if (key === this.lastResultKey) return;
+    this.lastResultKey = key;
+    this.scoreValue.textContent = t('gameOver.score', view.score);
+    this.scoreValue.style.transform = view.popScale === 1 ? '' : `scale(${view.popScale})`;
+    this.highlightLine.style.visibility = view.highlightShown ? 'visible' : 'hidden';
+    const bestVisibility = view.bestLineShown ? 'visible' : 'hidden';
+    this.newRecordLine.style.visibility = bestVisibility;
+    this.toBestLine.style.visibility = bestVisibility;
+    this.newRecordLine.style.transform = view.recordPopScale === 1 ? '' : `scale(${view.recordPopScale})`;
+    const progress = view.sparkProgress;
+    this.sparkLayer.style.display = progress === null ? 'none' : 'block';
+    if (progress !== null) {
+      // Wider than tall, so the sparks stay around the line.
+      const out = 1 - Math.pow(1 - progress, 2);
+      this.sparks.forEach((spark, i) => {
+        const angle = (i / this.sparks.length) * Math.PI * 2;
+        const x = Math.cos(angle) * GAMEOVER_SPARK_DISTANCE_PX * 2 * out;
+        const y = Math.sin(angle) * GAMEOVER_SPARK_DISTANCE_PX * 0.5 * out;
+        spark.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+        spark.style.opacity = (1 - progress).toFixed(3);
+      });
+    }
   }
 
   /** The hint while the ranking offer holds the keyboard and the field (true) or not. */

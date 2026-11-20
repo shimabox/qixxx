@@ -4,7 +4,7 @@
 // size on a phone. Everything runs on a faked page clock
 // (tests/e2e/support/fakeClock.ts), so budgets are game time.
 import { test, expect, type Page } from '@playwright/test';
-import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
+import { advanceUntil, finishGameOverResult, loseAllLivesToIgniter } from './support/fakeClock';
 
 interface Point {
   x: number;
@@ -444,6 +444,8 @@ for (const c of [
       await advanceUntil(page, async () => page.locator('#gameover-modal').isVisible(), 2_000, FRAME_MS);
       const finalScore = await page.evaluate(() => window.__game__!.session.getScore());
       expect(await gameOverReason(page)).toBe('life');
+      // NEW RECORD shows once the score has counted up.
+      await finishGameOverResult(page);
       await expect(page.locator('#gameover-new-record')).toHaveText(`NEW RECORD +${finalScore}`);
       await expect(page.locator('#gameover-reason')).toBeHidden();
       await expectModalFits(page);

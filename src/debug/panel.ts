@@ -15,7 +15,16 @@ import type { Point } from '../core/field';
 import type { FxDirector } from '../fx/director';
 import type { HitStop } from '../fx/hitStop';
 import type { FxParams } from '../fx/params';
-import { TICK_RATE, SPLIT_MULTIPLIER_CAP, PLAY_LOG_MAX_RUNS, PLAY_LOG_STREAK_STAGE } from '../config';
+import { resetSfxLevels, type SfxLevels } from '../audio/sfxLevels';
+import {
+  TICK_RATE,
+  SPLIT_MULTIPLIER_CAP,
+  PLAY_LOG_MAX_RUNS,
+  PLAY_LOG_STREAK_STAGE,
+  BGM_GAIN_TENSE,
+  BGM_GAIN_ACID,
+  BGM_GAIN_HUNT,
+} from '../config';
 import { t } from '../i18n';
 import type { PlayLogFile } from '../playLog/record';
 import { summarizePlayLog, trailingRunsAtOrBelow } from '../playLog/summary';
@@ -188,10 +197,12 @@ const FIELDS: SliderField[] = [
 function buildExportPayload(
   params: EffectiveDebugParams,
   timeLimitTicks: number,
-  fxParams?: FxParams
+  fxParams?: FxParams,
+  sound?: Record<string, number | string>
 ): Record<string, unknown> {
   return {
     ...(fxParams ? buildFxExportPayload(fxParams) : {}),
+    ...(sound ?? {}),
     WISP_COUNT: params.wispCount,
     WISP_SPEED_MULTIPLIER: params.wispSpeedMultiplier,
     EMBER_COUNT: params.emberCount,
@@ -257,6 +268,9 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     FX_TEXT_MIN_DISPLAY_PX: p.fxTextMinDisplayPx,
     FX_MISS_REASON_TICKS: p.missReasonTicks,
     FX_MISS_REASON_MIN_DISPLAY_PX: p.missReasonMinDisplayPx,
+    GAMEOVER_COUNT_TICKS: p.gameOverCountTicks,
+    GAMEOVER_POP_TICKS: p.gameOverPopTicks,
+    GAMEOVER_SPARK_TICKS: p.gameOverSparkTicks,
   };
 }
 
@@ -303,6 +317,9 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'fxTextMinDisplayPx', label: 'Effect text min (CSS px)', range: { min: 0, max: 32, step: 1 } },
   { key: 'missReasonTicks', label: 'Miss reason (t)', range: { min: 0, max: 300, step: 1 } },
   { key: 'missReasonMinDisplayPx', label: 'Miss reason min (CSS px)', range: { min: 0, max: 32, step: 1 } },
+  { key: 'gameOverCountTicks', label: 'GAME OVER count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverPopTicks', label: 'GAME OVER pop (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverSparkTicks', label: 'GAME OVER sparks (t)', range: FX_TICKS_RANGE },
 ];
 const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
   { key: 'shakeSmall', label: 'Shake S' },
@@ -437,6 +454,190 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
 }
 
 /** Groups `items` into lines of `perLine`, each joined by two spaces. */
+/** The SOUND TEST buttons, each playing one sound by itself (no effect). */
+export const SOUND_TEST_BUTTONS = [
+  { id: 'claim-small', label: 'CLAIM S' },
+  { id: 'claim-mid', label: 'CLAIM M' },
+  { id: 'claim-large', label: 'CLAIM L' },
+  { id: 'split', label: 'SPLIT' },
+  { id: 'miss', label: 'MISS' },
+  { id: 'stage-clear', label: 'STAGE CLEAR' },
+  { id: 'gameover-life', label: 'GAME OVER' },
+  { id: 'gameover-time', label: 'TIME UP' },
+  { id: 'count', label: 'COUNT' },
+  { id: 'new-record', label: 'NEW RECORD' },
+  { id: 'alarm', label: 'ALARM' },
+  { id: 'beep', label: 'BEEP' },
+  { id: 'beep-high', label: 'BEEP HI' },
+  { id: 'igniter-spawn', label: 'IGNITER' },
+  { id: 'igniter-approach', label: 'APPROACH' },
+  { id: 'ember-spawn', label: 'EMBER' },
+  { id: 'blaze-spawn', label: 'BLAZE' },
+  { id: 'ember-line', label: 'EMBER LINE' },
+  { id: 'ember-out', label: 'EMBER OUT' },
+  { id: 'draw', label: 'DRAW' },
+] as const;
+
+export type SoundTestId = (typeof SOUND_TEST_BUTTONS)[number]['id'];
+
+/**
+ * What the panel's SOUND section works on: the live sound levels it tunes
+ * and the sound test. None of it goes through the session's debug overrides,
+ * so using it never taints the run, never starts one and is never a game
+ * input.
+ */
+export interface DebugSoundHooks {
+  levels: SfxLevels;
+  /** Applies `levels.master` to the master gain at once. */
+  applyMaster: () => void;
+  /** Plays one sound by itself (nothing while muted). */
+  play: (id: SoundTestId) => void;
+  /**
+   * The music's switch and level (on, and 1, on every page load): the level
+   * is a factor on every tune's own gain (BGM_GAIN_TENSE / ACID / HUNT).
+   */
+  bgm?: {
+    isEnabled: () => boolean;
+    setEnabled: (on: boolean) => void;
+    getLevel: () => number;
+    setLevel: (level: number) => void;
+  };
+}
+
+const SOUND_LEVEL_FIELDS: ReadonlyArray<{ key: keyof SfxLevels; label: string; exportKey: string }> = [
+  { key: 'master', label: 'Master', exportKey: 'SFX_MASTER_GAIN' },
+  { key: 'split', label: 'Split', exportKey: 'SFX_LEVEL_SPLIT' },
+  { key: 'impact', label: 'Impact', exportKey: 'SFX_LEVEL_IMPACT' },
+  { key: 'warning', label: 'Warning', exportKey: 'SFX_LEVEL_WARNING' },
+  { key: 'enemy', label: 'Enemy', exportKey: 'SFX_LEVEL_ENEMY' },
+  { key: 'draw', label: 'Draw', exportKey: 'SFX_LEVEL_DRAW' },
+];
+const SOUND_LEVEL_RANGE = { min: 0, max: 0.5, step: 0.01 } as const;
+// The music's level: a factor on all three tunes' own gains.
+const BGM_LEVEL_RANGE = { min: 0, max: 3, step: 0.05 } as const;
+const BGM_LEVEL_DEFAULT = 1;
+const BGM_TRACK_GAIN_KEYS: ReadonlyArray<[string, number]> = [
+  ['BGM_GAIN_TENSE', BGM_GAIN_TENSE],
+  ['BGM_GAIN_ACID', BGM_GAIN_ACID],
+  ['BGM_GAIN_HUNT', BGM_GAIN_HUNT],
+];
+
+/**
+ * The SOUND section: a slider per sound level (the master applies at once,
+ * a tier from its next sound), the music's switch and level, and the
+ * SOUND TEST buttons. RESET puts the levels back; EXPORT adds them under
+ * their config.ts names.
+ */
+function buildSoundSection(hooks: DebugSoundHooks): {
+  section: HTMLDivElement;
+  reset: () => void;
+  exportPayload: () => Record<string, number>;
+} {
+  const section = document.createElement('div');
+  section.id = 'debug-sound-section';
+  section.style.marginTop = '10px';
+  section.style.paddingTop = '8px';
+  section.style.borderTop = '1px solid rgba(255, 224, 102, 0.4)';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'SOUND';
+  heading.style.fontWeight = 'bold';
+  heading.style.color = '#ffe066';
+  heading.style.marginBottom = '6px';
+  section.appendChild(heading);
+
+  const format = (v: number): string => v.toFixed(2);
+  const rows: Array<{ key: keyof SfxLevels; input: HTMLInputElement; readout: HTMLSpanElement }> = [];
+  for (const field of SOUND_LEVEL_FIELDS) {
+    const { row, input, readout } = buildRawSliderRow(field.label, SOUND_LEVEL_RANGE, format, (v) => {
+      hooks.levels[field.key] = v;
+      if (field.key === 'master') hooks.applyMaster();
+    });
+    input.id = `debug-sound-${field.key}`;
+    rows.push({ key: field.key, input, readout });
+    section.appendChild(row);
+  }
+  const sync = (): void => {
+    for (const row of rows) {
+      row.input.value = String(hooks.levels[row.key]);
+      row.readout.textContent = format(hooks.levels[row.key]);
+    }
+  };
+  sync();
+
+  // The music: a switch (to silence it alone while developing) and its level.
+  const bgm = hooks.bgm;
+  const bgmFormat = (v: number): string => `x${v.toFixed(2)}`;
+  let bgmLevel: { input: HTMLInputElement; readout: HTMLSpanElement } | null = null;
+  if (bgm) {
+    const label = document.createElement('label');
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '6px';
+    label.style.margin = '4px 0 6px';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.id = 'debug-bgm-enabled';
+    toggle.checked = bgm.isEnabled();
+    toggle.addEventListener('change', () => {
+      bgm.setEnabled(toggle.checked);
+      toggle.blur();
+    });
+    label.appendChild(toggle);
+    label.appendChild(document.createTextNode('BGM (not saved)'));
+    section.appendChild(label);
+    const { row, input, readout } = buildRawSliderRow('BGM', BGM_LEVEL_RANGE, bgmFormat, (v) => bgm.setLevel(v));
+    input.id = 'debug-sound-bgm';
+    input.value = String(bgm.getLevel());
+    readout.textContent = bgmFormat(bgm.getLevel());
+    bgmLevel = { input, readout };
+    section.appendChild(row);
+  }
+
+  const testHeading = document.createElement('div');
+  testHeading.textContent = 'SOUND TEST';
+  testHeading.style.color = '#ffe066';
+  testHeading.style.margin = '6px 0 4px';
+  section.appendChild(testHeading);
+  const buttons = document.createElement('div');
+  buttons.id = 'debug-sound-test';
+  buttons.style.display = 'flex';
+  buttons.style.flexWrap = 'wrap';
+  buttons.style.gap = '4px';
+  for (const test of SOUND_TEST_BUTTONS) {
+    // Blurred after the press, so a later Space / Enter meant for the game
+    // does not press it again.
+    const button = buildButton(test.label, () => {
+      hooks.play(test.id);
+      button.blur();
+    });
+    button.id = `debug-sound-test-${test.id}`;
+    button.style.flex = '1 1 30%';
+    buttons.appendChild(button);
+  }
+  section.appendChild(buttons);
+
+  return {
+    section,
+    reset: () => {
+      resetSfxLevels();
+      hooks.applyMaster();
+      sync();
+      if (bgm && bgmLevel) {
+        bgm.setLevel(BGM_LEVEL_DEFAULT);
+        bgmLevel.input.value = String(BGM_LEVEL_DEFAULT);
+        bgmLevel.readout.textContent = bgmFormat(BGM_LEVEL_DEFAULT);
+      }
+    },
+    // The tunes' gains with the factor applied, rounded off the float noise
+    // of the product (0.18 x 1.5 gives 0.27, not 0.27000000000000002).
+    exportPayload: () => ({
+      ...Object.fromEntries(SOUND_LEVEL_FIELDS.map((f) => [f.exportKey, hooks.levels[f.key]])),
+      ...(bgm ? Object.fromEntries(BGM_TRACK_GAIN_KEYS.map(([key, gain]) => [key, Number((gain * bgm.getLevel()).toFixed(4))])) : {}),
+    }),
+  };
+}
+
 function chunkLines(items: string[], perLine: number, indent: string): string[] {
   const lines: string[] = [];
   for (let i = 0; i < items.length; i += perLine) lines.push(indent + items.slice(i, i + perLine).join('  '));
@@ -587,7 +788,9 @@ export function initDebugPanel(
   // debug override, the run is untouched.
   resetHints?: () => void,
   // PLAY LOG: the runs kept on this device, summarized, exported and cleared.
-  playLogHooks?: DebugPlayLogHooks
+  playLogHooks?: DebugPlayLogHooks,
+  // SOUND: the sound levels and the sound test (and the music).
+  soundHooks?: DebugSoundHooks
 ): DebugPanelHandle {
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
@@ -608,7 +811,14 @@ export function initDebugPanel(
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const { panel, sync, renderPlayLog } = buildPanel(getSession, () => setOpen(false), fxHooks, resetHints, playLogHooks);
+  const { panel, sync, renderPlayLog } = buildPanel(
+    getSession,
+    () => setOpen(false),
+    fxHooks,
+    resetHints,
+    playLogHooks,
+    soundHooks
+  );
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
@@ -676,8 +886,11 @@ function buildPanel(
   onClose: () => void,
   fxHooks?: DebugFxHooks,
   resetHints?: () => void,
-  playLogHooks?: DebugPlayLogHooks
+  playLogHooks?: DebugPlayLogHooks,
+  soundHooks?: DebugSoundHooks
 ): { panel: HTMLDivElement; sync: () => void; renderPlayLog: () => void } {
+  // SOUND: built up front so RESET and EXPORT (above it on the panel) can reach it.
+  const soundSection = soundHooks ? buildSoundSection(soundHooks) : null;
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
@@ -808,11 +1021,17 @@ function buildPanel(
   const resetButton = buildButton('RESET', () => {
     getSession().resetDebugOverrides();
     syncAll();
+    soundSection?.reset();
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
     const session = getSession();
-    const payload = buildExportPayload(session.getEffectiveDebugParams(), session.getTimeLimitTicks(), fxHooks?.params);
+    const payload = buildExportPayload(
+      session.getEffectiveDebugParams(),
+      session.getTimeLimitTicks(),
+      fxHooks?.params,
+      soundSection?.exportPayload()
+    );
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
     void copyToClipboard(json);
@@ -840,6 +1059,7 @@ function buildPanel(
   if (fxHooks) {
     panel.appendChild(buildFxSection(getSession, fxHooks));
   }
+  if (soundSection) panel.appendChild(soundSection.section);
 
   let renderPlayLog = (): void => {};
   if (playLogHooks) {
