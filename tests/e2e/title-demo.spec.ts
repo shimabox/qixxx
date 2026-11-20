@@ -7,6 +7,7 @@ import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
 import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
+import { installFakeAudio } from './support/fakeAudio';
 
 const APP_URL = 'http://localhost:4173/';
 const CLOCK_START = new Date('2026-01-01T00:00:00Z');
@@ -436,6 +437,41 @@ test.describe('title demo', () => {
     expect(again).toBeLessThan(before);
     // The demo's one request and the ranking REPLAY's own.
     expect(asked).toEqual(['row0', 'row0']);
+  });
+
+  test('with SOUND: ON, the music plays neither under the demo nor in a ranking REPLAY, and does in the run started after', async ({ page }) => {
+    type Music = { playing: boolean; generation: number; scheduled: number };
+    const music = () => page.evaluate(() => (window as unknown as { __game__: { getBgmState: () => Music } }).__game__.getBgmState());
+    await installFakeAudio(page);
+    await mockBoard(page, fullBoard());
+    await mockReplays(page);
+    await open(page);
+    // Muted at first; the SOUND button on: a user gesture (the audio starts) that starts no run.
+    await page.locator('#mute-button').click();
+    await expect(page.locator('#mute-button')).toHaveText('SOUND: ON');
+    await waitForDemo(page);
+    await page.clock.runFor(1000);
+    expect((await demo(page)).shown).toBe(true);
+    expect(await music()).toMatchObject({ playing: false, generation: 0, scheduled: 0 });
+
+    await page.locator('#ranking-button').click();
+    await page.clock.runFor(200);
+    await page.getByRole('button', { name: 'REPLAY' }).first().click();
+    await advanceUntil(page, () => page.locator('#replay-stage-label').isVisible(), 3000);
+    await page.clock.runFor(1000);
+    expect(await music()).toMatchObject({ playing: false, generation: 0, scheduled: 0 });
+    await page.getByRole('button', { name: 'EXIT' }).click();
+    await page.clock.runFor(200);
+    await page.getByRole('button', { name: 'CLOSE' }).click();
+    await page.clock.runFor(200);
+    expect(await music()).toMatchObject({ playing: false, generation: 0, scheduled: 0 });
+
+    await page.keyboard.press('Enter');
+    await page.clock.runFor(500);
+    expect((await live(page)).status).toBe('playing');
+    const played = await music();
+    expect(played).toMatchObject({ playing: true, generation: 1 });
+    expect(played.scheduled).toBeGreaterThan(0);
   });
 
   test('tries the next candidate when the first replay is missing', async ({ page }) => {
