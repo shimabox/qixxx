@@ -862,9 +862,10 @@ export const TOUCH_CONTROLS_OPACITY = 0.55;
 // *encoding* of a stored replay changed" (e.g. the RLE byte layout below) —
 // independent of whether the rules themselves changed, so an old row can
 // stay visible on the ranking (its score is still valid) while its replay
-// becomes unplayable until re-encoded. Both start at 1 for the
-// initial release.
-export const RULESET_VERSION = 1;
+// becomes unplayable until re-encoded. Both started at 1 for the
+// initial release. Ruleset 2: the per-stage table, big claims, close calls,
+// the split reward by the smaller side and the shorter post-miss wait.
+export const RULESET_VERSION = 2;
 export const REPLAY_FORMAT_VERSION = 1;
 
 // Replay viewing: how long a cleared stage stays on screen, with its

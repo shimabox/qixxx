@@ -12,9 +12,11 @@ import { ClaimFeedback, MissFeedback } from './feedback';
 import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MISS_BONUS } from '../config';
 
 const SCRIPTED_CASES = [
-  { seed: 20261114, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 77, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 7 },
+  // The rule invariance cases (core/rulesInvariance.test.ts): each has close
+  // calls and big claims.
+  { seed: 1352, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 839, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 120 },
 ];
 
 describe('captureFeedback does not change the run', () => {
@@ -29,7 +31,7 @@ describe('captureFeedback does not change the run', () => {
   it('produces nothing when capture is off: every drain is empty on every tick', () => {
     let ticks = 0;
     runScriptedSession({
-      seed: 20261114,
+      seed: 1352,
       fieldWidth: 40,
       fieldHeight: 30,
       onTick: (session) => {
@@ -48,7 +50,7 @@ describe('captureFeedback does not change the run', () => {
     let claims = 0;
     let misses = 0;
     const summary = runScriptedSession({
-      seed: 77,
+      seed: 839,
       fieldWidth: 40,
       fieldHeight: 30,
       captureFeedback: true,
@@ -67,6 +69,8 @@ describe('captureFeedback does not change the run', () => {
     for (const options of SCRIPTED_CASES) {
       let lastScore = 0;
       let claimsSeen = 0;
+      let closeCalls = 0;
+      let bigClaims = 0;
       runScriptedSession({
         ...options,
         captureFeedback: true,
@@ -75,6 +79,9 @@ describe('captureFeedback does not change the run', () => {
           const required = session.getGame().getRequiredOccupancy();
           let expected = 0;
           for (const n of notices) {
+            if (n.nearMissBonus > 0) closeCalls++;
+            if (n.bigClaim) bigClaims++;
+            expect(n.nearMissBonus).toBe(n.nearMissBonus > 0 ? 200 * n.multiplier : 0);
             expected += n.areaScore + n.nearMissBonus;
             if (n.stageCleared && !n.split) expected += scoreStageClearBonus(n.occupancyAfter, required);
           }
@@ -84,6 +91,8 @@ describe('captureFeedback does not change the run', () => {
         },
       });
       expect(claimsSeen).toBeGreaterThan(0);
+      expect(closeCalls).toBeGreaterThan(0);
+      if (options.fieldWidth) expect(bigClaims).toBeGreaterThan(0);
     }
   });
 

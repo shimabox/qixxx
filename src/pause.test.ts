@@ -191,7 +191,8 @@ function playToGameOver(driver: PausableDriver, pauseAt: number[]): number {
 describe('a run paused along the way', () => {
   it('records the same inputs as the unpaused run, which the server verifier accepts with the same score and stage', async () => {
     const verifyReplay = await loadVerifyReplay();
-    const seed = 20261117;
+    // A seed whose scripted run lasts past every pause below (3180 ticks).
+    const seed = 542;
 
     const plain = new PausableDriver(new GameSession({ seed, captureFeedback: true }));
     expect(playToGameOver(plain, [])).toBe(0);

@@ -16,8 +16,8 @@ function scriptInput(script: ReturnType<typeof buildStageScript>, tick: number):
 }
 
 describe('StageResultTally on a scripted run', () => {
-  for (const options of [{ seed: 20261114, fieldWidth: 40, fieldHeight: 30 }, { seed: 77, fieldWidth: 40, fieldHeight: 30 }]) {
-    it(`seed ${options.seed}: TOTAL is every point the stage added, AREA + BONUS`, () => {
+  for (const options of [{ seed: 1352, fieldWidth: 40, fieldHeight: 30 }, { seed: 839, fieldWidth: 40, fieldHeight: 30 }]) {
+    it(`seed ${options.seed}: TOTAL is every point the stage added, AREA + BONUS, close calls and big claims included`, () => {
       const session = new GameSession({ ...options, captureFeedback: true });
       session.update({ ...IDLE, confirm: true });
       const field = session.getGame().getField();
@@ -26,6 +26,8 @@ describe('StageResultTally on a scripted run', () => {
       let stageStartScore = 0;
       let clears = 0;
       let bonusSeen = false;
+      let closeCallSeen = false;
+      let bigClaimSeen = false;
       let guard = 0;
       while (session.getStatus() !== 'gameover' && guard++ < 30000) {
         if (session.getStatus() === 'stageclear') {
@@ -39,13 +41,19 @@ describe('StageResultTally on a scripted run', () => {
           continue;
         }
         session.update(scriptInput(script, session.getStageTicks()));
-        for (const notice of session.drainClaimFeedback()) tally.add(notice);
+        for (const notice of session.drainClaimFeedback()) {
+          if (notice.nearMissBonus > 0) closeCallSeen = true;
+          if (notice.bigClaim) bigClaimSeen = true;
+          tally.add(notice);
+        }
         session.drainEvents();
       }
       expect(clears).toBeGreaterThan(0);
+      expect(closeCallSeen).toBe(true);
+      expect(bigClaimSeen).toBe(true);
       // A stage that ends in GAME OVER still adds up.
       expect(tally.getTotal()).toBe(session.getScore() - stageStartScore);
-      if (options.seed === 20261114) expect(bonusSeen).toBe(true);
+      if (options.seed === 1352) expect(bonusSeen).toBe(true);
     });
   }
 });
