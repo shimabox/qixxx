@@ -8,6 +8,7 @@ import { Ember } from './patrol';
 import {
   INITIAL_LIVES,
   MISS_GRACE_TICKS,
+  MISS_LINE_LOCK_TICKS,
   MARKER_MOVE_TICKS_SLOW,
   IGNITER_SPAWN_STILL_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
@@ -469,7 +470,7 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     return { field, game };
   }
 
-  it('blocks entering an UNCLAIMED cell (starting a new line) while the grace period is active, even with drawHeld true', () => {
+  it('blocks entering an UNCLAIMED cell (starting a new line) while the line lock is active, even with drawHeld true', () => {
     const { field, game } = makeMissedGame();
 
     const attempt = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (2,1), UNCLAIMED
@@ -489,14 +490,14 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     expect(game.getMarker().getPosition()).toEqual({ x: 3, y: 0 });
   });
 
-  it('re-allows UNCLAIMED entry (starting a new line) once the grace period has fully elapsed', () => {
+  it('re-allows UNCLAIMED entry (starting a new line) once the line lock has elapsed, while the grace still runs', () => {
     // A fresh, Wisp-collision-free setup: the initial miss comes from an
     // Ember reaching the stationary marker on the border (as in the "Ember
     // collision" describe block above). The Wisp uses the same
     // vertical-heading-pinned-far-from-the-drawn-column trick as the
     // stageclear/Igniter tests above (column 8 vs. the line's column 7) so
     // its patrol trail can never cross the (7,1) cell this test later draws
-    // into during the 120-tick wait — unlike makeMissedGame's Wisp (parked
+    // into during the wait — unlike makeMissedGame's Wisp (parked
     // on the very column being drawn into), which isn't guaranteed to avoid it.
     const field = new Field(10, 5);
     const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 8
@@ -508,10 +509,11 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS);
     expect(game.getMarker().getPosition()).toEqual({ x: 7, y: 0 });
 
-    for (let tick = 0; tick < MISS_GRACE_TICKS; tick++) {
+    for (let tick = 0; tick < MISS_LINE_LOCK_TICKS; tick++) {
       game.update({ dx: 0, dy: 0, drawHeld: false });
     }
-    expect(game.getGraceTicks()).toBe(0);
+    expect(game.getLineLockTicks()).toBe(0);
+    expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS - MISS_LINE_LOCK_TICKS);
 
     const result = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (7,1), UNCLAIMED
 

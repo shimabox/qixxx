@@ -123,7 +123,13 @@ export const INITIAL_LIVES = 3;
 // re-trigger a miss on every consecutive tick and drain all lives from a
 // single contact). Normal updates (enemy movement, line drawing) continue
 // during the grace period; only miss detection is suspended.
-export const MISS_GRACE_TICKS = 120; // 2s at TICK_RATE=60
+export const MISS_GRACE_TICKS = 60; // 1s at TICK_RATE=60
+// For this many ticks after a miss no new line can be started (moving along
+// the border stays free), so the invincibility is not a free pass to draw.
+// Shorter than MISS_GRACE_TICKS, so the player is back to drawing soon:
+// a line started in the rest of the grace cannot be missed on until the
+// grace ends. The debug panel can change both at run time.
+export const MISS_LINE_LOCK_TICKS = 30; // 0.5s
 
 // Wisp: the line-dwelling wandering enemy (docs/plan.md §3.4 describes this as
 // "QIX"; per §1 the original name is never used in code/UI, hence "Wisp").

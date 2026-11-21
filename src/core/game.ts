@@ -21,6 +21,7 @@ import {
   MARKER_MOVE_TICKS_SLOW,
   INITIAL_LIVES,
   MISS_GRACE_TICKS,
+  MISS_LINE_LOCK_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
   EMBER_SPAWN_INTERVAL_TICKS,
   EMBER_MOVE_TICKS,
@@ -196,6 +197,10 @@ export class Game {
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
   private graceTicks = 0;
+  // Remaining post-miss ticks during which no new line can be started
+  // (MISS_LINE_LOCK_TICKS); independent of, and normally shorter than, the
+  // grace above.
+  private lineLockTicks = 0;
   // True once a Wisp head came within the near-miss distance of the line
   // being drawn (see checkNearMiss()). One mark per line: it is read when
   // the line closes and cleared whenever the line goes, for any reason.
@@ -371,6 +376,21 @@ export class Game {
    */
   getGraceTicks(): number {
     return this.graceTicks;
+  }
+
+  /** Ticks after a miss during which no further miss can happen (MISS_GRACE_TICKS). */
+  private getMissGraceTicks(): number {
+    return MISS_GRACE_TICKS;
+  }
+
+  /** Ticks after a miss during which no new line can be started (MISS_LINE_LOCK_TICKS). */
+  private getMissLineLockTicks(): number {
+    return MISS_LINE_LOCK_TICKS;
+  }
+
+  /** Remaining post-miss ticks during which no new line can be started (0 when none). */
+  getLineLockTicks(): number {
+    return this.lineLockTicks;
   }
 
   /** The share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
@@ -591,6 +611,7 @@ export class Game {
     }
 
     const inGraceAtTickStart = this.graceTicks > 0;
+    const lineLockedAtTickStart = this.lineLockTicks > 0;
     const markerPositionBeforeMove = this.marker.getPosition();
     let missedThisTick = false;
     for (const wisp of this.wisps) {
@@ -720,9 +741,14 @@ export class Game {
     // this decrement reaches zero; collision checks resume on the next tick.
     if (inGraceAtTickStart) {
       this.graceTicks--;
-      if (this.graceTicks === 0) {
+    }
+    // The line lock counts the same way. A miss earlier in this tick (only
+    // possible when the lock outlasts the grace) restarted it: leave it whole.
+    if (lineLockedAtTickStart && !missedThisTick) {
+      this.lineLockTicks--;
+      if (this.lineLockTicks === 0) {
         // Movement has already run for this tick, so line entry becomes
-        // available to the next tick without shortening the protected window.
+        // available to the next tick without shortening the locked window.
         this.marker.setLineEntryEnabled(true);
       }
     }
@@ -1020,13 +1046,15 @@ export class Game {
     this.lineNearMissed = false;
     this.despawnIgniter();
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
-    this.graceTicks = MISS_GRACE_TICKS;
+    this.graceTicks = Math.max(0, Math.round(this.getMissGraceTicks()));
     // Grace-period exploit fix (docs/plan.md §3.5 "案B"): the invincibility
-    // window granted below must not double as a free pass to draw. BORDER
+    // window granted above must not double as a free pass to draw. BORDER
     // movement stays available (see Marker.tryMove) so the player can still
     // reposition to safety; only entering a fresh UNCLAIMED cell is blocked
-    // until the grace period elapses (re-enabled in update() below).
-    this.marker.setLineEntryEnabled(false);
+    // for the line lock's ticks (re-enabled in update() above), which end
+    // before the grace does.
+    this.lineLockTicks = Math.max(0, Math.round(this.getMissLineLockTicks()));
+    this.marker.setLineEntryEnabled(this.lineLockTicks === 0);
     this.lives -= 1;
     if (this.lives <= 0) {
       this.status = 'gameover';
