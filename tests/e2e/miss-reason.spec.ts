@@ -64,7 +64,9 @@ for (const c of [
     test.use({ locale: c.locale, viewport: { width: 390, height: 844 }, hasTouch: true });
 
     test(`the field shows "${c.text}" inside it, at least 13 CSS px tall`, async ({ page }) => {
-      await open(page, '?seed=1');
+      // A board whose two Wisps stay clear of the Igniter's line, so every
+      // miss is the Igniter's.
+      await open(page, '?seed=2');
       await page.keyboard.press('Space');
       await page.clock.runFor(100);
       expect(await page.evaluate(() => window.__game__!.session.getStatus())).toBe('playing');

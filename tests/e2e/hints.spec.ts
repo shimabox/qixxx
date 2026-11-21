@@ -340,6 +340,10 @@ test.describe('RESET HINTS (?debug)', () => {
   });
 });
 
+// A board on which the script below claims twice and meets the Igniter with
+// stage 1's two Wisps clear of its lines.
+const SCRIPT_SEED = 2;
+
 test.describe('the hints do not change the run', () => {
   // The same seed and the same key script, once with nothing seen (every
   // hint comes up) and once with every hint seen (none does): the run must
@@ -354,7 +358,7 @@ test.describe('the hints do not change the run', () => {
     await page.addInitScript((ids) => {
       if (ids.length > 0) localStorage.setItem('qixxx.hintsSeen', JSON.stringify(ids));
     }, seen);
-    await open(page);
+    await open(page, `?seed=${SCRIPT_SEED}`);
     // Every live tick (hit-stopped ones included) goes through fx.tick():
     // counting them lets each key land right after the same tick in both
     // runs, whatever the frame phase.
