@@ -14,18 +14,92 @@ export const TICK_DURATION = 1 / TICK_RATE; // seconds per update
 // running thousands of catch-up ticks after the tab was inactive (spiral of death).
 export const MAX_FRAME_DELTA = 0.25;
 
-// Stage progression (docs/plan.md §12.7, replacing the earlier §3.7 table):
-// a single linear interpolation from stage 1 (baseline) to stage
-// STAGE_MAX_DIFFICULTY (every parameter at its documented max), stage 11+
-// held at the stage-10 values. core/stage.ts's getStageConfig() does the
-// interpolating; the constants below only pin down each curve's two
-// endpoints. Stage 1's endpoint is simply this file's existing single-value
-// constants (WISP_SPEED's implicit x1 multiplier, EMBER_MOVE_TICKS,
-// EMBER_BRANCH_CHASE_PROBABILITY, EMBER_SPAWN_INTERVAL_SEC,
-// DEFAULT_REQUIRED_OCCUPANCY) — only the stage-10 endpoints need new
-// constants (the `_MAX`/`_MIN` ones below).
-export const STAGE_MAX_DIFFICULTY = 10;
-export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
+// Stage progression: every stage has its own character instead of every value
+// rising together with the stage number. Each row of STAGE_TABLE is one
+// stage (row 0 = stage 1); every stage past the last row plays the last row.
+// core/stage.ts's getStageConfig() reads it.
+//
+// `titleId` names the stage's title shown when it starts (the text itself is
+// in src/i18n/messages.ts, `stageTitle.<titleId>`). `firstEmberSec` is how
+// long the stage waits before its first Ember pair; later pairs follow every
+// `emberSpawnIntervalSec`. `emberMoveTicks` is ticks per border cell (smaller
+// is faster).
+//
+// Stages 4 and 11 are scoring stages (many slow Wisps, easy to split for a
+// big multiplier) and stage 6 is a breather. Outside those three, no step
+// from one stage to the next raises both the Wisp count and their speed at
+// once, no stage moves Wisps faster than x3.0 and no goal is above 80%
+// (src/core/stage.test.ts holds the table to this).
+export interface StageTableRow {
+  titleId: StageTitleId;
+  wispCount: number;
+  wispSpeedMultiplier: number;
+  emberSpawnIntervalSec: number;
+  firstEmberSec: number;
+  maxConcurrentEmbers: number;
+  emberMoveTicks: number;
+  requiredOccupancy: number;
+}
+export type StageTitleId =
+  | 'warmUp'
+  | 'fastPair'
+  | 'trio'
+  | 'slowSwarm'
+  | 'emberRush'
+  | 'breather'
+  | 'quartet'
+  | 'fastFour'
+  | 'quintet'
+  | 'fastFive'
+  | 'bigSwarm'
+  | 'emberStorm'
+  | 'sextet'
+  | 'fastSix'
+  | 'final';
+// Stage 1 alone brings its first Ember sooner than its interval, so a first
+// run meets one early. The debug panel can override this for every stage.
+export const EMBER_FIRST_SPAWN_SEC = 15;
+const stageRow = (
+  titleId: StageTitleId,
+  wispCount: number,
+  wispSpeedMultiplier: number,
+  emberSpawnIntervalSec: number,
+  maxConcurrentEmbers: number,
+  emberMoveTicks: number,
+  requiredOccupancy: number,
+  firstEmberSec: number = emberSpawnIntervalSec
+): StageTableRow => ({
+  titleId,
+  wispCount,
+  wispSpeedMultiplier,
+  emberSpawnIntervalSec,
+  firstEmberSec,
+  maxConcurrentEmbers,
+  emberMoveTicks,
+  requiredOccupancy,
+});
+export const STAGE_TABLE: readonly StageTableRow[] = [
+  stageRow('warmUp', 2, 1.0, 30, 2, 3, 0.65, EMBER_FIRST_SPAWN_SEC), // 1
+  stageRow('fastPair', 2, 1.6, 27, 3, 3, 0.68), // 2
+  stageRow('trio', 3, 1.6, 24, 4, 3, 0.7), // 3
+  stageRow('slowSwarm', 6, 1.0, 24, 4, 3, 0.6), // 4: scoring stage
+  stageRow('emberRush', 3, 1.8, 12, 6, 2, 0.72), // 5
+  stageRow('breather', 2, 1.4, 30, 2, 3, 0.6), // 6: breather
+  stageRow('quartet', 4, 1.8, 19, 6, 2, 0.75), // 7
+  stageRow('fastFour', 4, 2.4, 16, 7, 2, 0.78), // 8
+  stageRow('quintet', 5, 2.4, 13, 8, 2, 0.8), // 9
+  stageRow('fastFive', 5, 3.0, 10, 8, 1, 0.8), // 10
+  stageRow('bigSwarm', 8, 1.2, 20, 4, 3, 0.65), // 11: scoring stage
+  stageRow('emberStorm', 3, 2.4, 6, 10, 1, 0.75), // 12
+  stageRow('sextet', 6, 2.4, 12, 8, 2, 0.8), // 13
+  stageRow('fastSix', 6, 3.0, 10, 8, 1, 0.8), // 14
+  stageRow('final', 7, 3.0, 8, 10, 1, 0.8), // 15 and every stage after it
+];
+// The lowest goal of any stage: the largest stage-clear bonus a stage can give
+// is measured from it (functions/_lib/scoreLimits.ts).
+export const MIN_REQUIRED_OCCUPANCY = Math.min(...STAGE_TABLE.map((row) => row.requiredOccupancy));
+// The goal a standalone Game uses when none is given (tests): stage 1's.
+export const DEFAULT_REQUIRED_OCCUPANCY = STAGE_TABLE[0].requiredOccupancy;
 
 // Time limit: every run is capped at
 // a fixed time *budget* instead of running until lives run out — the whole
@@ -91,12 +165,13 @@ export const MARKER_MOVE_TICKS_SLOW = 2;
 // "Sparx"; per §1 the original name is never used in code/UI, hence "Ember").
 // It walks the BORDER cell graph (docs/plan.md §4.3), one cell every
 // EMBER_MOVE_TICKS ticks (slower than the marker's 1 tick/cell fast rate), and
-// a new pair appears every EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md
-// §12.7 stage 1: 30s, escalating to EMBER_SPAWN_INTERVAL_MIN_SEC by stage
-// STAGE_MAX_DIFFICULTY).
-export const EMBER_SPAWN_INTERVAL_SEC = 30;
+// a new pair appears every EMBER_SPAWN_INTERVAL_TICKS ticks. These are the
+// defaults of a standalone Game (tests); a real stage takes its own values
+// from STAGE_TABLE above.
+export const EMBER_SPAWN_INTERVAL_SEC = STAGE_TABLE[0].emberSpawnIntervalSec;
 export const EMBER_SPAWN_INTERVAL_TICKS = EMBER_SPAWN_INTERVAL_SEC * TICK_RATE;
-export const EMBER_MOVE_TICKS = 3; // stage 1 baseline; escalates down to EMBER_MOVE_TICKS_MIN by stage 10
+export const EMBER_MOVE_TICKS = STAGE_TABLE[0].emberMoveTicks;
+export const EMBER_MAX_CONCURRENT_DEFAULT = STAGE_TABLE[0].maxConcurrentEmbers;
 
 // Branch-chase probability (docs/plan.md §6 M8 / §12.2, curve per §12.7): at
 // a BORDER-graph branch (2+ non-reversing candidate cells), Ember picks the
@@ -119,33 +194,17 @@ export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 // always produce plain (non-Blaze) Embers, regardless of generation.
 export const EMBER_LINE_ENTRY_GENERATION = 3;
 
-// Stage 1 -> STAGE_MAX_DIFFICULTY interpolation endpoints (docs/plan.md
-// §12.7 — replaces the earlier §3.7 stage-2/stage-3+ step constants).
-// core/stage.ts's getStageConfig() linearly interpolates every parameter
-// between its stage-1 baseline (the plain constants above) and the matching
-// `_MAX`/`_MIN` endpoint below, reaching the endpoint exactly at stage
-// STAGE_MAX_DIFFICULTY (10) and holding it for every stage beyond that.
-export const WISP_SPEED_MULTIPLIER_MAX = 5.0; // stage 10: x5 (docs/plan.md §12.7)
-export const EMBER_MOVE_TICKS_MIN = 1; // stage 10: 1 tick/cell (fastest)
-export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // stage 10: always chases at a branch
-// Stage 10's Ember spawn interval floor. The debug panel's own slider goes
-// down to 1s (src/debug/panel.ts RANGES.emberSpawnIntervalSec), but 5s is the
-// deliberately chosen in-curve floor (docs/plan.md §12.7's one documented
-// deviation from "match the panel's most extreme value"): at 1s, Embers
-// would spawn faster than a player can realistically out-maneuver the M11
-// containment mechanic, making that counterplay meaningless. 5s keeps Embers
-// relentless at stage 10 while leaving room to react.
-export const EMBER_SPAWN_INTERVAL_MIN_SEC = 5;
-// Max Embers allowed alive at once (docs/plan.md §12.7 "Ember 同時数上限",
-// new in M12): bounds both the difficulty curve and worst-case per-frame
-// render cost (each Ember draws a glow halo, docs/plan.md §7.3's 60fps
-// budget) now that stage 10 can otherwise accumulate Embers indefinitely.
-// Game.maybeSpawnEmbers() skips spawning once at this cap, but a debug-panel
-// emberCount override (docs/plan.md §6 M10) bypasses it — that's an explicit
-// developer action, not the natural stage curve.
-export const EMBER_MAX_CONCURRENT_STAGE1 = 2;
-export const EMBER_MAX_CONCURRENT_MAX = 10;
-export const REQUIRED_OCCUPANCY_MAX = 0.9; // stage 10: 90% (docs/plan.md §12.7)
+// The branch-chase probability is the one stage value still interpolated
+// (core/stage.ts): linearly from EMBER_BRANCH_CHASE_PROBABILITY at stage 1 to
+// EMBER_BRANCH_CHASE_PROBABILITY_MAX at EMBER_BRANCH_CHASE_MAX_STAGE, held
+// there for every later stage.
+export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // always chases at a branch
+export const EMBER_BRANCH_CHASE_MAX_STAGE = 10;
+// A stage's `maxConcurrentEmbers` (STAGE_TABLE) bounds both the difficulty
+// and the worst-case per-frame render cost (each Ember draws a glow halo).
+// Game.maybeSpawnEmbers() skips spawning once at that cap, but a debug-panel
+// emberCount override bypasses it — that's an explicit developer action, not
+// the stage's own value.
 
 // Split multiplier (docs/plan.md §3.6): the score multiplier for a stage is
 // `split successes + 1`, capped at 9x, and resets to 1x (0 successes) the
@@ -263,7 +322,7 @@ export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
 // The goal slot (src/hudGoal.ts) replaced `HI: <n>` in the single line, and
 // the occupancy now reads `<current>%/<goal>% <left>% LEFT` (src/hudText.ts):
 // its widest form is 16 characters, since the goal is always two digits
-// (DEFAULT_REQUIRED_OCCUPANCY..REQUIRED_OCCUPANCY_MAX) and the points left
+// (every STAGE_TABLE goal is 60%-80%) and the points left
 // can only have two digits while the current share has one or two. The
 // widest goal is `TO BEST <6 digits>`, and the lives are INITIAL_LIVES marks
 // (or `◆xN` for a dev-only override past them). The colons went, so this
@@ -307,7 +366,7 @@ export const WISP_TRAIL_GLOW_ALPHA_RATIO = 0.35;
 // x1, COLOR_WISP_TRAIL_FAST from WISP_TRAIL_FAST_AT_MULTIPLIER up, mixed
 // linearly between. The head keeps COLOR_WISP_HEAD.
 export const COLOR_WISP_TRAIL_FAST = '#ffd6f5'; // Whitish pink
-export const WISP_TRAIL_FAST_AT_MULTIPLIER = 5.0;
+export const WISP_TRAIL_FAST_AT_MULTIPLIER = 3.0; // the fastest stage's multiplier (STAGE_TABLE)
 
 // Miss feedback (docs/plan.md §6 M5 "ミス時の簡易フィードバック"): the
 // marker blinks (alternates hidden/visible) every MISS_BLINK_INTERVAL_TICKS

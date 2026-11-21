@@ -67,7 +67,7 @@ export interface DebugFxHooks {
  * upper clamp of its own, so these panel-side maxes are the only limit.
  *
  * wispCount/wispSpeedMultiplier/emberCount/requiredOccupancyPercent's upper
- * bounds were widened again to 3x their stage-10 (STAGE_MAX_DIFFICULTY)
+ * bounds were widened again to 3x their earlier stage-10
  * values (2026-07-11 feedback: wispCount 10->30, wispSpeedMultiplier
  * 5.0->15.0, emberCount 10->30, requiredOccupancyPercent 90->99 — 99 rather
  * than a literal 3x270 since occupancy is a percentage and 100% is the
@@ -213,13 +213,13 @@ function buildExportPayload(
     TIME_LIMIT_TICKS: timeLimitTicks,
     _notes: {
       WISP_COUNT:
-        'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
+        "Number of Wisps this stage. config.ts has no single constant for this — it is the current stage's wispCount in STAGE_TABLE.",
       WISP_SPEED_MULTIPLIER:
-        'Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from 1.0 (stage 1) to WISP_SPEED_MULTIPLIER_MAX (stage STAGE_MAX_DIFFICULTY).',
+        "Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE.",
       EMBER_COUNT:
-        'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
+        "Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the current stage's maxConcurrentEmbers in STAGE_TABLE rather than a fixed config constant.",
       DEFAULT_REQUIRED_OCCUPANCY:
-        'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
+        "Effective required occupancy for the current stage. config.ts has no single constant for this — it is the current stage's requiredOccupancy in STAGE_TABLE (DEFAULT_REQUIRED_OCCUPANCY is stage 1's).",
       TIME_LIMIT_TICKS:
         "The run's current effective time budget, in ticks (60 tick = 1s at TICK_RATE) — matches config.ts's TIME_LIMIT_TICKS constant exactly (name and unit), unlike this payload's other stage-dependent keys. Reflects the time-limit slider above, whether or not it's been touched from its config.ts default.",
     },

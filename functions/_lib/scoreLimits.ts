@@ -8,13 +8,13 @@ import {
   SCORE_PER_CELL_SLOW,
   SPLIT_MULTIPLIER_CAP,
   STAGE_CLEAR_BONUS_PER_PERCENT_POINT,
-  DEFAULT_REQUIRED_OCCUPANCY,
+  MIN_REQUIRED_OCCUPANCY,
 } from '../../src/config';
 
 // Upper bound on cells claimable in a single stage: the whole grid. The real
 // game reserves some cells for BORDER/enemies and requires < 100% occupancy
-// to clear (see DEFAULT_REQUIRED_OCCUPANCY..REQUIRED_OCCUPANCY_MAX in
-// src/config.ts), so this over-counts on purpose — the goal is a
+// to clear (see STAGE_TABLE's goals in src/config.ts), so this over-counts
+// on purpose — the goal is a
 // conservative ceiling that never rejects a legitimate run, not a tight one.
 const TOTAL_CELLS = GRID_WIDTH * GRID_HEIGHT;
 
@@ -31,14 +31,12 @@ const MAX_AREA_SCORE_PER_STAGE = TOTAL_CELLS * SCORE_PER_CELL_SLOW * SPLIT_MULTI
 // scoreStageClearBonus): (achieved% - required%) * 100 *
 // STAGE_CLEAR_BONUS_PER_PERCENT_POINT, maximized by the best case for the
 // player on *both* sides — 100% achieved occupancy against the *lowest*
-// required-occupancy threshold that exists across the whole stage curve
-// (DEFAULT_REQUIRED_OCCUPANCY = stage 1's 65%; every later stage only
-// raises the requirement, shrinking the possible bonus — see
-// src/core/stage.ts's getStageConfig()). Using the loosest (stage 1)
-// threshold for every stage keeps this a safe upper bound rather than a
-// stage-accurate one.
+// required-occupancy threshold that exists across the whole stage table
+// (MIN_REQUIRED_OCCUPANCY, the lowest goal of any stage in STAGE_TABLE).
+// Using the loosest threshold for every stage keeps this a safe upper bound
+// rather than a stage-accurate one.
 const MAX_STAGE_CLEAR_BONUS = Math.floor(
-  (1 - DEFAULT_REQUIRED_OCCUPANCY) * 100 * STAGE_CLEAR_BONUS_PER_PERCENT_POINT
+  (1 - MIN_REQUIRED_OCCUPANCY) * 100 * STAGE_CLEAR_BONUS_PER_PERCENT_POINT + 1e-9
 );
 
 // Per-stage ceiling: full-grid area score at the max multiplier, plus the

@@ -25,7 +25,7 @@ import {
   EMBER_SPAWN_INTERVAL_TICKS,
   EMBER_MOVE_TICKS,
   EMBER_BRANCH_CHASE_PROBABILITY,
-  EMBER_MAX_CONCURRENT_STAGE1,
+  EMBER_MAX_CONCURRENT_DEFAULT,
   EMBER_LINE_ENTRY_GENERATION,
   TICK_RATE,
 } from '../config';
@@ -98,6 +98,12 @@ export interface GameOptions {
   embers?: Ember[];
   /** Overrides EMBER_SPAWN_INTERVAL_TICKS (test hook, avoids waiting out the real 30s interval). */
   emberSpawnIntervalTicks?: number;
+  /**
+   * Ticks from the stage's start to its first Ember pair (the stage table's
+   * `firstEmberSec`). Defaults to the spawn interval, so every pair — the
+   * first included — is one interval apart.
+   */
+  firstEmberSpawnTicks?: number;
   /** Initial score multiplier (test hook for exercising the miss-reset path; docs/plan.md §3.5/§3.6). */
   multiplier?: number;
   /**
@@ -113,23 +119,20 @@ export interface GameOptions {
    */
   lives?: number;
   /**
-   * Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped
-   * at STAGE_MAX_DIFFICULTY — see core/stage.ts). Takes precedence over the
+   * Wisps present this stage (core/stage.ts's table). Takes precedence over the
    * single `wisp` constructor parameter when provided. Defaults to a single
    * Wisp (the `wisp` param, or a freshly-constructed one) so single-Wisp
    * callers/tests are unaffected.
    */
   wisps?: Wisp[];
   /**
-   * Required occupancy to clear this stage (docs/plan.md §12.7): 65% at
-   * stage 1, escalating to 90% by stage 10. Defaults to
-   * DEFAULT_REQUIRED_OCCUPANCY.
+   * Required occupancy to clear this stage (core/stage.ts's table).
+   * Defaults to DEFAULT_REQUIRED_OCCUPANCY (stage 1's).
    */
   requiredOccupancy?: number;
   /**
    * Ticks per BORDER-cell step for every Ember spawned/overridden this stage
-   * (docs/plan.md §12.7: 3 at stage 1, down to 1 by stage 10 — see
-   * core/stage.ts). Defaults to EMBER_MOVE_TICKS (the stage-1 baseline).
+   * (core/stage.ts's table). Defaults to EMBER_MOVE_TICKS (stage 1's).
    */
   emberMoveTicks?: number;
   /**
@@ -140,9 +143,9 @@ export interface GameOptions {
   emberBranchChaseProbability?: number;
   /**
    * Max Embers allowed alive at once before maybeSpawnEmbers() starts
-   * skipping spawns (docs/plan.md §12.7 "Ember 同時数上限": 2 at stage 1, up
-   * to 10 by stage 10). Bypassed while a debug emberCount override is active
-   * (see maybeSpawnEmbers()). Defaults to EMBER_MAX_CONCURRENT_STAGE1.
+   * skipping spawns (core/stage.ts's table). Bypassed while a debug
+   * emberCount override is active (see maybeSpawnEmbers()). Defaults to
+   * EMBER_MAX_CONCURRENT_DEFAULT (stage 1's).
    */
   maxConcurrentEmbers?: number;
   /**
@@ -256,7 +259,7 @@ export class Game {
 
     this.embers = options.embers ? [...options.embers] : [];
     this.emberSpawnIntervalTicks = options.emberSpawnIntervalTicks ?? EMBER_SPAWN_INTERVAL_TICKS;
-    this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+    this.emberSpawnCooldownTicks = options.firstEmberSpawnTicks ?? this.emberSpawnIntervalTicks;
     this.multiplier = options.multiplier ?? DEFAULT_SCORE_MULTIPLIER;
     this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
     this.score = options.score ?? 0;
@@ -273,7 +276,7 @@ export class Game {
     this.baseEmberSpawnIntervalTicks = this.emberSpawnIntervalTicks;
     this.baseEmberBranchChaseProbability = options.emberBranchChaseProbability ?? EMBER_BRANCH_CHASE_PROBABILITY;
     this.baseRequiredOccupancy = this.requiredOccupancy;
-    this.maxConcurrentEmbers = options.maxConcurrentEmbers ?? EMBER_MAX_CONCURRENT_STAGE1;
+    this.maxConcurrentEmbers = options.maxConcurrentEmbers ?? EMBER_MAX_CONCURRENT_DEFAULT;
   }
 
   getField(): Field {
@@ -289,7 +292,7 @@ export class Game {
     return this.wisps[0];
   }
 
-  /** All Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped at STAGE_MAX_DIFFICULTY). */
+  /** All Wisps present this stage (core/stage.ts's table). */
   getWisps(): Wisp[] {
     return this.wisps;
   }
@@ -714,8 +717,8 @@ export class Game {
 
   /**
    * Spawns a fresh pair of Embers from the top of the field's border every
-   * EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md §3.4 (2) / §12.7 stage 1:
-   * 30s, down to 5s by stage 10), starting from opposite top corners and
+   * spawn interval (the stage's own, core/stage.ts's table; the first pair
+   * after `firstEmberSpawnTicks`), starting from opposite top corners and
    * heading toward each other.
    *
    * Concurrency-capped (docs/plan.md §6 M12 / §12.7 "Ember 同時数上限"): once

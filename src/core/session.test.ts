@@ -323,7 +323,7 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
    * with a generous margin (comfortably beyond the up-to-WISP_HISTORY_LENGTH
    * -cell trail it's dragging along, docs/plan.md §3.4 — the trail itself is
    * a hazard, so the drawn line must clear it entirely, not just the head)
-   * so the large remainder (>= 65% of the field) can be claimed with one
+   * so the large remainder (>= 70% of the field) can be claimed with one
    * straight vertical line.
    */
   function clearByWallingOffTheWisp(session: GameSession): void {
@@ -333,7 +333,7 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
     const cornered = session.getGame().getWisps()[0].getPosition().x;
     expect(cornered).toBeLessThanOrEqual(2);
 
-    const wallColumn = cornered + 30;
+    const wallColumn = cornered + 25;
     const marker = session.getGame().getMarker();
     while (marker.getPosition().x > wallColumn) {
       session.update({ dx: -1, dy: 0, drawHeld: false, confirm: false });
@@ -343,20 +343,27 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
     }
   }
 
-  it('spawns wispCount == stage number (stage 2 already has 2 Wisps under the M12 curve), via the real (non-test-hook) per-stage builder', () => {
-    // docs/plan.md §12.7 replaces the old "2 Wisps from stage 3" table with
-    // "stage n = n Wisps" — stage 2 is now the first multi-Wisp stage, one
-    // stage earlier than the pre-M12 curve this test used to exercise.
+  it("spawns each stage's wispCount from the stage table, via the real (non-test-hook) per-stage builder", () => {
+    // Stages 1 and 2 have 2 Wisps, stage 3 has 3. Every Wisp heads left
+    // (rng 0.5), the first of them leading, so walling off the first one with
+    // a 25-cell margin walls off them all.
     const session = new GameSession({ fieldWidth: FIELD_WIDTH, fieldHeight: FIELD_HEIGHT, rng: () => 0.5 });
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 1, playing
     expect(session.getStage()).toBe(1);
-    expect(session.getGame().getWisps().length).toBe(1);
+    expect(session.getGame().getWisps().length).toBe(getStageConfig(1).wispCount);
+    expect(session.getGame().getWisps().length).toBe(2);
 
     clearByWallingOffTheWisp(session);
     expect(session.getStatus()).toBe('stageclear');
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 2
     expect(session.getStage()).toBe(2);
     expect(session.getGame().getWisps().length).toBe(2);
+
+    clearByWallingOffTheWisp(session);
+    expect(session.getStatus()).toBe('stageclear');
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 3
+    expect(session.getStage()).toBe(3);
+    expect(session.getGame().getWisps().length).toBe(3);
   });
 });
 
@@ -407,13 +414,13 @@ describe('GameSession — randomized Wisp spawn cluster (anti center-line-split 
   it("keeps the spawn cluster's center at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN cells from the marker's start column, across many seeds", () => {
     const markerColumn = Math.floor(FIELD_WIDTH / 2);
     for (let seed = 0; seed < 50; seed++) {
-      // Stage 1 has exactly one Wisp, so its x *is* the cluster center (no
-      // spacing offset is applied for a single-Wisp cluster) — this is the
-      // exact anti-exploit property the M12 center-line split relied on
-      // the absence of.
-      const [wisp] = stage1WispsFor(mulberry32(seed));
-      const offset = Math.abs(wisp.getPosition().x - markerColumn);
-      expect(offset).toBeGreaterThanOrEqual(WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN);
+      // The cluster's center is halfway between its outermost Wisps. They sit
+      // `spacing` apart around it and are rounded to whole cells, which moves
+      // that halfway point by up to half a cell — hence the 0.5.
+      const xs = stage1WispsFor(mulberry32(seed)).map((w) => w.getPosition().x);
+      const center = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const offset = Math.abs(center - markerColumn);
+      expect(offset).toBeGreaterThanOrEqual(WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN - 0.5);
     }
   });
 

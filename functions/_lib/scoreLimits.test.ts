@@ -23,9 +23,9 @@ describe('maxScoreForStage', () => {
   it('matches the documented derivation: full grid at slow speed * split cap, plus the max clear bonus', () => {
     const totalCells = GRID_WIDTH * GRID_HEIGHT;
     const maxAreaScore = totalCells * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP;
-    // Max clear bonus: 100% achieved vs. the loosest (65%) requirement,
-    // i.e. 35 percentage points * STAGE_CLEAR_BONUS_PER_PERCENT_POINT (100) = 3500.
-    const maxClearBonus = 3500;
+    // Max clear bonus: 100% achieved vs. the loosest (60%, stages 4 and 6)
+    // requirement, i.e. 40 percentage points * STAGE_CLEAR_BONUS_PER_PERCENT_POINT (100) = 4000.
+    const maxClearBonus = 4000;
     expect(maxScoreForStage(1)).toBe(maxAreaScore + maxClearBonus);
   });
 

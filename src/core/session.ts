@@ -672,6 +672,7 @@ export class GameSession {
     return new Game(field, markerStart, undefined, this.currentStageRng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
+      firstEmberSpawnTicks: config.firstEmberSpawnTicks,
       emberMoveTicks: config.emberMoveTicks,
       emberBranchChaseProbability: config.emberBranchChaseProbability,
       maxConcurrentEmbers: config.maxConcurrentEmbers,
