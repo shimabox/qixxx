@@ -19,6 +19,8 @@ import { resetSfxLevels, type SfxLevels } from '../audio/sfxLevels';
 import {
   TICK_RATE,
   SPLIT_MULTIPLIER_CAP,
+  EMBER_FIRST_SPAWN_SEC,
+  BIG_CLAIM_SHARE,
   PLAY_LOG_MAX_RUNS,
   PLAY_LOG_STREAK_STAGE,
   BGM_GAIN_TENSE,
@@ -96,6 +98,15 @@ const RANGES = {
   // use case. 5s step keeps the slider's range of motion manageable at
   // either end.
   timeLimitSec: { min: 5, max: 600, step: 5 },
+  // The scoring and miss rules (config.ts BIG_CLAIM_*, NEAR_MISS_*, MISS_*,
+  // EMBER_FIRST_SPAWN_SEC): wide enough to try them well past their defaults.
+  bigClaimSharePercent: { min: 1, max: 100, step: 1 },
+  bigClaimMultiplier: { min: 1, max: 5, step: 0.05 },
+  nearMissDistanceCells: { min: 0, max: 20, step: 1 },
+  nearMissBonus: { min: 0, max: 2000, step: 10 },
+  missGraceTicks: { min: 0, max: 300, step: 1 },
+  missLineLockTicks: { min: 0, max: 300, step: 1 },
+  firstEmberSec: { min: 1, max: 60, step: 1 },
 } as const;
 
 interface SliderField {
@@ -175,6 +186,69 @@ const FIELDS: SliderField[] = [
     fromSlider: (v) => v / 100,
     format: (v) => `${Math.round(v * 100)}%`,
   },
+  {
+    key: 'bigClaimShare',
+    overrideKey: 'bigClaimShare',
+    label: 'Big claim from (share)',
+    range: RANGES.bigClaimSharePercent,
+    toSlider: (v) => Math.round(v * 100),
+    fromSlider: (v) => v / 100,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'bigClaimMultiplier',
+    overrideKey: 'bigClaimMultiplier',
+    label: 'Big claim x',
+    range: RANGES.bigClaimMultiplier,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => v.toFixed(2),
+  },
+  {
+    key: 'nearMissDistanceCells',
+    overrideKey: 'nearMissDistanceCells',
+    label: 'Close call distance (cells)',
+    range: RANGES.nearMissDistanceCells,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'nearMissBonus',
+    overrideKey: 'nearMissBonus',
+    label: 'Close call bonus',
+    range: RANGES.nearMissBonus,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missGraceTicks',
+    overrideKey: 'missGraceTicks',
+    label: 'Miss invincibility (t)',
+    range: RANGES.missGraceTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missLineLockTicks',
+    overrideKey: 'missLineLockTicks',
+    label: 'Miss line lock (t)',
+    range: RANGES.missLineLockTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'firstEmberSec',
+    overrideKey: 'firstEmberSec',
+    label: 'First Ember (s, next stage)',
+    range: RANGES.firstEmberSec,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => `${v}s`,
+  },
 ];
 
 /**
@@ -194,11 +268,12 @@ const FIELDS: SliderField[] = [
  * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
  * other slider here.
  */
-function buildExportPayload(
+export function buildExportPayload(
   params: EffectiveDebugParams,
   timeLimitTicks: number,
   fxParams?: FxParams,
-  sound?: Record<string, number | string>
+  sound?: Record<string, number | string>,
+  overrides: DebugOverrides = {}
 ): Record<string, unknown> {
   return {
     ...(fxParams ? buildFxExportPayload(fxParams) : {}),
@@ -211,7 +286,18 @@ function buildExportPayload(
     EMBER_BRANCH_CHASE_PROBABILITY: params.emberBranchChaseProbability,
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
     TIME_LIMIT_TICKS: timeLimitTicks,
+    BIG_CLAIM_SHARE: params.bigClaimShare,
+    BIG_CLAIM_MULTIPLIER: params.bigClaimMultiplier,
+    NEAR_MISS_DISTANCE_CELLS: params.nearMissDistanceCells,
+    NEAR_MISS_BONUS: params.nearMissBonus,
+    MISS_GRACE_TICKS: params.missGraceTicks,
+    MISS_LINE_LOCK_TICKS: params.missLineLockTicks,
+    // Stage 1's own wait unless overridden: the slider shows the current
+    // stage's wait, which is not this constant on other stages.
+    EMBER_FIRST_SPAWN_SEC: overrides.firstEmberSec ?? EMBER_FIRST_SPAWN_SEC,
     _notes: {
+      EMBER_FIRST_SPAWN_SEC:
+        "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
       WISP_COUNT:
         "Number of Wisps this stage. config.ts has no single constant for this — it is the current stage's wispCount in STAGE_TABLE.",
       WISP_SPEED_MULTIPLIER:
@@ -375,7 +461,8 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       occupancyAfter: share,
       lineSpeed: 'fast',
       areaScore,
-      bigClaim: false,
+      // TEST CLAIM L is a big claim, so BIG CLAIM can be seen next to its score.
+      bigClaim: share >= BIG_CLAIM_SHARE,
       nearMissBonus: 0,
       stageClearBonus: 0,
       multiplier: session.getMultiplier(),
@@ -983,6 +1070,8 @@ function buildPanel(
       } as Partial<DebugOverrides>);
       readout.textContent = field.format(field.fromSlider(sliderValue));
     });
+    // For E2E coverage to find a slider by what it sets.
+    input.dataset.debugKey = field.key;
     rows.set(field.key, { input, readout });
     panel.appendChild(row);
   }
@@ -1040,7 +1129,8 @@ function buildPanel(
       session.getEffectiveDebugParams(),
       session.getTimeLimitTicks(),
       fxHooks?.params,
-      soundSection?.exportPayload()
+      soundSection?.exportPayload(),
+      session.getDebugOverrides()
     );
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;

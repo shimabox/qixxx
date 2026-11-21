@@ -57,6 +57,24 @@ export interface DebugOverrides {
   emberBranchChaseProbability?: number;
   /** Required occupancy fraction [0.10, 0.90] to clear the stage. */
   requiredOccupancy?: number;
+  /** Share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
+  bigClaimShare?: number;
+  /** What a big claim's area points are multiplied by (BIG_CLAIM_MULTIPLIER). */
+  bigClaimMultiplier?: number;
+  /** How close (cells) a Wisp head must come to the line for a close call (NEAR_MISS_DISTANCE_CELLS). */
+  nearMissDistanceCells?: number;
+  /** The close-call bonus before the multiplier (NEAR_MISS_BONUS). */
+  nearMissBonus?: number;
+  /** Ticks after a miss with no further miss (MISS_GRACE_TICKS); from the next miss on. */
+  missGraceTicks?: number;
+  /** Ticks after a miss with no new line (MISS_LINE_LOCK_TICKS); from the next miss on. */
+  missLineLockTicks?: number;
+  /**
+   * Seconds from a stage's start to its first Ember pair, on every stage
+   * (EMBER_FIRST_SPAWN_SEC is stage 1's own). Read as a stage starts: a
+   * change in the middle of a stage applies from the next one.
+   */
+  firstEmberSec?: number;
 }
 
 /**
@@ -73,6 +91,14 @@ export interface EffectiveDebugParams {
   emberSpawnIntervalSec: number;
   emberBranchChaseProbability: number;
   requiredOccupancy: number;
+  bigClaimShare: number;
+  bigClaimMultiplier: number;
+  nearMissDistanceCells: number;
+  nearMissBonus: number;
+  missGraceTicks: number;
+  missLineLockTicks: number;
+  /** The override if set, else this stage's own wait for its first Ember pair. */
+  firstEmberSec: number;
 }
 
 export interface GameInput {
@@ -251,6 +277,10 @@ export class Game {
   private readonly baseEmberSpawnIntervalTicks: number;
   private readonly baseEmberBranchChaseProbability: number;
   private readonly baseRequiredOccupancy: number;
+  private readonly baseFirstEmberSpawnTicks: number;
+  // False until the first update(): the first-Ember override (firstEmberSec)
+  // only reaches a stage that has not started yet.
+  private started = false;
   // Ember concurrency cap (docs/plan.md §6 M12 / §12.7): not debug-overridable
   // itself (there's no panel slider for it), just the stage's own fixed
   // value for the lifetime of this Game instance. See maybeSpawnEmbers().
@@ -276,7 +306,8 @@ export class Game {
 
     this.embers = options.embers ? [...options.embers] : [];
     this.emberSpawnIntervalTicks = options.emberSpawnIntervalTicks ?? EMBER_SPAWN_INTERVAL_TICKS;
-    this.emberSpawnCooldownTicks = options.firstEmberSpawnTicks ?? this.emberSpawnIntervalTicks;
+    this.baseFirstEmberSpawnTicks = options.firstEmberSpawnTicks ?? this.emberSpawnIntervalTicks;
+    this.emberSpawnCooldownTicks = this.baseFirstEmberSpawnTicks;
     this.multiplier = options.multiplier ?? DEFAULT_SCORE_MULTIPLIER;
     this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
     this.score = options.score ?? 0;
@@ -380,12 +411,12 @@ export class Game {
 
   /** Ticks after a miss during which no further miss can happen (MISS_GRACE_TICKS). */
   private getMissGraceTicks(): number {
-    return MISS_GRACE_TICKS;
+    return this.debugOverrides.missGraceTicks ?? MISS_GRACE_TICKS;
   }
 
   /** Ticks after a miss during which no new line can be started (MISS_LINE_LOCK_TICKS). */
   private getMissLineLockTicks(): number {
-    return MISS_LINE_LOCK_TICKS;
+    return this.debugOverrides.missLineLockTicks ?? MISS_LINE_LOCK_TICKS;
   }
 
   /** Remaining post-miss ticks during which no new line can be started (0 when none). */
@@ -395,12 +426,12 @@ export class Game {
 
   /** The share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
   private getBigClaimShare(): number {
-    return BIG_CLAIM_SHARE;
+    return this.debugOverrides.bigClaimShare ?? BIG_CLAIM_SHARE;
   }
 
   /** What a big claim's area points are multiplied by (BIG_CLAIM_MULTIPLIER). */
   private getBigClaimMultiplier(): number {
-    return BIG_CLAIM_MULTIPLIER;
+    return this.debugOverrides.bigClaimMultiplier ?? BIG_CLAIM_MULTIPLIER;
   }
 
   /**
@@ -507,6 +538,13 @@ export class Game {
         this.debugOverrides.emberBranchChaseProbability ??
         this.baseEmberBranchChaseProbability,
       requiredOccupancy: this.requiredOccupancy,
+      bigClaimShare: this.getBigClaimShare(),
+      bigClaimMultiplier: this.getBigClaimMultiplier(),
+      nearMissDistanceCells: this.getNearMissDistance(),
+      nearMissBonus: this.getNearMissBonus(),
+      missGraceTicks: this.getMissGraceTicks(),
+      missLineLockTicks: this.getMissLineLockTicks(),
+      firstEmberSec: this.debugOverrides.firstEmberSec ?? this.baseFirstEmberSpawnTicks / TICK_RATE,
     };
   }
 
@@ -538,6 +576,13 @@ export class Game {
         : this.baseEmberSpawnIntervalTicks;
 
     this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
+
+    // The first Ember's wait is read as the stage starts: only a stage not
+    // yet started takes a changed (or reset) value; a running one keeps its own.
+    if (!this.started) {
+      this.emberSpawnCooldownTicks =
+        o.firstEmberSec !== undefined ? Math.max(0, Math.round(o.firstEmberSec * TICK_RATE)) : this.baseFirstEmberSpawnTicks;
+    }
   }
 
   /** Spawns/despawns Wisps until exactly `target` remain (docs/plan.md §6 M10). */
@@ -609,6 +654,7 @@ export class Game {
     if (this.status !== 'playing') {
       return null;
     }
+    this.started = true;
 
     const inGraceAtTickStart = this.graceTicks > 0;
     const lineLockedAtTickStart = this.lineLockTicks > 0;
@@ -810,12 +856,12 @@ export class Game {
 
   /** How close (cells) a Wisp head must come to the line to mark it (NEAR_MISS_DISTANCE_CELLS). */
   private getNearMissDistance(): number {
-    return NEAR_MISS_DISTANCE_CELLS;
+    return this.debugOverrides.nearMissDistanceCells ?? NEAR_MISS_DISTANCE_CELLS;
   }
 
   /** What a marked line's accepted claim adds, before the multiplier (NEAR_MISS_BONUS). */
   private getNearMissBonus(): number {
-    return NEAR_MISS_BONUS;
+    return this.debugOverrides.nearMissBonus ?? NEAR_MISS_BONUS;
   }
 
   /** True while the line being drawn carries the near-miss mark (always false with no line). */
