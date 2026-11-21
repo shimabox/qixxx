@@ -16,7 +16,8 @@
     "ranking:local:clear-pending": "wrangler d1 execute qixxx-scores --local --command \"DELETE FROM scores WHERE status='pending'\"",
     "ranking:local:reset": "wrangler d1 execute qixxx-scores --local --command \"DELETE FROM scores\"",
     "ranking:local:audit": "RANKING_IP_HASH_KEY=$(grep RANKING_IP_HASH_KEY .dev.vars | cut -d= -f2) npx vite-node scripts/audit/cli.ts",
-    "ranking:remote:audit": "npx vite-node scripts/audit/cli.ts --remote"
+    "ranking:remote:audit": "npx vite-node scripts/audit/cli.ts --remote",
+    "docs:shots": "npx vite-node scripts/doc-shots/cli.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
