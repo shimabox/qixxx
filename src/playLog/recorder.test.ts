@@ -12,6 +12,7 @@ function claim(overrides: Partial<ClaimFeedback> = {}): ClaimFeedback {
     occupancyAfter: 0.05,
     lineSpeed: 'fast',
     areaScore: 50,
+    bigClaim: false,
     stageClearBonus: 0,
     multiplier: 1,
     split: false,

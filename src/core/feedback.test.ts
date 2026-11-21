@@ -9,7 +9,7 @@ import { Ember } from './patrol';
 import { scoreAreaClaim, scoreStageClearBonus } from './scoring';
 import { runScriptedSession } from './scriptedRun';
 import { ClaimFeedback, MissFeedback } from './feedback';
-import { IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES } from '../config';
+import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES } from '../config';
 
 const SCRIPTED_CASES = [
   { seed: 20261114, fieldWidth: 40, fieldHeight: 30 },
@@ -138,7 +138,9 @@ describe('claim notices', () => {
       occupancyBefore: 0,
       occupancyAfter: game.getOccupancy(),
       lineSpeed: 'fast',
-      areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1),
+      // 18 of 24 cells: well past BIG_CLAIM_SHARE, so a big claim.
+      areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1, BIG_CLAIM_MULTIPLIER),
+      bigClaim: true,
       stageClearBonus: scoreStageClearBonus(game.getOccupancy(), game.getRequiredOccupancy()),
       multiplier: 1,
       split: false,
@@ -165,7 +167,8 @@ describe('claim notices', () => {
     const [notice] = game.drainClaimFeedback();
     expect(notice.lineSpeed).toBe('slow');
     expect(notice.multiplier).toBe(3);
-    expect(notice.areaScore).toBe(scoreAreaClaim(notice.claimedCells, 'slow', 3));
+    expect(notice.bigClaim).toBe(true);
+    expect(notice.areaScore).toBe(scoreAreaClaim(notice.claimedCells, 'slow', 3, BIG_CLAIM_MULTIPLIER));
     expect(notice.stageCleared).toBe(false);
     expect(notice.split).toBe(false);
     expect(notice.stageClearBonus).toBe(0);

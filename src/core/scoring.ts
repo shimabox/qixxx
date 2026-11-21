@@ -13,16 +13,33 @@ export { DEFAULT_SCORE_MULTIPLIER };
 /**
  * Score awarded for claiming `claimedCells` cells at the given line speed
  * and multiplier (docs/plan.md §3.6): 0.5 pts/cell for a fast line, 1.0
- * pts/cell for a slow line (double), both scaled by `multiplier` and
- * truncated to an integer (no fractional points awarded).
- *
- * `multiplier` is always 1 until the M4 split-bonus mechanic lands
- * (docs/plan.md §3.5), but is threaded through now so that future change is
- * additive rather than requiring a signature change.
+ * pts/cell for a slow line (double), both scaled by `multiplier` and by
+ * `bigClaimMultiplier` (1 unless the claim is a big claim, see
+ * isBigClaim()), then truncated to an integer once (no fractional points
+ * awarded) — e.g. 3001 fast cells at x1 as a big claim (x1.5):
+ * floor(3001 * 0.5 * 1 * 1.5) = 2250.
  */
-export function scoreAreaClaim(claimedCells: number, speed: LineSpeed, multiplier: number): number {
+export function scoreAreaClaim(
+  claimedCells: number,
+  speed: LineSpeed,
+  multiplier: number,
+  bigClaimMultiplier = 1
+): number {
   const perCell = speed === 'slow' ? SCORE_PER_CELL_SLOW : SCORE_PER_CELL_FAST;
-  return Math.floor(claimedCells * perCell * multiplier);
+  return Math.floor(claimedCells * perCell * multiplier * bigClaimMultiplier);
+}
+
+/**
+ * True when one claim of `claimedCells` cells fills at least `share` of the
+ * field's `claimableCells` (Field.getClaimableCellCount(), the occupancy's
+ * denominator). Exactly `share` counts. Compared as a ratio of the two
+ * integers: that division rounds to the double nearest the true ratio, so a
+ * claim of exactly the share (15 of 100 at 0.15) is never lost to rounding,
+ * as `share * claimableCells` (15.000000000000002) would lose it.
+ */
+export function isBigClaim(claimedCells: number, claimableCells: number, share: number): boolean {
+  if (claimableCells <= 0 || claimedCells <= 0) return false;
+  return claimedCells / claimableCells >= share;
 }
 
 /**

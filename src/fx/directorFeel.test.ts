@@ -15,6 +15,7 @@ function claim(share: number, overrides: Partial<ClaimFeedback> = {}): ClaimFeed
     occupancyAfter: 0.1 + share,
     lineSpeed: 'fast',
     areaScore: 50,
+    bigClaim: false,
     stageClearBonus: 0,
     multiplier: 1,
     split: false,

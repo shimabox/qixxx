@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { maxScoreForStage } from './scoreLimits';
-import { GRID_WIDTH, GRID_HEIGHT, SCORE_PER_CELL_SLOW, SPLIT_MULTIPLIER_CAP } from '../../src/config';
+import { GRID_WIDTH, GRID_HEIGHT, SCORE_PER_CELL_SLOW, SPLIT_MULTIPLIER_CAP, BIG_CLAIM_MULTIPLIER } from '../../src/config';
 
 describe('maxScoreForStage', () => {
   it('is monotonically increasing with stage', () => {
@@ -20,9 +20,10 @@ describe('maxScoreForStage', () => {
     expect(maxScoreForStage(1.9)).toBe(maxScoreForStage(1));
   });
 
-  it('matches the documented derivation: full grid at slow speed * split cap, plus the max clear bonus', () => {
+  it('matches the documented derivation: full grid at slow speed * split cap * big claim, plus the max clear bonus', () => {
     const totalCells = GRID_WIDTH * GRID_HEIGHT;
-    const maxAreaScore = totalCells * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP;
+    const maxAreaScore = totalCells * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP * BIG_CLAIM_MULTIPLIER;
+    expect(maxAreaScore).toBe(259200); // 19200 * 1.0 * 9 * 1.5
     // Max clear bonus: 100% achieved vs. the loosest (60%, stages 4 and 6)
     // requirement, i.e. 40 percentage points * STAGE_CLEAR_BONUS_PER_PERCENT_POINT (100) = 4000.
     const maxClearBonus = 4000;

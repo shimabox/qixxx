@@ -330,8 +330,9 @@ describe('Game — low/high speed lines and scoring (M3, docs/plan.md §3.2/§3.
     expect(game.getField().get({ x: 1, y: 2 })).toBe(CLAIMED_SLOW);
     expect(game.getOccupancy()).toBeCloseTo(18 / 24);
     expect(game.getStatus()).toBe('stageclear');
-    // 18 cells * 1.0 pt (slow) * multiplier 1 = 18, plus the (75% - 65%) * 100 = 1000 stage-clear bonus.
-    expect(game.getScore()).toBe(1018);
+    // 18 of 24 cells is a big claim: floor(18 * 1.0 pt (slow) * multiplier 1 * 1.5) = 27, plus
+    // the (75% - 65%) * 100 = 1000 stage-clear bonus.
+    expect(game.getScore()).toBe(1027);
   });
 
   it('closes a mixed fast/slow line as fast (docs/plan.md §3.2) and scores it at the fast rate', () => {
@@ -349,8 +350,9 @@ describe('Game — low/high speed lines and scoring (M3, docs/plan.md §3.2/§3.
 
     expect(game.getField().get({ x: 1, y: 2 })).toBe(CLAIMED_FAST);
     expect(game.getStatus()).toBe('stageclear');
-    // 18 cells * 0.5 pt (fast, since at least one cell was fast) + 1000 stage-clear bonus.
-    expect(game.getScore()).toBe(9 + 1000);
+    // A big claim of 18 cells: floor(18 * 0.5 pt (fast, since at least one cell was fast) * 1.5)
+    // = 13, + 1000 stage-clear bonus.
+    expect(game.getScore()).toBe(13 + 1000);
   });
 
   it('resets the score multiplier to 1 on a miss', () => {

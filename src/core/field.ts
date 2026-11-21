@@ -105,6 +105,11 @@ export class Field {
     return cells;
   }
 
+  /** The occupancy's denominator: the field's initial UNCLAIMED cells (its interior). */
+  getClaimableCellCount(): number {
+    return this.unclaimedCount;
+  }
+
   // Calculate occupancy: (CLAIMED_FAST + CLAIMED_SLOW cells) / initial UNCLAIMED cells
   getOccupancy(): number {
     if (this.unclaimedCount === 0) return 0;

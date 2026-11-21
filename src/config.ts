@@ -229,6 +229,13 @@ export const SCORE_PER_CELL_FAST = 0.5;
 export const SCORE_PER_CELL_SLOW = 1.0;
 export const STAGE_CLEAR_BONUS_PER_PERCENT_POINT = 100;
 export const DEFAULT_SCORE_MULTIPLIER = 1;
+// A big claim: one claim that fills at least BIG_CLAIM_SHARE of the field
+// (the same denominator as the occupancy) scores its area points times
+// BIG_CLAIM_MULTIPLIER, applied before the one truncation to an integer
+// (core/scoring.ts). The threshold itself counts. A split claim is scored
+// the same way. The debug panel can change both at run time.
+export const BIG_CLAIM_SHARE = 0.15;
+export const BIG_CLAIM_MULTIPLIER = 1.5;
 
 // Colors (neon-like, not copying original)
 export const COLOR_BACKGROUND = '#0a0e27'; // Dark blue-black

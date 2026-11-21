@@ -13,7 +13,7 @@ import { Wisp, Rng } from './enemy';
 import { Ember, Heading } from './patrol';
 import { Igniter, shouldSpawnIgniter } from './fuse';
 import { checkCollision } from './collision';
-import { scoreAreaClaim, scoreStageClearBonus, DEFAULT_SCORE_MULTIPLIER } from './scoring';
+import { scoreAreaClaim, scoreStageClearBonus, isBigClaim, DEFAULT_SCORE_MULTIPLIER } from './scoring';
 import { EventQueue, GameEvent } from './events';
 import type { ClaimFeedback, MissCause, MissFeedback } from './feedback';
 import {
@@ -28,6 +28,8 @@ import {
   EMBER_MAX_CONCURRENT_DEFAULT,
   EMBER_LINE_ENTRY_GENERATION,
   TICK_RATE,
+  BIG_CLAIM_SHARE,
+  BIG_CLAIM_MULTIPLIER,
 } from '../config';
 
 /**
@@ -356,6 +358,16 @@ export class Game {
     return this.graceTicks;
   }
 
+  /** The share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
+  private getBigClaimShare(): number {
+    return BIG_CLAIM_SHARE;
+  }
+
+  /** What a big claim's area points are multiplied by (BIG_CLAIM_MULTIPLIER). */
+  private getBigClaimMultiplier(): number {
+    return BIG_CLAIM_MULTIPLIER;
+  }
+
   /**
    * Drains (returns and clears) every GameEvent queued since the last call
    * (docs/plan.md §3.8/§9.9). Pure data — see core/events.ts. Callers (e.g.
@@ -621,7 +633,17 @@ export class Game {
         if (claimResult.accepted) {
           const occupancyBefore = this.occupancy;
           this.occupancy = claimResult.occupancy;
-          const areaScore = scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
+          const bigClaim = isBigClaim(
+            claimResult.claimedCells,
+            this.field.getClaimableCellCount(),
+            this.getBigClaimShare()
+          );
+          const areaScore = scoreAreaClaim(
+            claimResult.claimedCells,
+            lineSpeed,
+            this.multiplier,
+            bigClaim ? this.getBigClaimMultiplier() : 1
+          );
           this.score += areaScore;
           this.despawnStrandedEmbers();
           this.relocateStrandedMarker(result.closedLine);
@@ -649,6 +671,7 @@ export class Game {
               occupancyAfter: this.occupancy,
               lineSpeed,
               areaScore,
+              bigClaim,
               stageClearBonus,
               multiplier: this.multiplier,
               split: claimResult.split,

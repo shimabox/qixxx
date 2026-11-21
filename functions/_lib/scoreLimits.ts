@@ -9,6 +9,7 @@ import {
   SPLIT_MULTIPLIER_CAP,
   STAGE_CLEAR_BONUS_PER_PERCENT_POINT,
   MIN_REQUIRED_OCCUPANCY,
+  BIG_CLAIM_MULTIPLIER,
 } from '../../src/config';
 
 // Upper bound on cells claimable in a single stage: the whole grid. The real
@@ -21,11 +22,14 @@ const TOTAL_CELLS = GRID_WIDTH * GRID_HEIGHT;
 // Upper bound on a single stage-clear's area score: every one of those cells
 // claimed by the *slower* (higher-scoring) line speed, each further
 // multiplied by the highest attainable split-success multiplier
-// (SPLIT_MULTIPLIER_CAP, docs/plan.md §3.6). Real play can never actually
-// reach this (claiming literally 100% of the grid at 1.0 pts/cell while
-// holding a 9x multiplier the entire stage), which is exactly the point —
-// it's a safe ceiling, not a realistic target.
-const MAX_AREA_SCORE_PER_STAGE = TOTAL_CELLS * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP;
+// (SPLIT_MULTIPLIER_CAP, docs/plan.md §3.6) and by the big-claim multiplier
+// (BIG_CLAIM_MULTIPLIER, as if every claim were a big one). Real play can
+// never actually reach this (claiming literally 100% of the grid at 1.0
+// pts/cell while holding a 9x multiplier the entire stage), which is exactly
+// the point — it's a safe ceiling, not a realistic target.
+const MAX_AREA_SCORE_PER_STAGE = Math.ceil(
+  TOTAL_CELLS * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP * BIG_CLAIM_MULTIPLIER
+);
 
 // Upper bound on a single stage-clear's bonus (src/core/scoring.ts's
 // scoreStageClearBonus): (achieved% - required%) * 100 *

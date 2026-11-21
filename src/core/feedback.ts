@@ -20,8 +20,10 @@ export interface ClaimFeedback {
   /** Occupancy (0-1) right after this claim. */
   occupancyAfter: number;
   lineSpeed: LineSpeed;
-  /** Area points this claim scored (the stage-clear excess bonus is not included). */
+  /** Area points this claim scored (the stage-clear excess bonus is not included; a big claim's x1.5 is). */
   areaScore: number;
+  /** True when this claim filled at least BIG_CLAIM_SHARE of the field, so its area points were multiplied. */
+  bigClaim: boolean;
   /**
    * The excess-occupancy bonus this claim scored: scoreStageClearBonus()'s
    * value when it cleared the stage by occupancy, 0 for a split clear and for
