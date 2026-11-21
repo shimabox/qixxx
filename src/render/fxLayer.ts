@@ -1,7 +1,7 @@
 // Draws the impact feedback (src/fx/director.ts's FxFrame) on the game
 // canvas: the closed line's glow and the split flash, the vanished line's
 // shards, the sparks, the "+score" popups with their praise word and chain
-// count, SPLIT! and the miss flash. Called by Renderer in its draw order;
+// count, BIG CLAIM / CLOSE CALL, SPLIT!, the stage title and the miss flash. Called by Renderer in its draw order;
 // every function takes logical (CANVAS_WIDTH x CANVAS_HEIGHT) coordinates
 // and leaves the context state as it found it.
 //
@@ -13,7 +13,17 @@
 // that size. How the text tears and splits its colours comes from the frame
 // (src/fx/textGlitch.ts); nothing here decides timing.
 import type { Point } from '../core/field';
-import type { FxFlash, FxLineGlow, FxMissReason, FxPopup, FxShard, FxSpark, FxSplitBanner } from '../fx/director';
+import type {
+  FxClaimTags,
+  FxFlash,
+  FxLineGlow,
+  FxMissReason,
+  FxPopup,
+  FxShard,
+  FxSpark,
+  FxSplitBanner,
+  FxStageTitle,
+} from '../fx/director';
 import { fxFont, fxFontEpoch } from './fxFonts';
 import { praiseText } from '../fx/params';
 import { sentenceFontFamily, t } from '../i18n';
@@ -30,6 +40,9 @@ import {
   COLOR_FX_NEON_CORE,
   COLOR_FX_TEXT_FILL,
   COLOR_FX_MISS_REASON,
+  COLOR_FX_BIG_CLAIM,
+  COLOR_FX_CLOSE_CALL,
+  COLOR_BORDER,
 } from '../config';
 
 const GRID_W = CANVAS_WIDTH / RENDER_SCALE;
@@ -320,24 +333,11 @@ export function drawPopups(
     const praiseDy = popup.praise ? -(scorePx * 0.5 + praisePx * 0.62) : 0;
     const noteDy = popup.note ? scorePx * 0.85 : 0;
     const chainDy = popup.chain ? (popup.note ? noteDy + notePx * 0.5 : scorePx * 0.5) + chainPx * 0.85 : 0;
-    const top = popup.praise ? praiseDy - praisePx * 0.55 : -scorePx * 0.55;
-    const bottom = popup.chain ? chainDy + chainPx * 0.6 : popup.note ? noteDy + notePx * 0.6 : scorePx * 0.55;
 
     // Kept inside the field sideways by the widest of the score, the note
-    // and CHAIN xN (no less than the margin it always had).
-    let half = 48 - EDGE_PAD_PX;
-    for (const [label, px] of [
-      [popup.text, scorePx],
-      [popup.note, notePx],
-      [popup.chain, chainPx],
-    ] as const) {
-      if (!label) continue;
-      ctx.font = fxFont(700, px);
-      half = Math.max(half, layoutSpaced(ctx, label, px * POPUP_SPACING).width / 2 + px * 0.2);
-    }
-    const x = clamp((at.x + 0.5) * RENDER_SCALE, EDGE_PAD_PX + half, CANVAS_WIDTH - EDGE_PAD_PX - half);
-    let y = clamp((at.y + 0.5) * RENDER_SCALE - popup.progress * POPUP_RISE_PX, 20, CANVAS_HEIGHT - 28);
-    y = clamp(y, EDGE_PAD_PX - top, CANVAS_HEIGHT - EDGE_PAD_PX - bottom);
+    // and CHAIN xN (no less than the margin it always had), and up and down
+    // by its rows.
+    const { x, y } = popupPlacement(ctx, popup, at, minFontPx);
     ctx.globalAlpha = popup.progress < 0.7 ? 1 : Math.max(0, (1 - popup.progress) / 0.3);
 
     if (popup.praise) {
@@ -357,6 +357,263 @@ export function drawPopups(
     }
   }
   ctx.restore();
+}
+
+// --- BIG CLAIM / CLOSE CALL and the stage title ----------------------------
+
+/** A drawn text's box, in logical canvas pixels. */
+export interface FxTextBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A band of the field (logical canvas pixels, top to bottom) that the labels below keep out of: the hint line. */
+export interface FxAvoidBand {
+  top: number;
+  bottom: number;
+}
+
+const TAG_FONT_PX = 15;
+const TAG_LINE_SHARE = 1.25; // line height, of the font size
+const TAG_GAP_PX = 4; // between the score's rows and the tags, at least...
+const TAG_GAP_SHARE = 0.35; // ...and this much of the tags' font size
+const SPLIT_TAG_GAP_SHARE = 0.75; // a split's tags start this far below the field's middle, of SPLIT!'s size
+const STAGE_HEADING_FONT_PX = 34;
+const STAGE_NAME_FONT_SHARE = 0.62; // of the heading's
+const STAGE_TITLE_CENTER_SHARE = 0.3; // of the field's height, from the top
+const STAGE_TITLE_GAP_SHARE = 0.25; // between the heading and the name, of the heading's size
+
+/** The rows of a popup (FxPopup) relative to its score's center, as drawPopups() lays them out. */
+function popupRows(popup: FxPopup, sizes: PopupFontSizes): { top: number; bottom: number } {
+  const { scorePx, notePx, praisePx, chainPx } = sizes;
+  const noteDy = popup.note ? scorePx * 0.85 : 0;
+  const chainDy = popup.chain ? (popup.note ? noteDy + notePx * 0.5 : scorePx * 0.5) + chainPx * 0.85 : 0;
+  const praiseDy = popup.praise ? -(scorePx * 0.5 + praisePx * 0.62) : 0;
+  const top = popup.praise ? praiseDy - praisePx * 0.55 : -scorePx * 0.55;
+  const bottom = popup.chain ? chainDy + chainPx * 0.6 : popup.note ? noteDy + notePx * 0.6 : scorePx * 0.55;
+  return { top, bottom };
+}
+
+/** Where drawPopups() puts a popup's score center, and its rows' extent around it. */
+function popupPlacement(
+  ctx: CanvasRenderingContext2D,
+  popup: FxPopup,
+  at: { x: number; y: number },
+  minFontPx: number
+): { x: number; y: number; top: number; bottom: number } {
+  const sizes = popupFontSizes(popup.scale, minFontPx);
+  const { top, bottom } = popupRows(popup, sizes);
+  let half = 48 - EDGE_PAD_PX;
+  for (const [label, px] of [
+    [popup.text, sizes.scorePx],
+    [popup.note, sizes.notePx],
+    [popup.chain, sizes.chainPx],
+  ] as const) {
+    if (!label) continue;
+    ctx.font = fxFont(700, px);
+    half = Math.max(half, layoutSpaced(ctx, label, px * POPUP_SPACING).width / 2 + px * 0.2);
+  }
+  const x = clamp((at.x + 0.5) * RENDER_SCALE, EDGE_PAD_PX + half, CANVAS_WIDTH - EDGE_PAD_PX - half);
+  let y = clamp((at.y + 0.5) * RENDER_SCALE - popup.progress * POPUP_RISE_PX, 20, CANVAS_HEIGHT - 28);
+  y = clamp(y, EDGE_PAD_PX - top, CANVAS_HEIGHT - EDGE_PAD_PX - bottom);
+  return { x, y, top, bottom };
+}
+
+/** Moves a box of `height` starting at `top` out of `avoid` (to the side of it with more room) and inside the field. */
+function placeVertically(top: number, height: number, avoid: FxAvoidBand | null): number {
+  let y = clamp(top, EDGE_PAD_PX, CANVAS_HEIGHT - EDGE_PAD_PX - height);
+  if (avoid && y < avoid.bottom && y + height > avoid.top) {
+    const roomAbove = avoid.top - EDGE_PAD_PX;
+    const roomBelow = CANVAS_HEIGHT - EDGE_PAD_PX - avoid.bottom;
+    y = roomAbove >= roomBelow ? avoid.top - height : avoid.bottom;
+    y = clamp(y, EDGE_PAD_PX, CANVAS_HEIGHT - EDGE_PAD_PX - height);
+  }
+  return y;
+}
+
+/** Glowing filled text in `font`, centered on (cx, cy), with a dark edge. */
+function fillLabel(
+  ctx: CanvasRenderingContext2D,
+  text: SpacedText,
+  cx: number,
+  cy: number,
+  fontPx: number,
+  glowColor: string,
+  fillColor: string
+): void {
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = Math.max(3, fontPx * 0.23);
+  ctx.strokeStyle = COLOR_FX_OUTLINE;
+  paintSpaced(ctx, text, cx, cy, 'stroke');
+  ctx.shadowColor = glowColor;
+  ctx.shadowBlur = fontPx * POPUP_GLOW * shadowScale(ctx);
+  ctx.fillStyle = fillColor;
+  paintSpaced(ctx, text, cx, cy, 'fill');
+  ctx.shadowBlur = 0;
+}
+
+/**
+ * The space a claim's popup takes up over its whole life: from where it
+ * starts, bounced up to `maxScale`, to where it has risen to at the end. Its
+ * center across is where it settles.
+ */
+function popupFootprint(
+  ctx: CanvasRenderingContext2D,
+  group: FxClaimTags,
+  rows: NonNullable<FxClaimTags['popup']>,
+  at: { x: number; y: number },
+  minFontPx: number
+): { x: number; top: number; bottom: number } {
+  const at0 = { ...rows, revealId: group.revealId, anchor: group.anchor, age: 0, channelOffset: 0 };
+  const settled = popupPlacement(ctx, { ...at0, progress: 0, scale: 1 }, at, minFontPx);
+  let top = settled.y + settled.top;
+  let bottom = settled.y + settled.bottom;
+  for (const state of [
+    { progress: 0, scale: group.popupMaxScale },
+    { progress: 1, scale: 1 },
+  ]) {
+    const place = popupPlacement(ctx, { ...at0, ...state }, at, minFontPx);
+    top = Math.min(top, place.y + place.top);
+    bottom = Math.max(bottom, place.y + place.bottom);
+  }
+  return { x: settled.x, top, bottom };
+}
+
+/**
+ * BIG CLAIM (gold) and CLOSE CALL +N (orange), one line each, just under the
+ * claim's popup — above it when there is no room under it — under SPLIT! for
+ * a split, or, for another claim with no popup, where the popup would be. Kept inside the field
+ * and out of `avoid`. `positionOf` is drawPopups()'s.
+ *
+ * They never move while shown: they are placed clear of everything their
+ * popup covers over its life (FxClaimTags.popup, kept after the popup is
+ * gone), for their largest size, and pop in and out around that place's
+ * middle. Returns the boxes drawn, for tests.
+ */
+export function drawClaimTags(
+  ctx: CanvasRenderingContext2D,
+  claimTags: readonly FxClaimTags[],
+  positionOf: (item: { revealId: number; anchor: Point }) => { x: number; y: number },
+  minFontPx = 0,
+  avoid: FxAvoidBand | null = null
+): FxTextBox[] {
+  const boxes: FxTextBox[] = [];
+  if (claimTags.length === 0) return boxes;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  for (const group of claimTags) {
+    if (group.alpha <= 0 || group.tags.length === 0) continue;
+    // The place, for the tags at their largest.
+    const maxFontPx = Math.max(TAG_FONT_PX * Math.max(group.maxScale, group.scale), minFontPx);
+    const maxHeight = maxFontPx * TAG_LINE_SHARE * group.tags.length;
+    const gap = Math.max(TAG_GAP_PX, maxFontPx * TAG_GAP_SHARE);
+
+    // Where first: measuring the popup or SPLIT! changes the context's font
+    // and letter spacing, so the tags are laid out after it.
+    const at = positionOf(group);
+    let cx: number;
+    let top: number;
+    if (group.split) {
+      // Under SPLIT! (centred on the field), clear of its letters.
+      cx = CANVAS_WIDTH / 2;
+      top = CANVAS_HEIGHT / 2 + splitFontPx(ctx, 1) * SPLIT_TAG_GAP_SHARE;
+    } else if (group.popup) {
+      const foot = popupFootprint(ctx, group, group.popup, at, minFontPx);
+      cx = foot.x;
+      top = foot.bottom + gap;
+      if (top + maxHeight > CANVAS_HEIGHT - EDGE_PAD_PX) top = foot.top - gap - maxHeight;
+    } else {
+      cx = (at.x + 0.5) * RENDER_SCALE;
+      top = (at.y + 0.5) * RENDER_SCALE - maxHeight / 2;
+    }
+
+    ctx.font = fxFont(900, maxFontPx);
+    const maxHalf =
+      Math.max(...group.tags.map((tag) => layoutSpaced(ctx, tag.text, maxFontPx * POPUP_SPACING).width)) / 2 +
+      maxFontPx * 0.2;
+    const midX = clamp(cx, EDGE_PAD_PX + maxHalf, CANVAS_WIDTH - EDGE_PAD_PX - maxHalf);
+    const midY = placeVertically(top, maxHeight, avoid) + maxHeight / 2;
+
+    // Drawn at their size now, around the place's middle.
+    const fontPx = Math.max(TAG_FONT_PX * group.scale, minFontPx);
+    const lineH = fontPx * TAG_LINE_SHARE;
+    const height = lineH * group.tags.length;
+    ctx.font = fxFont(900, fontPx);
+    const lines = group.tags.map((tag) => layoutSpaced(ctx, tag.text, fontPx * POPUP_SPACING));
+    const half = Math.max(...lines.map((l) => l.width)) / 2 + fontPx * 0.2;
+    cx = midX;
+    top = midY - height / 2;
+
+    ctx.globalAlpha = group.alpha;
+    group.tags.forEach((tag, i) => {
+      const color = tag.kind === 'big' ? COLOR_FX_BIG_CLAIM : COLOR_FX_CLOSE_CALL;
+      fillLabel(ctx, lines[i], cx, top + lineH * (i + 0.5), fontPx, color, color);
+    });
+    boxes.push({ x: cx - half, y: top, width: half * 2, height });
+  }
+  ctx.restore();
+  return boxes;
+}
+
+/**
+ * STAGE n and the stage's name, centred across the field a little above its
+ * middle (moved out of `avoid`, the hint line, when it is there), popping in
+ * and fading as the frame says. STAGE n in the effects' face; the name in
+ * the effects' face too in English, in the device's Japanese font in
+ * Japanese. Shrunk to fit the field's width. Returns the box drawn.
+ */
+export function drawStageTitle(
+  ctx: CanvasRenderingContext2D,
+  title: FxStageTitle,
+  minFontPx = 0,
+  avoid: FxAvoidBand | null = null
+): FxTextBox | null {
+  if (title.alpha <= 0) return null;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  const family = sentenceFontFamily();
+  const nameFont = (px: number) => (family ? `700 ${px}px ${family}` : fxFont(700, px));
+  const maxWidth = CANVAS_WIDTH - EDGE_PAD_PX * 2;
+  let headingPx = Math.max(STAGE_HEADING_FONT_PX * title.scale, minFontPx / STAGE_NAME_FONT_SHARE);
+  const measure = () => {
+    const namePx = headingPx * STAGE_NAME_FONT_SHARE;
+    ctx.font = fxFont(900, headingPx);
+    const heading = layoutSpaced(ctx, title.heading, headingPx * SPLIT_SPACING);
+    ctx.font = nameFont(namePx);
+    const name = layoutSpaced(ctx, title.title, family ? 0 : namePx * POPUP_SPACING);
+    return { namePx, heading, name };
+  };
+  let m = measure();
+  const widest = () => Math.max(m.heading.width + headingPx * 0.4, m.name.width + m.namePx * 0.4);
+  if (widest() > maxWidth) {
+    headingPx *= maxWidth / widest();
+    m = measure();
+  }
+  const gap = headingPx * STAGE_TITLE_GAP_SHARE;
+  const headingH = headingPx * 1.2;
+  const nameH = m.namePx * 1.3;
+  const height = headingH + gap + nameH;
+  const width = widest();
+  const top = placeVertically(CANVAS_HEIGHT * STAGE_TITLE_CENTER_SHARE - height / 2, height, avoid);
+  const cx = CANVAS_WIDTH / 2;
+
+  // Each line laid out again just before it is drawn: the letter spacing is
+  // part of the context, and the last one measured was the other line's.
+  ctx.globalAlpha = title.alpha;
+  ctx.font = fxFont(900, headingPx);
+  const heading = layoutSpaced(ctx, title.heading, headingPx * SPLIT_SPACING);
+  fillLabel(ctx, heading, cx, top + headingH / 2, headingPx, COLOR_BORDER, COLOR_FX_TEXT_FILL);
+  ctx.font = nameFont(m.namePx);
+  const name = layoutSpaced(ctx, title.title, family ? 0 : m.namePx * POPUP_SPACING);
+  fillLabel(ctx, name, cx, top + headingH + gap + nameH / 2, m.namePx, COLOR_FX_NEON_CYAN, COLOR_FX_TEXT_FILL);
+  ctx.restore();
+  return { x: cx - width / 2, y: top, width, height };
 }
 
 /** SPLIT!'s font size: letter spacing included, it spans SPLIT_WIDTH_SHARE of the field at pop 1. */

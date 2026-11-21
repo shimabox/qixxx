@@ -239,6 +239,27 @@ describe('HintDirector: split', () => {
     expect(h.step({ stageStart: 'stage', wispCount: 1 })).toBeNull();
     expect(h.step({ stageStart: 'run', wispCount: 1 })).toBeNull();
   });
+
+  it("is not shown at the start of a run's first stage, even with two Wisps", () => {
+    const h = new Harness(['draw']);
+    expect(h.step({ stageStart: 'run', wispCount: 2 })).toBeNull();
+    expect(h.run(HINT_SPLIT_TICKS + HINT_QUEUE_MAX_WAIT_TICKS)).toBeNull();
+    expect(h.store.has('split')).toBe(false);
+    // The next stage's start brings it.
+    expect(h.step({ stageStart: 'stage', wispCount: 2 })?.id).toBe('split');
+  });
+
+  it('lets a first run start with how to draw, and shows split at the next stage', () => {
+    const h = new Harness();
+    expect(h.startRun(2)?.id).toBe('draw');
+    h.run(30);
+    expect(h.view?.id).toBe('draw');
+    h.claim();
+    expect(h.view?.id).toBe('claimSide');
+    h.run(HINT_TIMED_TICKS);
+    h.step({ playing: false }); // STAGE CLEAR
+    expect(h.step({ stageStart: 'stage', wispCount: 2 })?.id).toBe('split');
+  });
 });
 
 describe('HintDirector: enemies', () => {

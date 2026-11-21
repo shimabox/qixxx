@@ -646,6 +646,15 @@ export const FX_TEXT_MIN_DISPLAY_PX = 11;
 // after it — fading out over its last FADE_TICKS, and never drawn smaller
 // than MIN_DISPLAY_PX CSS px on screen. A reading text, so it does not move.
 export const FX_MISS_REASON_TICKS = 60;
+// The stage's title (STAGE n and its name, config.ts's STAGE_TABLE) over the
+// field when a stage starts, for this many ticks. Play does not wait for it.
+export const FX_STAGE_TITLE_TICKS = 60;
+// BIG CLAIM / CLOSE CALL +N next to a claim's score, for this many ticks.
+export const FX_CLAIM_TAG_TICKS = 50;
+// Their colours: gold for a big claim, hot orange for a close call — apart
+// from the praise words' and SPLIT!'s magenta and cyan neon.
+export const COLOR_FX_BIG_CLAIM = '#ffd23f';
+export const COLOR_FX_CLOSE_CALL = '#ff8a3d';
 export const FX_MISS_REASON_FADE_TICKS = 12;
 export const FX_MISS_REASON_MIN_DISPLAY_PX = 13;
 // Its colour: the warning red, lighter so it reads on the dark field, edged
