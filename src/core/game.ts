@@ -188,6 +188,10 @@ export class Game {
   // §4.2/§3.6 "2匹 QIX への拡張"). Consumed by the session/stage layer to
   // decide whether to bump the next stage's score multiplier.
   private lastClearWasSplit = false;
+  // How much the split that most recently cleared this stage raises the next
+  // stage's multiplier: the smaller side's Wisp count (at least 1), 0 when
+  // the stage did not clear by a split. Read by the session layer.
+  private lastSplitMultiplierGain = 0;
   // Remaining post-miss grace ticks (docs/plan.md §3.5): while > 0, all miss
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
@@ -312,6 +316,11 @@ export class Game {
   /** See `lastClearWasSplit` — true iff the stage most recently cleared via a split, not occupancy. */
   getLastClearWasSplit(): boolean {
     return this.lastClearWasSplit;
+  }
+
+  /** See `lastSplitMultiplierGain` — 0 unless the stage most recently cleared via a split. */
+  getLastSplitMultiplierGain(): number {
+    return this.lastSplitMultiplierGain;
   }
 
   getEmbers(): Ember[] {
@@ -661,6 +670,11 @@ export class Game {
           this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
           this.lastClearWasSplit = claimResult.split;
+          // A split raises the next stage's multiplier by the smaller side's
+          // Wisp count, so cutting a crowd in half pays more than shaving one off.
+          this.lastSplitMultiplierGain = claimResult.split
+            ? Math.max(1, Math.min(claimResult.anchorSideEnemies, claimResult.otherSideEnemies))
+            : 0;
           // Only read back by the optional claim notice below.
           let stageClearBonus = 0;
           if (claimResult.split) {
@@ -688,6 +702,7 @@ export class Game {
               stageClearBonus,
               multiplier: this.multiplier,
               split: claimResult.split,
+              splitMultiplierGain: this.lastSplitMultiplierGain,
               stageCleared: this.status === 'stageclear',
               closedLine: result.closedLine.map((p) => ({ x: p.x, y: p.y })),
             });

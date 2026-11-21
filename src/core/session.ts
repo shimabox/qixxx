@@ -118,8 +118,9 @@ export class GameSession {
   // itself knows about. getMultiplier() always reflects the *current*
   // Game's own multiplier instead — see below.
   private multiplier: number = DEFAULT_SCORE_MULTIPLIER;
-  // Consecutive split-stage-clears since the last miss (docs/plan.md §3.6):
-  // the *next* stage's multiplier is this + 1, capped at SPLIT_MULTIPLIER_CAP.
+  // What the split-stage-clears since the last miss have added (docs/plan.md
+  // §3.6): each adds the Wisp count of its smaller side, at least 1. The
+  // *next* stage's multiplier is this + 1, capped at SPLIT_MULTIPLIER_CAP.
   private splitSuccesses = 0;
   private highScore: number;
   private game!: Game; // assigned by resetToFreshRun() below, called from this constructor
@@ -625,7 +626,9 @@ export class GameSession {
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {
-        this.splitSuccesses = Math.min(this.splitSuccesses + 1, SPLIT_MULTIPLIER_CAP - 1);
+        // Each split adds its smaller side's Wisp count (at least 1).
+        const gain = Math.max(1, this.game.getLastSplitMultiplierGain());
+        this.splitSuccesses = Math.min(this.splitSuccesses + gain, SPLIT_MULTIPLIER_CAP - 1);
         this.multiplier = this.splitSuccesses + 1;
       }
       this.status = 'stageclear';

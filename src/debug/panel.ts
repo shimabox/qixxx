@@ -376,6 +376,7 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: false,
+      splitMultiplierGain: 0,
       stageCleared: false,
       closedLine: testLine(session),
     };
@@ -407,6 +408,7 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: true,
+      splitMultiplierGain: 1,
       stageCleared: true,
       closedLine: testLine(session),
     };

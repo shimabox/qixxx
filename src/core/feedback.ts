@@ -40,6 +40,11 @@ export interface ClaimFeedback {
   multiplier: number;
   /** True when this claim split the Wisps apart. */
   split: boolean;
+  /**
+   * How much this split raises the next stage's multiplier before the cap:
+   * the Wisp count of the smaller side (at least 1). 0 when not a split.
+   */
+  splitMultiplierGain: number;
   /** True when this claim cleared the stage (by occupancy or by a split). */
   stageCleared: boolean;
   /** The cells of the line that closed (a copy). */

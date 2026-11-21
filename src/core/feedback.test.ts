@@ -146,6 +146,7 @@ describe('claim notices', () => {
       stageClearBonus: scoreStageClearBonus(game.getOccupancy(), game.getRequiredOccupancy()),
       multiplier: 1,
       split: false,
+      splitMultiplierGain: 0,
       stageCleared: true,
       closedLine: [
         { x: 7, y: 1 },

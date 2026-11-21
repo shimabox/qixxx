@@ -24,6 +24,7 @@ function claim(share: number, overrides: Partial<ClaimFeedback> = {}): ClaimFeed
     areaScore: 50,
     bigClaim: false,
     nearMissBonus: 0,
+    splitMultiplierGain: 0,
     stageClearBonus: 0,
     multiplier: 1,
     split: false,
