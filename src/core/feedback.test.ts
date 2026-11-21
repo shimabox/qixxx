@@ -9,7 +9,7 @@ import { Ember } from './patrol';
 import { scoreAreaClaim, scoreStageClearBonus } from './scoring';
 import { runScriptedSession } from './scriptedRun';
 import { ClaimFeedback, MissFeedback } from './feedback';
-import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES } from '../config';
+import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MISS_BONUS } from '../config';
 
 const SCRIPTED_CASES = [
   { seed: 20261114, fieldWidth: 40, fieldHeight: 30 },
@@ -63,7 +63,7 @@ describe('captureFeedback does not change the run', () => {
     expect(misses).toBeGreaterThan(0);
   });
 
-  it('accounts for every point: per tick, the score rises by the notices areaScore plus the excess-occupancy bonus', () => {
+  it('accounts for every point: per tick, the score rises by the notices areaScore and close-call bonus plus the excess-occupancy bonus', () => {
     for (const options of SCRIPTED_CASES) {
       let lastScore = 0;
       let claimsSeen = 0;
@@ -75,7 +75,7 @@ describe('captureFeedback does not change the run', () => {
           const required = session.getGame().getRequiredOccupancy();
           let expected = 0;
           for (const n of notices) {
-            expected += n.areaScore;
+            expected += n.areaScore + n.nearMissBonus;
             if (n.stageCleared && !n.split) expected += scoreStageClearBonus(n.occupancyAfter, required);
           }
           claimsSeen += notices.length;
@@ -103,7 +103,7 @@ describe('captureFeedback does not change the run', () => {
             if (n.stageCleared && !n.split) {
               occupancyClears++;
               expect(notices).toHaveLength(1);
-              expect(n.stageClearBonus).toBe(gain - n.areaScore);
+              expect(n.stageClearBonus).toBe(gain - n.areaScore - n.nearMissBonus);
             } else {
               otherClaims++;
               expect(n.stageClearBonus).toBe(0);
@@ -141,6 +141,8 @@ describe('claim notices', () => {
       // 18 of 24 cells: well past BIG_CLAIM_SHARE, so a big claim.
       areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1, BIG_CLAIM_MULTIPLIER),
       bigClaim: true,
+      // The Wisp at x=8 is one cell from the line at x=7: a close call.
+      nearMissBonus: NEAR_MISS_BONUS,
       stageClearBonus: scoreStageClearBonus(game.getOccupancy(), game.getRequiredOccupancy()),
       multiplier: 1,
       split: false,

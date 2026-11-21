@@ -250,6 +250,7 @@ describe('claim sounds and the chain', () => {
       lineSpeed: 'fast',
       areaScore: 30,
       bigClaim: false,
+      nearMissBonus: 0,
       stageClearBonus: 0,
       multiplier: 1,
       split: false,

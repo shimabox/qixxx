@@ -30,6 +30,8 @@ import {
   TICK_RATE,
   BIG_CLAIM_SHARE,
   BIG_CLAIM_MULTIPLIER,
+  NEAR_MISS_DISTANCE_CELLS,
+  NEAR_MISS_BONUS,
 } from '../config';
 
 /**
@@ -190,6 +192,10 @@ export class Game {
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
   private graceTicks = 0;
+  // True once a Wisp head came within the near-miss distance of the line
+  // being drawn (see checkNearMiss()). One mark per line: it is read when
+  // the line closes and cleared whenever the line goes, for any reason.
+  private lineNearMissed = false;
   // Discrete occurrences this stage's simulation has produced but that
   // nobody has drained yet (docs/plan.md §3.8/§9.9: this is the entire
   // core -> audio bridge — Game never touches AudioContext itself). See
@@ -604,6 +610,7 @@ export class Game {
     // still handled the same tick it happens, not one tick late.
     this.despawnStrandedEmbers();
     this.maybeSpawnEmbers();
+    this.checkNearMiss();
 
     if (!inGraceAtTickStart && this.marker.isDrawing()) {
       const hitWisp = this.findWispTouching(markerPositionBeforeMove);
@@ -630,6 +637,9 @@ export class Game {
         const wispPositions = this.wisps.map((w) => w.getPosition());
         const claimResult: ClaimResult = claimArea(this.field, result.closedLine, wispPositions, lineSpeed);
         this.despawnIgniter();
+        // The line is gone either way: its mark is read here and not kept.
+        const nearMissed = this.lineNearMissed;
+        this.lineNearMissed = false;
         if (claimResult.accepted) {
           const occupancyBefore = this.occupancy;
           this.occupancy = claimResult.occupancy;
@@ -645,6 +655,8 @@ export class Game {
             bigClaim ? this.getBigClaimMultiplier() : 1
           );
           this.score += areaScore;
+          const nearMissBonus = nearMissed ? Math.floor(this.getNearMissBonus() * this.multiplier) : 0;
+          this.score += nearMissBonus;
           this.despawnStrandedEmbers();
           this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
@@ -672,6 +684,7 @@ export class Game {
               lineSpeed,
               areaScore,
               bigClaim,
+              nearMissBonus,
               stageClearBonus,
               multiplier: this.multiplier,
               split: claimResult.split,
@@ -681,6 +694,10 @@ export class Game {
           }
         }
       }
+    }
+    // A line retracted all the way back to its start is gone too.
+    if (!this.marker.isDrawing()) {
+      this.lineNearMissed = false;
     }
 
     // Grace is measured from tick start so a miss created above retains its
@@ -722,6 +739,47 @@ export class Game {
     }
 
     return result;
+  }
+
+  /**
+   * Marks the line being drawn when any Wisp's head is within the near-miss
+   * distance (the larger of the x and y differences) of one of its cells or
+   * of the marker. Looks only at the square of cells around each head (side
+   * 2 x distance + 1), so the cost does not grow with the line's length: the
+   * only LINE cells on the field are the line being drawn. Once marked, a
+   * line stays marked, so nothing more is looked at until it goes.
+   */
+  private checkNearMiss(): void {
+    if (this.lineNearMissed || !this.marker.isDrawing()) return;
+    const distance = Math.max(0, Math.floor(this.getNearMissDistance()));
+    const marker = this.marker.getPositionRef();
+    for (const wisp of this.wisps) {
+      const head = wisp.getTrailRef()[0];
+      if (!head) continue;
+      if (Math.abs(head.x - marker.x) <= distance && Math.abs(head.y - marker.y) <= distance) {
+        this.lineNearMissed = true;
+        return;
+      }
+      if (this.field.hasStateInRect(LINE, head.x - distance, head.y - distance, head.x + distance, head.y + distance)) {
+        this.lineNearMissed = true;
+        return;
+      }
+    }
+  }
+
+  /** How close (cells) a Wisp head must come to the line to mark it (NEAR_MISS_DISTANCE_CELLS). */
+  private getNearMissDistance(): number {
+    return NEAR_MISS_DISTANCE_CELLS;
+  }
+
+  /** What a marked line's accepted claim adds, before the multiplier (NEAR_MISS_BONUS). */
+  private getNearMissBonus(): number {
+    return NEAR_MISS_BONUS;
+  }
+
+  /** True while the line being drawn carries the near-miss mark (always false with no line). */
+  isLineNearMissed(): boolean {
+    return this.lineNearMissed;
   }
 
   /**
@@ -944,6 +1002,7 @@ export class Game {
     }
     this.events.push('miss');
     this.marker.cancelLine(this.field);
+    this.lineNearMissed = false;
     this.despawnIgniter();
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.graceTicks = MISS_GRACE_TICKS;

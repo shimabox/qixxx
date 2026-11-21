@@ -25,6 +25,12 @@ export interface ClaimFeedback {
   /** True when this claim filled at least BIG_CLAIM_SHARE of the field, so its area points were multiplied. */
   bigClaim: boolean;
   /**
+   * The close-call bonus this claim added on top of `areaScore`
+   * (NEAR_MISS_BONUS x the multiplier when a Wisp came within the near-miss
+   * distance of the line while it was drawn), 0 otherwise.
+   */
+  nearMissBonus: number;
+  /**
    * The excess-occupancy bonus this claim scored: scoreStageClearBonus()'s
    * value when it cleared the stage by occupancy, 0 for a split clear and for
    * a claim that did not clear the stage.

@@ -236,6 +236,15 @@ export const DEFAULT_SCORE_MULTIPLIER = 1;
 // the same way. The debug panel can change both at run time.
 export const BIG_CLAIM_SHARE = 0.15;
 export const BIG_CLAIM_MULTIPLIER = 1.5;
+// A close call: while a line is being drawn, every tick after the enemies
+// move, a Wisp head within NEAR_MISS_DISTANCE_CELLS (the larger of the x and
+// y differences) of a cell of that line or of the marker marks the line.
+// Closing a marked line into an accepted claim adds NEAR_MISS_BONUS x the
+// multiplier, once. The mark goes whenever the line does (a miss, a
+// rejected or accepted claim, retracting back to the start). The debug
+// panel can change both at run time.
+export const NEAR_MISS_DISTANCE_CELLS = 3;
+export const NEAR_MISS_BONUS = 200;
 
 // Colors (neon-like, not copying original)
 export const COLOR_BACKGROUND = '#0a0e27'; // Dark blue-black

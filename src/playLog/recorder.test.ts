@@ -13,6 +13,7 @@ function claim(overrides: Partial<ClaimFeedback> = {}): ClaimFeedback {
     lineSpeed: 'fast',
     areaScore: 50,
     bigClaim: false,
+    nearMissBonus: 0,
     stageClearBonus: 0,
     multiplier: 1,
     split: false,

@@ -50,6 +50,18 @@ describe('StageResultTally on a scripted run', () => {
   }
 });
 
+describe('StageResultTally', () => {
+  it('counts a close-call bonus in AREA, with no row of its own, and a big claim as scored', () => {
+    const tally = new StageResultTally();
+    tally.add({ areaScore: 2250, nearMissBonus: 0, stageClearBonus: 0 }); // a big claim, already x1.5
+    tally.add({ areaScore: 40, nearMissBonus: 400, stageClearBonus: 0 }); // a close call at x2
+    tally.add({ areaScore: 10, nearMissBonus: 0, stageClearBonus: 700 });
+    expect(tally.getArea()).toBe(2700);
+    expect(tally.getBonus()).toBe(700);
+    expect(tally.getTotal()).toBe(3400);
+  });
+});
+
 describe('StageResultCounter', () => {
   const final = { area: 12340, bonus: 1500, total: 13840 };
 

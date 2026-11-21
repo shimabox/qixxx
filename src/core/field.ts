@@ -105,6 +105,25 @@ export class Field {
     return cells;
   }
 
+  /**
+   * True if any cell of the rectangle x0..x1, y0..y1 (inclusive, clipped to
+   * the field) is in `state`. Reads the grid directly, for per-tick checks.
+   */
+  hasStateInRect(state: CellState, x0: number, y0: number, x1: number, y1: number): boolean {
+    const left = Math.max(0, x0);
+    const right = Math.min(this.width - 1, x1);
+    const top = Math.max(0, y0);
+    const bottom = Math.min(this.height - 1, y1);
+    const grid = this.grid;
+    for (let y = top; y <= bottom; y++) {
+      const row = y * this.width;
+      for (let i = row + left; i <= row + right; i++) {
+        if (grid[i] === state) return true;
+      }
+    }
+    return false;
+  }
+
   /** The occupancy's denominator: the field's initial UNCLAIMED cells (its interior). */
   getClaimableCellCount(): number {
     return this.unclaimedCount;

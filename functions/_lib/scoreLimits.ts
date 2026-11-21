@@ -10,6 +10,8 @@ import {
   STAGE_CLEAR_BONUS_PER_PERCENT_POINT,
   MIN_REQUIRED_OCCUPANCY,
   BIG_CLAIM_MULTIPLIER,
+  NEAR_MISS_BONUS,
+  TIME_LIMIT_TICKS,
 } from '../../src/config';
 
 // Upper bound on cells claimable in a single stage: the whole grid. The real
@@ -43,9 +45,16 @@ const MAX_STAGE_CLEAR_BONUS = Math.floor(
   (1 - MIN_REQUIRED_OCCUPANCY) * 100 * STAGE_CLEAR_BONUS_PER_PERCENT_POINT + 1e-9
 );
 
+// Upper bound on the close-call bonuses (NEAR_MISS_BONUS x the multiplier,
+// at most once per claim) a stage can add. A claim takes at least two ticks
+// (one into the field, one back onto a border), so a whole run — and so any
+// one stage of it — has at most TIME_LIMIT_TICKS / 2 claims, every one
+// assumed a close call at the highest multiplier.
+const MAX_NEAR_MISS_BONUS_PER_STAGE = Math.floor(TIME_LIMIT_TICKS / 2) * NEAR_MISS_BONUS * SPLIT_MULTIPLIER_CAP;
+
 // Per-stage ceiling: full-grid area score at the max multiplier, plus the
-// max clear bonus, once per stage played.
-const MAX_SCORE_PER_STAGE = MAX_AREA_SCORE_PER_STAGE + MAX_STAGE_CLEAR_BONUS;
+// max clear bonus and the most close-call bonuses, once per stage played.
+const MAX_SCORE_PER_STAGE = MAX_AREA_SCORE_PER_STAGE + MAX_STAGE_CLEAR_BONUS + MAX_NEAR_MISS_BONUS_PER_STAGE;
 
 /**
  * Conservative upper bound on the score obtainable by the time a player

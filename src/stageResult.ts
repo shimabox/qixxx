@@ -9,11 +9,13 @@ import { ScreenText, screenTextString } from './screenText';
 /** The parts of a claim notice (core/feedback.ts's ClaimFeedback) the result adds up. */
 export interface StageResultNotice {
   areaScore: number;
+  nearMissBonus: number;
   stageClearBonus: number;
 }
 
 /**
- * The points one stage has scored so far: the claims' area points and the
+ * The points one stage has scored so far: the claims' area points (close-call
+ * bonuses included, counted in AREA rather than a row of their own) and the
  * excess-occupancy bonus of the claim that cleared it. Reset when the next
  * stage starts and when a new run starts.
  */
@@ -22,7 +24,7 @@ export class StageResultTally {
   private bonus = 0;
 
   add(notice: StageResultNotice): void {
-    this.area += notice.areaScore;
+    this.area += notice.areaScore + notice.nearMissBonus;
     this.bonus += notice.stageClearBonus;
   }
 
