@@ -96,6 +96,7 @@ import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
 import { PlayLogStore } from './storage/playLog';
 import { PlayLogRecorder } from './playLog/recorder';
+import { suggestsEasy } from './playLog/summary';
 import type { PlayRecord } from './playLog/record';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
@@ -160,6 +161,8 @@ declare global {
         finished: boolean;
         /** The highlight line's text once it shows, else null. */
         highlight: string | null;
+        /** The EASY suggestion shows in the highlight's place. */
+        prompt: boolean;
         /** Which best line shows: 'new-record', 'to-best', 'to-best-near', or null before it shows / for none. */
         best: 'new-record' | 'to-best' | 'to-best-near' | null;
       };
@@ -837,6 +840,17 @@ const playLogListeners: Array<() => void> = [];
 // the run leaves GAME OVER or a replay opens, so no cue of it plays after.
 const gameOverTally = new GameOverRunTally();
 const gameOverResult = new GameOverResult();
+// THE EASY SUGGESTION: decided on the tick the live run reaches GAME OVER,
+// from the play log it was just kept in (src/playLog/summary.ts's
+// suggestsEasy()); shown in the highlight's place on the GAME OVER screen.
+// Taking TITLE from that screen once the suggestion is on it (easyPromptShown)
+// lights the Title screen's MODE toggle until it is pressed or a run starts;
+// TITLE before the suggestion appears, or RETRY, does nothing more.
+let easySuggested = false;
+// The suggestion has been seen on this GAME OVER screen: it appears a little
+// after the screen does (src/gameOverResult.ts), and TITLE works before that;
+// while the ranking submission form covers the modal, it is not seen yet.
+let easyPromptShown = false;
 
 // THE MUSIC (src/audio/bgm.ts): on every page, playing through the sound
 // effects' context and master gain, so the SOUND button turns both on and off
@@ -1156,6 +1170,7 @@ function init(): void {
         score: view.score,
         finished: view.finished,
         highlight: view.highlight && view.highlightShown ? gameOverHighlightText(view.highlight) : null,
+        prompt: view.prompt && view.promptShown,
         best:
           !best || !view.bestLineShown
             ? null
@@ -1322,6 +1337,7 @@ function toggleDifficulty(): void {
   // new difficulty's).
   debugPanel?.refresh();
   difficultyToggle.setDifficulty(next);
+  difficultyToggle.setAttention(false);
   // The board is a new one: the fill reveal must not compare it with the last.
   renderer.resetBoard();
   lastHudKey = '';
@@ -2028,6 +2044,13 @@ function updateLive(): void {
   });
   if (step.freshRun) {
     modalAction = null;
+    // Back on the Title screen from a GAME OVER that showed the EASY
+    // suggestion: the MODE toggle is lit. A retry went straight into a run,
+    // and a GAME OVER left before the suggestion appeared never showed it:
+    // nothing.
+    difficultyToggle.setAttention(easyPromptShown && !step.retried);
+    easySuggested = false;
+    easyPromptShown = false;
   } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
     // The next stage's board replaces this one: drop the effects tied to the
     // old board. SPLIT! and the travelling multiplier keep running.
@@ -2036,6 +2059,9 @@ function updateLive(): void {
     renderer.resetBoard();
     stageResultTally.reset();
   }
+
+  // A run started: the MODE toggle is no longer lit.
+  if (session.getStatus() !== 'title') difficultyToggle.setAttention(false);
 
   const events = session.drainEvents();
   // Records this tick's input if it played a tick (a no-op on title,
@@ -2056,7 +2082,10 @@ function updateLive(): void {
   // The play log counts this tick for the stage it started on, and closes
   // the run on the tick it reaches GAME OVER.
   playLogRecorder.observeTick({ stageBefore: stageBeforeThisTick, statusBefore: statusBeforeThisTick, claims, misses });
-  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') finishPlayLogRun();
+  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') {
+    const kept = finishPlayLogRun();
+    easySuggested = suggestsEasy(playLog.list(), kept);
+  }
   // The hints read what this tick did. A stage's play starts when the status
   // turns 'playing': a new run's from Title or GAME OVER, a later stage's
   // from STAGE CLEAR.
@@ -2382,6 +2411,7 @@ function renderFrame(): void {
         stage: session.getStage(),
         bestAtStart: runBestAtStart,
         recordsHighScore,
+        easyPrompt: easySuggested,
         tally: gameOverTally.snapshot(),
         reducedMotion,
         timing: {
@@ -2404,6 +2434,7 @@ function renderFrame(): void {
         // An EASY run is tagged, and not shared, as it is not ranked.
         share: session.getDifficulty() === 'normal',
         easy: session.getDifficulty() === 'easy',
+        easyPrompt: view.prompt,
       });
       sfx.playGameOver(reason);
       playGameOverCues(cues);
@@ -2419,8 +2450,13 @@ function renderFrame(): void {
     // The hint says what the keys do: retry, or wait for the submission panel
     // to be closed.
     if (gameOverModalShown) {
-      gameOverModal.setSubmissionHold(currentRetryHold().formShown);
-      gameOverModal.renderResult(gameOverResult.view());
+      const { formShown } = currentRetryHold();
+      gameOverModal.setSubmissionHold(formShown);
+      const resultView = gameOverResult.view();
+      gameOverModal.renderResult(resultView);
+      // Seen only once it is on screen with no ranking submission form over
+      // the modal: drawn behind the form, it has not been seen yet.
+      if (resultView.promptShown && !formShown) easyPromptShown = true;
     }
   } else {
     gameOverConfirmGate.reset();

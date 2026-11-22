@@ -71,6 +71,7 @@ const JAPANESE_SENTENCES: Record<string, string | ((...args: never[]) => string)
   'stageClear.next': 'キーかタップで次のステージへ',
   'gameOver.hintRetry': 'キーか盤面のタップでもう一度',
   'gameOver.hintSubmission': 'SUBMIT か SKIP で続行',
+  'gameOver.easyPrompt': 'タイトルで EASY を選べます',
   'ranking.notice':
     'X のハンドルは自己申告で、本人確認はしていません。スコアは投稿後に検査されることがあり、無効と分かった記録は削除されます。',
   'ranking.loading': '読み込み中...',

@@ -97,6 +97,47 @@ describe('GameOverResult — the score count-up', () => {
   });
 });
 
+describe('GameOverResult — the EASY suggestion', () => {
+  it('takes the highlight’s place and timing; the best line is as it was', () => {
+    const plain = new GameOverResult();
+    plain.start(input({ bestAtStart: 20000 }));
+    const prompted = new GameOverResult();
+    prompted.start(input({ bestAtStart: 20000, easyPrompt: true }));
+    expect(plain.view().highlight).not.toBeNull();
+    expect(plain.view().prompt).toBe(false);
+    expect(prompted.view().highlight).toBeNull();
+    expect(prompted.view().prompt).toBe(true);
+    for (let age = 1; age <= 100; age++) {
+      plain.step();
+      prompted.step();
+      const a = plain.view();
+      const b = prompted.view();
+      expect(b.promptShown, `age ${age}`).toBe(a.highlightShown);
+      expect(b.highlightShown).toBe(false);
+      expect({ best: b.bestLine, shown: b.bestLineShown }).toEqual({ best: a.bestLine, shown: a.bestLineShown });
+    }
+    expect(prompted.view().promptShown).toBe(true);
+  });
+
+  it('shows even for a run with no highlight, and at once with reduced motion', () => {
+    const none = new GameOverResult();
+    none.start(input({ score: 0, tally: { splits: 0, claims: 0, bestShare: 0 }, easyPrompt: true }));
+    for (let i = 0; i < 40; i++) none.step();
+    expect(none.view()).toMatchObject({ highlight: null, prompt: true, promptShown: true });
+
+    const still = new GameOverResult();
+    still.start(input({ reducedMotion: true, easyPrompt: true }));
+    expect(still.view()).toMatchObject({ prompt: true, promptShown: true, highlightShown: false });
+  });
+
+  it('is off by default', () => {
+    const result = new GameOverResult();
+    result.start(input());
+    for (let i = 0; i < 100; i++) result.step();
+    expect(result.view()).toMatchObject({ prompt: false, promptShown: false, highlightShown: true });
+  });
+});
+
 describe('GameOverResult — the lines after the count', () => {
   it('shows the highlight GAMEOVER_HIGHLIGHT_DELAY_TICKS after the stop, the best line GAMEOVER_RECORD_DELAY_TICKS after it', () => {
     const result = new GameOverResult();

@@ -120,6 +120,12 @@ export interface GameOverResultInput {
   bestAtStart: number;
   /** The run may save its high score (a normal run with no debug override). */
   recordsHighScore: boolean;
+  /**
+   * The screen suggests EASY (src/playLog/summary.ts's suggestsEasy()): the
+   * suggestion takes the highlight's place and timing, and the run's
+   * highlight is not shown. Default false.
+   */
+  easyPrompt?: boolean;
   tally: GameOverTallySnapshot;
   /** prefers-reduced-motion: the final display at once, no count. */
   reducedMotion: boolean;
@@ -137,6 +143,10 @@ export interface GameOverResultView {
   popScale: number;
   highlight: GameOverHighlight | null;
   highlightShown: boolean;
+  /** The EASY suggestion is shown in the highlight's place (`highlight` is then null). */
+  prompt: boolean;
+  /** The suggestion is due — when a highlight would show. */
+  promptShown: boolean;
   bestLine: GameOverBestLine | null;
   bestLineShown: boolean;
   /** NEW RECORD's scale (1 outside its pop). */
@@ -174,7 +184,8 @@ export class GameOverResult {
   start(input: GameOverResultInput): GameOverCue[] {
     this.input = { ...input, timing: { ...input.timing } };
     this.age = 0;
-    this.highlight = chooseGameOverHighlight(input.tally, input.stage);
+    // The EASY suggestion takes the highlight's place.
+    this.highlight = input.easyPrompt ? null : chooseGameOverHighlight(input.tally, input.stage);
     this.bestLine = gameOverBestLine(input);
     return this.cuesAt(0);
   }
@@ -204,6 +215,8 @@ export class GameOverResult {
         popScale: 1,
         highlight: null,
         highlightShown: false,
+        prompt: false,
+        promptShown: false,
         bestLine: null,
         bestLineShown: false,
         recordPopScale: 1,
@@ -225,6 +238,8 @@ export class GameOverResult {
       popScale: counts && motion ? popAt(this.age - end, input.timing.popTicks) : 1,
       highlight: this.highlight,
       highlightShown: this.highlight !== null && this.age >= this.highlightAge(),
+      prompt: input.easyPrompt === true,
+      promptShown: input.easyPrompt === true && this.age >= this.highlightAge(),
       bestLine: this.bestLine,
       bestLineShown: this.bestLine !== null && this.age >= recordAge,
       recordPopScale: newRecord && motion ? popAt(sparkAge, input.timing.popTicks) : 1,

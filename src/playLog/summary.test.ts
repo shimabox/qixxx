@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { summarizePlayLog, trailingRunsAtOrBelow } from './summary';
+import { summarizePlayLog, suggestsEasy, trailingRunsAtOrBelow } from './summary';
+import { EASY_PROMPT_STREAK_RUNS, EASY_PROMPT_STREAK_STAGE } from '../config';
 import type { PlayRecord, StageTally } from './record';
 
 function stage(n: number, claims: number, splits: number, wisp: number, ember: number, igniter: number, cleared: boolean): StageTally {
@@ -108,5 +109,28 @@ describe('trailingRunsAtOrBelow', () => {
 
   it('no runs: 0', () => {
     expect(trailingRunsAtOrBelow([], 2)).toBe(0);
+  });
+});
+
+describe('suggestsEasy', () => {
+  const ended = (stages: number[]) => stages.map((s) => run(s, 0, 'life', [stage(1, 0, 0, 0, 0, 0, false)]));
+
+  it('suggests EASY from the third kept run in a row ending on stage 3 or earlier', () => {
+    expect(EASY_PROMPT_STREAK_RUNS).toBe(3);
+    expect(EASY_PROMPT_STREAK_STAGE).toBe(3);
+    expect(suggestsEasy(ended([1]), true)).toBe(false);
+    expect(suggestsEasy(ended([1, 3]), true)).toBe(false);
+    expect(suggestsEasy(ended([1, 3, 2]), true)).toBe(true);
+    expect(suggestsEasy(ended([3, 3, 3, 3]), true)).toBe(true);
+  });
+
+  it('starts counting again after a kept run reached stage 4', () => {
+    expect(suggestsEasy(ended([1, 1, 1, 4]), true)).toBe(false);
+    expect(suggestsEasy(ended([1, 1, 4, 1, 2]), true)).toBe(false);
+    expect(suggestsEasy(ended([1, 1, 4, 1, 2, 3]), true)).toBe(true);
+  });
+
+  it('never suggests it for a run that was not kept', () => {
+    expect(suggestsEasy(ended([1, 1, 1]), false)).toBe(false);
   });
 });

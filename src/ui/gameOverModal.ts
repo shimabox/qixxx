@@ -58,6 +58,12 @@ export interface GameOverScoreInfo {
   share?: boolean;
   /** The run was an EASY one: an EASY tag beside the GAME OVER heading. */
   easy?: boolean;
+  /**
+   * Suggest EASY (src/playLog/summary.ts's suggestsEasy()) in the highlight's
+   * place, which is then not shown. Its place is kept from the start; it
+   * appears when renderResult() says so.
+   */
+  easyPrompt?: boolean;
 }
 
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
@@ -108,6 +114,8 @@ export class GameOverModal {
   private readonly scoreLine: HTMLDivElement;
   private readonly scoreValue: HTMLSpanElement;
   private readonly highlightLine: HTMLDivElement;
+  private readonly promptLine: HTMLDivElement;
+  private readonly promptText: HTMLSpanElement;
   private readonly bestSlot: HTMLDivElement;
   private readonly toBestLine: HTMLDivElement;
   private readonly sparkLayer: HTMLDivElement;
@@ -164,7 +172,7 @@ export class GameOverModal {
     this.easyTag = document.createElement('span');
     this.easyTag.id = 'gameover-easy';
     this.easyTag.style.display = 'none';
-    this.easyTag.style.marginLeft = '0.5em';
+    this.easyTag.style.marginLeft = '0.8em';
     this.easyTag.style.padding = '0 0.3em';
     this.easyTag.style.fontSize = '0.6em';
     this.easyTag.style.lineHeight = '0';
@@ -219,6 +227,24 @@ export class GameOverModal {
     this.highlightLine.style.color = HUD_ACCENT_COLOR;
     this.highlightLine.style.display = 'none';
     this.container.appendChild(this.highlightLine);
+
+    // The EASY suggestion, after a run of early GAME OVERs: shown instead of
+    // the highlight, in its place and at its size and timing, on one line.
+    // A sentence, so the Japanese page gives its text the Japanese font —
+    // in a span of line height 0, so that font never makes the line taller
+    // than the highlight's.
+    this.promptLine = document.createElement('div');
+    this.promptLine.id = 'gameover-easy-prompt';
+    this.promptLine.style.fontWeight = 'bold';
+    this.promptLine.style.color = HUD_ACCENT_COLOR;
+    this.promptLine.style.whiteSpace = 'nowrap';
+    this.promptLine.style.display = 'none';
+    this.promptText = document.createElement('span');
+    this.promptText.id = 'gameover-easy-prompt-text';
+    this.promptText.style.lineHeight = '0';
+    applySentenceFont(this.promptText);
+    this.promptLine.appendChild(this.promptText);
+    this.container.appendChild(this.promptLine);
 
     this.bestSlot = document.createElement('div');
     this.bestSlot.style.position = 'relative';
@@ -338,10 +364,14 @@ export class GameOverModal {
       this.reasonLine.style.display = 'none';
     }
     // The lines this run will show keep their place, hidden, from now on.
-    const highlight = info.highlight ?? null;
+    const prompt = info.easyPrompt === true;
+    const highlight = prompt ? null : (info.highlight ?? null);
     this.highlightLine.textContent = highlight ? gameOverHighlightText(highlight) : '';
     this.highlightLine.style.display = highlight ? 'block' : 'none';
     this.highlightLine.style.visibility = 'hidden';
+    this.promptText.textContent = prompt ? t('gameOver.easyPrompt') : '';
+    this.promptLine.style.display = prompt ? 'block' : 'none';
+    this.promptLine.style.visibility = 'hidden';
     const best = info.bestLine ?? null;
     this.bestSlot.style.display = best ? 'block' : 'none';
     this.newRecordLine.textContent = best?.kind === 'new-record' ? t('gameOver.newRecord', best.delta) : '';
@@ -383,6 +413,7 @@ export class GameOverModal {
       view.score,
       view.popScale.toFixed(3),
       view.highlightShown,
+      view.promptShown,
       view.bestLineShown,
       view.recordPopScale.toFixed(3),
       view.sparkProgress === null ? '-' : view.sparkProgress.toFixed(3),
@@ -392,6 +423,7 @@ export class GameOverModal {
     this.scoreValue.textContent = t('gameOver.score', view.score);
     this.scoreValue.style.transform = view.popScale === 1 ? '' : `scale(${view.popScale})`;
     this.highlightLine.style.visibility = view.highlightShown ? 'visible' : 'hidden';
+    this.promptLine.style.visibility = view.promptShown ? 'visible' : 'hidden';
     const bestVisibility = view.bestLineShown ? 'visible' : 'hidden';
     this.newRecordLine.style.visibility = bestVisibility;
     this.toBestLine.style.visibility = bestVisibility;

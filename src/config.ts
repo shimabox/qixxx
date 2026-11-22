@@ -129,12 +129,18 @@ export const EASY_INITIAL_LIVES = 5;
 // EASY_PROMPT_STREAK_STAGE or earlier. Back on the Title screen after it, the
 // MODE button's border lights up and pulses EASY_PROMPT_TOGGLE_PULSE_COUNT
 // times, EASY_PROMPT_TOGGLE_PULSE_SEC each (lit and still with reduced
-// motion), in EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR.
+// motion), in EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR. Its glow (a box-shadow, CSS
+// px) is EASY_PROMPT_TOGGLE_GLOW_REST_* while lit and at each end of a pulse,
+// and EASY_PROMPT_TOGGLE_GLOW_PEAK_* in the middle of a pulse.
 export const EASY_PROMPT_STREAK_RUNS = 3;
 export const EASY_PROMPT_STREAK_STAGE = 3;
 export const EASY_PROMPT_TOGGLE_PULSE_COUNT = 3;
 export const EASY_PROMPT_TOGGLE_PULSE_SEC = 1.6;
 export const EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR = '#ffffff';
+export const EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX = 6;
+export const EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX = 1;
+export const EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX = 14;
+export const EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX = 5;
 // Grace period after a miss (ticks) during which no further miss can be
 // triggered (docs/plan.md §3.5 sanity: without it, an enemy sharing the
 // marker's cell — e.g. an Ember passing over a stationary marker — would

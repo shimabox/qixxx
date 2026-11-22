@@ -2,6 +2,7 @@
 // end, how, what lives are lost to on each stage, the scores and the claims.
 // DOM-free.
 import { emptyMissTally, MISS_CAUSES, type MissTally, type PlayRecord } from './record';
+import { EASY_PROMPT_STREAK_RUNS, EASY_PROMPT_STREAK_STAGE } from '../config';
 
 export interface StageCount {
   stage: number;
@@ -99,4 +100,15 @@ export function trailingRunsAtOrBelow(runs: readonly PlayRecord[], stage: number
     count++;
   }
   return count;
+}
+
+/**
+ * Whether the GAME OVER screen suggests EASY: only for a run just kept in the
+ * play log (`kept`), when the log's newest EASY_PROMPT_STREAK_RUNS runs or
+ * more in a row — that run included — ended on stage
+ * EASY_PROMPT_STREAK_STAGE or earlier. A run not kept (EASY, `?seed=`, debug
+ * tuned) is never in `runs`, so it neither counts nor breaks the streak.
+ */
+export function suggestsEasy(runs: readonly PlayRecord[], kept: boolean): boolean {
+  return kept && trailingRunsAtOrBelow(runs, EASY_PROMPT_STREAK_STAGE) >= EASY_PROMPT_STREAK_RUNS;
 }

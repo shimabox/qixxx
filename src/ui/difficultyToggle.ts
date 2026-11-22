@@ -32,6 +32,10 @@ import {
   EASY_PROMPT_TOGGLE_PULSE_COUNT,
   EASY_PROMPT_TOGGLE_PULSE_SEC,
   EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR,
+  EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX,
+  EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX,
+  EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX,
+  EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX,
 } from '../config';
 import { t } from '../i18n';
 import type { Difficulty } from '../core/difficulty';
@@ -91,6 +95,10 @@ export class DifficultyToggle {
     button.style.setProperty('--difficulty-glow', EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR);
     button.style.setProperty('--difficulty-pulse-sec', `${EASY_PROMPT_TOGGLE_PULSE_SEC}s`);
     button.style.setProperty('--difficulty-pulse-count', String(EASY_PROMPT_TOGGLE_PULSE_COUNT));
+    button.style.setProperty('--difficulty-glow-rest-blur', `${EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX}px`);
+    button.style.setProperty('--difficulty-glow-rest-spread', `${EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX}px`);
+    button.style.setProperty('--difficulty-glow-peak-blur', `${EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX}px`);
+    button.style.setProperty('--difficulty-glow-peak-spread', `${EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX}px`);
     button.textContent = t('difficulty.toggleNormal');
     button.addEventListener('click', (event) => {
       this.options.onToggle();

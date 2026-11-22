@@ -90,6 +90,8 @@ export const messages = {
   'gameOver.highlight.bestClaim': same((percent: number) => `BEST CLAIM ${percent}%`),
   'gameOver.highlight.stage': same((stage: number) => `REACHED STAGE ${stage}`),
   'gameOver.toBest': same((points: number) => `${points} TO HI SCORE`),
+  // In the highlight's place, after a run of early GAME OVERs: a sentence.
+  'gameOver.easyPrompt': tr('TRY EASY MODE ON TITLE', 'タイトルで EASY を選べます'),
   'gameOver.retry': same('RETRY'),
   'gameOver.title': same('TITLE'),
   'gameOver.share': same('POST TO X'),
