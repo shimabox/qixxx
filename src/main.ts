@@ -44,7 +44,6 @@ import {
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
   FX_START_CUE_MIN_LINE_DISPLAY_PX,
-  HUD_WORST_CASE_STATS_TEXT,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
   RULESET_VERSION,
@@ -54,7 +53,6 @@ import {
   COLOR_FX_NEON_CYAN,
   COLOR_FX_NEON_MAGENTA,
   FX_TEXT_FONT_FAMILY,
-  INITIAL_LIVES,
   HUD_MULTIPLIER_BASE_SCALE,
   HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE,
   HUD_GAUGE_HEIGHT_PX,
@@ -80,7 +78,16 @@ import {
   BGM_GAMEOVER_FADE_SEC,
 } from './config';
 import { hudGoalText } from './hudGoal';
-import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
+import {
+  floorPercent,
+  hudLines,
+  hudWorstCaseStatsText,
+  livesText,
+  HUD_SCORE_SLOT,
+  HUD_LIVES_SLOT,
+  MultiplierEmphasis,
+} from './hudText';
+import { initialLivesFor, type Difficulty } from './core/difficulty';
 import { detectLocale, getLocale, setLocale, t } from './i18n';
 import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
 import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
@@ -745,6 +752,9 @@ let hudGaugeGoal: HTMLDivElement;
 // frame right after a resize would wrongly skip rewriting the DOM into the
 // new line layout).
 let hudTwoLineMode = false;
+// The difficulty updateHudMode() last measured the single line for (see
+// measureRequiredSingleLineWidth()), or null before the first measure.
+let hudLayoutDifficulty: Difficulty | null = null;
 
 // Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
 // P3): `null` is a sentinel distinct from any real screenText() result
@@ -1088,6 +1098,7 @@ function init(): void {
   window.addEventListener('pointerup', () => sfx.resume());
   window.addEventListener('touchend', () => sfx.resume());
 
+  hudLayoutDifficulty = session.getDifficulty();
   fitCanvasToViewport();
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
@@ -1488,14 +1499,21 @@ function measureNonHudRowWidth(): number {
 // value: a 'seeded' run's `SEED <n>  ` can be measured exactly here rather
 // than guessed at some hypothetical worst case, since unlike SCORE/HI it can
 // never change again once `?seed=` is parsed in init().
+//
+// The HUD's difficulty is that of the session it shows (currentSession()):
+// an EASY run adds its `EASY  ` lead and two more lives marks
+// (hudWorstCaseStatsText()); a NORMAL one measures exactly as before.
+// renderFrame() decides again whenever the shown difficulty changes
+// (syncHudDifficulty()).
 function measureRequiredSingleLineWidth(): number {
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  const difficulty = currentSession().getDifficulty();
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
   const probe = document.createElement('span');
   probe.style.position = 'absolute';
   probe.style.visibility = 'hidden';
   probe.style.whiteSpace = 'nowrap';
   probe.style.font = window.getComputedStyle(hud).font;
-  probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  probe.textContent = `${modePrefix}${hudWorstCaseStatsText(initialLivesFor(difficulty))}`;
   // Measured in the HUD's own language: on a Japanese page, <body> would hand
   // the probe `lang="ja"`, whose generic monospace may be another face with
   // another width than the HUD's (src/ui/sentenceFont.ts).
@@ -1605,7 +1623,11 @@ function updateHud(): void {
   // the counting-up display value).
   // A first play has no best to chase until its first point: plain HI then.
   const noBestYet = runBestAtStart === 0 && activeSession.getScore() === 0;
-  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || noBestYet;
+  // The difficulty of the session shown: a ranking replay's is NORMAL even
+  // while EASY is picked. An EASY run chases nothing: its score is never a
+  // best or a ranking entry, so the slot shows the NORMAL high score.
+  const difficulty = activeSession.getDifficulty();
+  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || difficulty === 'easy' || noBestYet;
   const goal = hudGoalText({
     mode: goalIsHiScore ? 'hi' : 'chase',
     score: activeSession.getScore(),
@@ -1623,13 +1645,13 @@ function updateHud(): void {
 
   updateGauge(occupancyPercent, goalPercent);
 
-  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode].join('|');
+  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode, difficulty].join('|');
   if (key === lastHudKey) return;
   lastHudKey = key;
 
   // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal',
-  // `SEED <n>  ` for a `?seed=` run.
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  // `SEED <n>  ` for a `?seed=` run, led by `EASY  ` for an EASY one.
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
   const { lines, timeLine } = hudLines(
     {
       modePrefix,
@@ -1647,7 +1669,8 @@ function updateHud(): void {
   // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
   hudMultiplier.textContent = t('hud.multiplier', multiplier);
   hudScore.textContent = String(score);
-  hudLives.textContent = livesText(lives, INITIAL_LIVES);
+  // One slot per life the shown run started with: five for an EASY run.
+  hudLives.textContent = livesText(lives, initialLivesFor(difficulty));
   const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
   lineElements.forEach((el, index) => {
     el.textContent = '';
@@ -2141,8 +2164,21 @@ function resolveHintMark(view: HintView<Ember> | null): ResolvedHintMark | null 
   return game.getEmbers().includes(mark.ember) ? { kind: 'ring', centers: [mark.ember.getPosition()] } : null;
 }
 
+// The HUD's line count is decided for the difficulty of the session it shows
+// (measureRequiredSingleLineWidth()). Whenever that changes — the Title
+// screen's toggle, a new run built at another difficulty, a ranking replay
+// opening over an EASY pick or closing — the layout is decided again before
+// the HUD is written.
+function syncHudDifficulty(): void {
+  const difficulty = currentSession().getDifficulty();
+  if (difficulty === hudLayoutDifficulty) return;
+  hudLayoutDifficulty = difficulty;
+  fitCanvasToViewport();
+}
+
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
+  syncHudDifficulty();
   const activeSession = currentSession();
   const game = activeSession.getGame();
   // The board drawn: the Title demo's while it plays, otherwise the active
@@ -2321,8 +2357,9 @@ function renderFrame(): void {
         reason: session.getGameOverReason() ?? undefined,
         highlight: view.highlight,
         bestLine: view.bestLine,
-        // An EASY run is not shared, as it is not ranked.
+        // An EASY run is tagged, and not shared, as it is not ranked.
         share: session.getDifficulty() === 'normal',
+        easy: session.getDifficulty() === 'easy',
       });
       sfx.playGameOver(reason);
       playGameOverCues(cues);

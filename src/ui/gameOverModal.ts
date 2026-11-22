@@ -56,6 +56,8 @@ export interface GameOverScoreInfo {
   bestLine?: GameOverBestLine | null;
   /** POST TO X is offered (the default); false hides it — an EASY run is not shared. */
   share?: boolean;
+  /** The run was an EASY one: an EASY tag beside the GAME OVER heading. */
+  easy?: boolean;
 }
 
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
@@ -100,6 +102,7 @@ function tweetIntentUrl(info: GameOverScoreInfo, id: string): string {
 export class GameOverModal {
   private readonly container: HTMLDivElement;
   private readonly heading: HTMLDivElement;
+  private readonly easyTag: HTMLSpanElement;
   private readonly reasonLine: HTMLDivElement;
   private readonly newRecordLine: HTMLDivElement;
   private readonly scoreLine: HTMLDivElement;
@@ -155,6 +158,21 @@ export class GameOverModal {
     this.heading.textContent = t('gameOver.heading');
     this.heading.style.fontSize = '1.3em';
     this.heading.style.fontWeight = 'bold';
+    this.heading.style.whiteSpace = 'nowrap';
+    // The EASY tag: small and boxed after the heading, on its line — its
+    // line height 0 keeps the heading's line as tall as without it.
+    this.easyTag = document.createElement('span');
+    this.easyTag.id = 'gameover-easy';
+    this.easyTag.style.display = 'none';
+    this.easyTag.style.marginLeft = '0.5em';
+    this.easyTag.style.padding = '0 0.3em';
+    this.easyTag.style.fontSize = '0.6em';
+    this.easyTag.style.lineHeight = '0';
+    this.easyTag.style.verticalAlign = 'middle';
+    this.easyTag.style.color = HUD_ACCENT_COLOR;
+    this.easyTag.style.outline = `1px solid ${HUD_ACCENT_COLOR}`;
+    this.easyTag.style.outlineOffset = '1px';
+    this.heading.appendChild(this.easyTag);
     this.container.appendChild(this.heading);
 
     // TIME UP! (docs/plans/2026-08-13-time-limit-mode): hidden by default,
@@ -344,6 +362,9 @@ export class GameOverModal {
     this.setSubmissionHold(false);
     this.resetShareButton();
     this.shareButton.style.display = info.share === false ? 'none' : '';
+    // Its text only while shown, so the modal's text reads as before otherwise.
+    this.easyTag.textContent = info.easy ? t('difficulty.easy') : '';
+    this.easyTag.style.display = info.easy ? 'inline' : 'none';
     this.container.style.display = 'flex';
   }
 

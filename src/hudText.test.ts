@@ -9,7 +9,9 @@ import {
   HUD_MULTIPLIER_SLOT,
   HUD_LIVES_SLOT,
   MultiplierEmphasis,
+  hudWorstCaseStatsText,
 } from './hudText';
+import { EASY_INITIAL_LIVES, HUD_WORST_CASE_STATS_TEXT, INITIAL_LIVES } from './config';
 
 describe('occupancy and lives', () => {
   it('shows current/goal and what is left, never below 0', () => {
@@ -23,6 +25,19 @@ describe('occupancy and lives', () => {
     expect(floorPercent(0.29)).toBe(29);
     expect(floorPercent(0.4199)).toBe(41);
     expect(floorPercent(1.2)).toBe(100);
+  });
+
+  it('draws an EASY run’s five lives as five marks, never ◆x5', () => {
+    expect(livesText(5, 5)).toBe('◆◆◆◆◆');
+    expect(livesText(4, 5)).toBe('◆◆◆◆◇');
+    expect(livesText(0, 5)).toBe('◇◇◇◇◇');
+  });
+
+  it('widens only the lives of the worst-case single-line text for more slots', () => {
+    expect(hudWorstCaseStatsText(INITIAL_LIVES)).toBe(HUD_WORST_CASE_STATS_TEXT);
+    const easy = hudWorstCaseStatsText(EASY_INITIAL_LIVES);
+    expect(easy).toBe(HUD_WORST_CASE_STATS_TEXT.replace('◆◆◇', '◆◆◆◆◇'));
+    expect(easy.length).toBe(HUD_WORST_CASE_STATS_TEXT.length + EASY_INITIAL_LIVES - INITIAL_LIVES);
   });
 
   it('draws one mark per life slot', () => {
@@ -75,6 +90,16 @@ describe('hudLines', () => {
       'STAGE 3  SCORE 12345  HI 20000',
       '41%/75% 34% LEFT  ◆◆◇  x2',
       'SEED 42  TIME 2:41.3',
+    ]);
+  });
+
+  it('an EASY run: EASY leads the line, on the TIME line in two-line mode', () => {
+    const easy = { ...input, modePrefix: 'EASY  ', goal: 'HI 20000', goalIsHiScore: true };
+    expect(render(hudLines(easy, false).lines[0])).toBe('EASY  STAGE 3  SCORE 12345  HI 20000  TIME 2:41.3  41%/75% 34% LEFT  ◆◆◇  x2');
+    expect(hudLines(easy, true).lines.map(render)).toEqual([
+      'STAGE 3  SCORE 12345  HI 20000',
+      '41%/75% 34% LEFT  ◆◆◇  x2',
+      'EASY  TIME 2:41.3',
     ]);
   });
 });

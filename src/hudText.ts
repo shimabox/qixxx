@@ -4,6 +4,7 @@
 // the parts into the HUD's line elements. The words come from the text
 // table (src/i18n/) and stay English in every language.
 import { t } from './i18n';
+import { HUD_WORST_CASE_STATS_TEXT, INITIAL_LIVES } from './config';
 
 /** A whole percent of a 0-1 share, rounded down (a hair of tolerance keeps 0.7 from reading 69). */
 export function floorPercent(share: number): number {
@@ -26,6 +27,15 @@ export function livesText(lives: number, slots: number): string {
   return '◆'.repeat(left) + '◇'.repeat(slots - left);
 }
 
+/**
+ * config.ts's HUD_WORST_CASE_STATS_TEXT for a run of `livesSlots` lives
+ * (an EASY run's EASY_INITIAL_LIVES): its lives marks widened to that many
+ * slots, everything else as it is. INITIAL_LIVES gives the constant itself.
+ */
+export function hudWorstCaseStatsText(livesSlots: number): string {
+  return HUD_WORST_CASE_STATS_TEXT.replace(livesText(INITIAL_LIVES - 1, INITIAL_LIVES), livesText(livesSlots - 1, livesSlots));
+}
+
 /** Where main.ts drops its own SCORE and multiplier spans into a line. */
 export const HUD_SCORE_SLOT = { slot: 'score' } as const;
 export const HUD_MULTIPLIER_SLOT = { slot: 'multiplier' } as const;
@@ -34,7 +44,7 @@ export const HUD_LIVES_SLOT = { slot: 'lives' } as const;
 export type HudPart = string | typeof HUD_SCORE_SLOT | typeof HUD_MULTIPLIER_SLOT | typeof HUD_LIVES_SLOT;
 
 export interface HudTextInput {
-  /** runMode.ts's resolveHudModePrefix(): '' or `SEED <n>  `. */
+  /** runMode.ts's resolveHudModePrefix(): '', `SEED <n>  `, `EASY  ` or `EASY  SEED <n>  `. */
   modePrefix: string;
   stage: number;
   hiScore: number;

@@ -39,6 +39,9 @@ export const messages = {
   // English on both pages.
   'sound.off': same('SOUND: OFF'),
   'sound.on': same('SOUND: ON'),
+  // The EASY tag on the HUD and the GAME OVER screen: a label, English on
+  // both pages.
+  'difficulty.easy': same('EASY'),
 
   // --- Pause -----------------------------------------------------------------
   'pause.title': same('PAUSED'),
