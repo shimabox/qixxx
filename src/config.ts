@@ -691,6 +691,27 @@ export const COLOR_FX_FLASH_DARK = '#000000';
 export const COLOR_FX_OUTLINE = '#0a0e27'; // dark outline keeps popups/SPLIT! readable on any fill
 export const COLOR_FX_POPUP = '#ffffff';
 export const COLOR_FX_SPLIT = '#ffe066';
+// The start cue: as each stage starts, rings close in on the marker so its
+// start — which moves from stage 2 — is seen at a glance. Shown for the stage
+// title's time (fxParams.stageTitleTicks), as FX_START_CUE_PULSES rings one
+// after another, each shrinking from FROM_RADIUS to TO_RADIUS cells while it
+// brightens. With reduced motion: one ring of REDUCED_RADIUS cells that
+// stays its size and fades out. Always centred on where the marker is when
+// the frame is drawn; clipped to the field. Display only.
+export const FX_START_CUE_PULSES = 2;
+export const FX_START_CUE_FROM_RADIUS_CELLS = 12;
+export const FX_START_CUE_TO_RADIUS_CELLS = 2.5;
+export const FX_START_CUE_REDUCED_RADIUS_CELLS = 5;
+// The ring's alpha at the start of a pulse (it reaches 1 as it lands).
+export const FX_START_CUE_MIN_ALPHA = 0.35;
+export const FX_START_CUE_LINE_WIDTH_PX = 2.5; // logical canvas px
+// The ring's thin white core, as a share of the ring's line width.
+export const FX_START_CUE_CORE_WIDTH_RATIO = 1 / 3;
+// ...and never thinner than this many CSS px on screen, however far the
+// field is scaled down (a phone held sideways shows it at ~0.3x).
+export const FX_START_CUE_MIN_LINE_DISPLAY_PX = 2;
+export const FX_START_CUE_GLOW_BLUR = 10; // logical canvas px
+export const COLOR_FX_START_CUE = COLOR_FX_NEON_CYAN;
 
 // In-play hints (src/hints/): a short line over the field, plus a mark on the
 // field or a glowing touch button, the first time a situation comes up.

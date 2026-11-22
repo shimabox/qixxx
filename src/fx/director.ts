@@ -19,7 +19,14 @@ import type { Point } from '../core/field';
 import { FxParams, FxShakeSpec, ClaimPraise, classifyClaimShare, praiseForClaimShare } from './params';
 import { BannerGlitch, bannerGlitch, popupBounceScale, popupChannelOffset } from './textGlitch';
 import { t } from '../i18n';
-import { FX_MISS_REASON_FADE_TICKS } from '../config';
+import {
+  FX_MISS_REASON_FADE_TICKS,
+  FX_START_CUE_PULSES,
+  FX_START_CUE_FROM_RADIUS_CELLS,
+  FX_START_CUE_TO_RADIUS_CELLS,
+  FX_START_CUE_REDUCED_RADIUS_CELLS,
+  FX_START_CUE_MIN_ALPHA,
+} from '../config';
 
 export interface FxLineGlow {
   cells: readonly Point[];
@@ -174,6 +181,20 @@ export interface FxFrame {
   claimTags: FxClaimTags[];
   /** The stage's title, while shown (reduced motion too, without the pop and the fade). */
   stageTitle: FxStageTitle | null;
+  /** The ring around the marker as a stage starts, while shown (reduced motion too, without shrinking). */
+  startCue: FxStartCue | null;
+}
+
+/**
+ * The start cue's ring for one frame. It has no position of its own: the
+ * renderer centres it on the marker as it draws, so it follows the marker
+ * if the player moves during the cue.
+ */
+export interface FxStartCue {
+  age: number;
+  /** Radius in cells. */
+  radiusCells: number;
+  alpha: number;
 }
 
 interface Timed {
@@ -276,6 +297,25 @@ function labelAlpha(effect: Timed, reduced: boolean): number {
   return Math.min(1, (effect.duration - effect.age) / LABEL_FADE_TICKS);
 }
 
+/**
+ * The start cue's ring at `cue.age`: FX_START_CUE_PULSES rings in turn,
+ * each shrinking toward the marker and brightening over its share of the
+ * time; with reduced motion one ring of a fixed size, fading out.
+ */
+export function startCueFrame(cue: Timed, reduced: boolean): FxStartCue {
+  if (reduced) {
+    return { age: cue.age, radiusCells: FX_START_CUE_REDUCED_RADIUS_CELLS, alpha: 1 - cue.age / cue.duration };
+  }
+  const pulses = Math.max(1, Math.floor(FX_START_CUE_PULSES));
+  const pulseTicks = cue.duration / pulses;
+  const u = Math.min(1, (cue.age % pulseTicks) / pulseTicks);
+  return {
+    age: cue.age,
+    radiusCells: FX_START_CUE_FROM_RADIUS_CELLS + (FX_START_CUE_TO_RADIUS_CELLS - FX_START_CUE_FROM_RADIUS_CELLS) * u,
+    alpha: FX_START_CUE_MIN_ALPHA + (1 - FX_START_CUE_MIN_ALPHA) * u,
+  };
+}
+
 // Shards break off one after another: the last one starts this share of the
 // shard time after the first, then every shard drifts this many cells.
 const SHARD_STAGGER_SHARE = 0.4;
@@ -297,6 +337,7 @@ export class FxDirector {
   private missReason: MissReasonEffect | null = null;
   private claimTags: ClaimTagsEffect[] = [];
   private stageTitle: StageTitleEffect | null = null;
+  private startCue: Timed | null = null;
   private splitLockTicks = 0;
   private gameOverHoldTicks = 0;
   // Claims in a row: the director's own tick count (every tick(), stopped
@@ -442,13 +483,15 @@ export class FxDirector {
   }
 
   /**
-   * Shows the stage's title (`heading`: STAGE n, `title`: its name) for
-   * stageTitleTicks, replacing any still shown. Display only: play goes on
-   * under it. Live play calls this as each stage starts; a replay never does.
+   * Shows the stage's title (`heading`: STAGE n, `title`: its name) and the
+   * start cue around the marker for stageTitleTicks, replacing any still
+   * shown. Display only: play goes on under them. Live play calls this as
+   * each stage starts; a replay and the Title demo never do.
    */
   onStageStart(heading: string, title: string): void {
     const p = this.params;
     this.stageTitle = p.stageTitleTicks > 0 ? { age: 0, duration: p.stageTitleTicks, heading, title } : null;
+    this.startCue = p.stageTitleTicks > 0 ? { age: 0, duration: p.stageTitleTicks } : null;
   }
 
   /** Ages every effect by one fixed tick. */
@@ -456,6 +499,7 @@ export class FxDirector {
     this.ticks++;
     this.claimTags = this.claimTags.filter(age);
     if (this.stageTitle && !age(this.stageTitle)) this.stageTitle = null;
+    if (this.startCue && !age(this.startCue)) this.startCue = null;
     this.glows = this.glows.filter(age);
     if (this.reveal && !age(this.reveal)) this.reveal = null;
     this.popups = this.popups.filter(age);
@@ -474,6 +518,7 @@ export class FxDirector {
   reset(): void {
     this.resetBoard();
     this.stageTitle = null;
+    this.startCue = null;
     this.banner = null;
     this.multiplier = null;
     this.splitLockTicks = 0;
@@ -601,6 +646,7 @@ export class FxDirector {
             alpha: labelAlpha(this.stageTitle, reduced),
           }
         : null,
+      startCue: this.startCue ? startCueFrame(this.startCue, reduced) : null,
     };
   }
 

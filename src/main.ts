@@ -2,6 +2,7 @@ import { GameSession, SessionInput } from './core/session';
 import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
+import type { StartCueRing } from './render/startCueLayer';
 import { getStageConfig } from './core/stage';
 import { KeyboardInput } from './input/keyboard';
 import {
@@ -42,6 +43,7 @@ import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
+  FX_START_CUE_MIN_LINE_DISPLAY_PX,
   HUD_WORST_CASE_STATS_TEXT,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
@@ -121,6 +123,8 @@ declare global {
       getHintMarks: () => HintMarkShapes | null;
       /** Where the last frame drew the stage title and BIG CLAIM / CLOSE CALL (logical canvas px). */
       getFxTextBoxes: () => { stageTitle: FxTextBox | null; claimTags: FxTextBox[] };
+      /** The start cue's ring the last frame drew (logical canvas px), or null. */
+      getStartCue: () => (StartCueRing & { lineWidth: number }) | null;
       /** Forgets every seen hint (the debug panel's RESET HINTS). */
       resetHints: () => void;
       /** The Title demo (src/titleDemo.ts): its state, and what the last frame drew. */
@@ -1100,6 +1104,7 @@ function init(): void {
     },
     getHintMarks: () => lastHintMarks,
     getFxTextBoxes: () => renderer.getLastFxTextBoxes(),
+    getStartCue: () => renderer.getLastStartCue(),
     resetHints: resetSeenHints,
     getTitleDemo: () => {
       const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
@@ -2154,6 +2159,7 @@ function renderFrame(): void {
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
   renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
+  renderer.setStartCueMinLineWidthPx(FX_START_CUE_MIN_LINE_DISPLAY_PX / fieldDisplayScale);
   // The in-play hint: live play only.
   const hintView = viewMode === 'replay' ? null : hintDirector.current();
   lastHintMarks = hintView && !demoEngine ? hintMarkShapes(resolveHintMark(hintView), hintView.age, reducedMotion) : null;
