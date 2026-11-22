@@ -290,9 +290,25 @@ export class GameSession {
     return this.multiplier;
   }
 
-  /** The best of the seeded high score and the current run's score. */
+  /**
+   * The best of the seeded high score and the current run's score — the
+   * current run's only when it counts toward the high score
+   * (countsTowardHighScore()). An EASY run leaves the high score as it was,
+   * during the run and after it, so its score can never reach the stored
+   * high score later either. A run a debug override has touched keeps only
+   * what it had scored before the first override (see markTainted()).
+   */
   getHighScore(): number {
-    return Math.max(this.highScore, this.game.getScore());
+    return this.countsTowardHighScore() ? Math.max(this.highScore, this.game.getScore()) : this.highScore;
+  }
+
+  /**
+   * True when the current run's score may become the high score: a NORMAL
+   * run that no debug override has ever touched (isRunTainted() is sticky
+   * for the run, so a RESET mid-run does not clear it).
+   */
+  countsTowardHighScore(): boolean {
+    return this.difficulty === 'normal' && !this.tainted;
   }
 
   /**
@@ -426,6 +442,17 @@ export class GameSession {
    */
   setDebugTimeLimitTicks(ticks: number): void {
     this.debugTimeLimitTicks = ticks;
+    this.markTainted();
+  }
+
+  /**
+   * Marks the run as debug-tuned. The score it reached before that, under
+   * the standard parameters, is a genuine high score — main.ts has already
+   * saved it — so it is kept in the high score first; only what the run
+   * scores from here on stays out.
+   */
+  private markTainted(): void {
+    if (this.countsTowardHighScore()) this.highScore = this.getHighScore();
     this.tainted = true;
   }
 
@@ -615,7 +642,7 @@ export class GameSession {
    */
   applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
     this.debugOverrides = { ...this.debugOverrides, ...overrides };
-    this.tainted = true;
+    this.markTainted();
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 

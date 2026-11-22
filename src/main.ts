@@ -2034,6 +2034,9 @@ function updateLive(): void {
   // board isn't the standard one. Skips the write entirely while any debug
   // override is active, mirroring the pre-existing highscore guard
   // (docs/plan.md §6 M10: "デバッグパネル使用中はハイスコアを保存しない").
+  // The session's high score never takes in an EASY run's score or a
+  // debug-tuned one's (GameSession.countsTowardHighScore()), so neither can
+  // be written here — not after a RESET, nor in the run after it.
   if (shouldPersistHighScore(runMode)) {
     const currentHighScore = session.getHighScore();
     if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
@@ -2284,10 +2287,10 @@ function renderFrame(): void {
       gameOverModalShown = true;
       gameOverConfirmGate.markModalShown();
       const score = session.getScore();
-      // NEW RECORD: only for a run that may save its high score (a normal
-      // run with no debug override at any point), against the best it
-      // started from.
-      const recordsHighScore = shouldPersistHighScore(runMode) && !session.isRunTainted();
+      // NEW RECORD and the distance to the best: only for a run that may save
+      // its high score (a NORMAL, non-`?seed=` run with no debug override at
+      // any point), against the best it started from.
+      const recordsHighScore = shouldPersistHighScore(runMode) && session.countsTowardHighScore();
       const reason = session.getGameOverReason() ?? 'life';
       // The result counts up from this frame: the close plays now, the rest
       // on the live ticks that follow (stepGameOverResult()).
