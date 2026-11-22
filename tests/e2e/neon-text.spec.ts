@@ -228,11 +228,14 @@ test.describe('neon text', () => {
     await startRun(page, '?seed=1');
     await claimSmallBox(page);
     const score = await sessionScore(page);
-    // End the run on time a tick after the claim's hit stop.
+    // End the run on time a tick after the claim's hit stop. The run's own
+    // clock is moved to its last tick: the debug time-limit override would
+    // taint the run, and a tainted run's score never reaches the high score.
     await page.evaluate(() => {
-      const s = window.__game__!.session;
-      s.setDebugTimeLimitTicks(s.getTotalTicks() + 1);
+      const s = window.__game__!.session as unknown as { totalTicks: number; getTimeLimitTicks: () => number };
+      s.totalTicks = s.getTimeLimitTicks() - 1;
     });
+    expect(await page.evaluate(() => window.__game__!.session.isRunTainted())).toBe(false);
     const hi = await page.evaluate(() => window.__game__!.session.getHighScore());
     expect(hi).toBe(score);
     await expect(page.locator('#hud')).toContainText(`HI ${hi}`);
