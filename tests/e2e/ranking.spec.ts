@@ -30,6 +30,8 @@ declare global {
       };
       /** Auto-advance transitions around replay skips (src/main.ts's debug hook). */
       getReplayAutoAdvanceLog: () => boolean[];
+      fx: { getFrame: () => { stageTitle: unknown } };
+      getFxTextBoxes: () => { stageTitle: unknown };
     };
   }
 }
@@ -176,9 +178,9 @@ async function stubDeterministicNormalSeed(page: Page): Promise<void> {
  * (tests/e2e/gameover-share.spec.ts, whose polls allow only 8s) over its
  * budget under full-suite contention.
  *
- * The `grace === 0` guard matters: for ~2s after each miss, entering an
+ * The `grace === 0` guard matters: for a while after each miss, entering an
  * UNCLAIMED cell is blocked (docs/plan.md §3.5's grace-period exploit fix),
- * so a draw pulse issued during grace would do nothing at all and the run
+ * so a draw pulse issued then would do nothing at all and the run
  * would sit at the border forever. Re-pulsing whenever the marker is idle —
  * rather than once per observed life change — also self-heals if a pulse is
  * ever swallowed.
@@ -238,11 +240,12 @@ function recordShortReplay(seed: number, timeLimitTicks: number): string {
 //
 // Produced by a serpentine that repeatedly draws across the field and steps
 // along the border, claiming a strip at a time until the stage's required
-// occupancy (0.65) is met. Seed 377 was chosen by scanning seeds 1-400
-// headlessly for the LATEST final-stage boundary among well-formed replays:
-// it reaches FOUR stages, with the last beginning at tick 2172 of a
-// 2278-tick run. That maximizes the amount of real work the skip has to do.
-const MULTI_STAGE_SEED = 377;
+// occupancy is met. Seed 1046 was chosen by scanning seeds headlessly for one
+// whose well-formed replay reaches FOUR stages under ruleset 2 with a long
+// way between them: stage 2 begins at tick 857 and the last at tick 2098 of
+// a 2464-tick run, so a skip — from the start or from the first STAGE CLEAR
+// — takes several chunks of real work.
+const MULTI_STAGE_SEED = 1046;
 const MULTI_STAGE_STRIP_WIDTH = 4;
 const MULTI_STAGE_FINAL_STAGE = 4;
 
@@ -1289,6 +1292,10 @@ test.describe('replay viewing', () => {
     // because this fixture spans several stages. The HUD reflects whichever
     // session is being rendered, so during replay it shows the replay's.
     await expect(page.locator('#hud')).toContainText('STAGE 1');
+    // A replay shows no stage title: not as its stage 1 plays...
+    const noStageTitle = () =>
+      page.evaluate(() => window.__game__!.fx.getFrame().stageTitle === null && window.__game__!.getFxTextBoxes().stageTitle === null);
+    expect(await noStageTitle()).toBe(true);
     // The control bar says which stage of how many is on screen, and marks
     // the run's LAST stage as such — on stage 1
     // of 4 there is no FINAL STAGE marker yet.
@@ -1297,6 +1304,8 @@ test.describe('replay viewing', () => {
     await expect(page.locator('#hud')).toContainText(`STAGE ${MULTI_STAGE_FINAL_STAGE}`, { timeout: 20_000 });
     // ...and once the skip lands on it, the marker appears.
     await expect(page.getByText(`REPLAY - STAGE ${MULTI_STAGE_FINAL_STAGE} / ${MULTI_STAGE_FINAL_STAGE} (FINAL STAGE)`)).toBeVisible({ timeout: 20_000 });
+    // ...nor on the stage it lands on.
+    expect(await noStageTitle()).toBe(true);
     // ...and the skip control, having nowhere left to go, is gone (hidden,
     // not disabled. It is also proof the chunked
     // skip actually finished: a still-running skip shows SKIPPING... instead.
@@ -1671,7 +1680,7 @@ test.describe('replay viewing', () => {
     // Both clicks in ONE evaluate, deliberately: the skip runs its first
     // chunk synchronously and then awaits a macrotask, so an EXIT dispatched
     // in the same task lands strictly *between* chunks. Two separate
-    // Playwright clicks are milliseconds apart, by which time this ~2172-tick
+    // Playwright clicks are milliseconds apart, by which time this ~2098-tick
     // skip has already finished — i.e. the abort path would never be reached
     // and the test would pass without testing anything.
     await page.evaluate(() => {

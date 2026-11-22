@@ -140,7 +140,8 @@ describe('wispTrailCells', () => {
       state = (state * 16807) % 2147483647;
       return state / 2147483647;
     };
-    const wisp = new Wisp({ x: SIZE, y: SIZE }, rng, 0.3, WISP_TRAIL_FAST_AT_MULTIPLIER);
+    // x5: past every stage's own speed, but in the debug panel's range.
+    const wisp = new Wisp({ x: SIZE, y: SIZE }, rng, 0.3, 5);
     for (let i = 0; i < 40; i++) wisp.update(field);
     const trail = wisp.getTrail();
     expect(trail.length).toBe(10);
@@ -191,14 +192,15 @@ describe('wispTrailAlpha', () => {
 });
 
 describe('wispTrailColor', () => {
-  it('is purple at x1, a whitish pink from x5 up and halfway between at x3', () => {
+  it('is purple at x1, a whitish pink from x3 (the fastest stage) up and halfway between at x2', () => {
+    expect(WISP_TRAIL_FAST_AT_MULTIPLIER).toBe(3);
     expect(wispTrailColor(1)).toBe('#b967ff');
     expect(wispTrailColor(0.5)).toBe('#b967ff');
-    expect(wispTrailColor(5)).toBe(COLOR_WISP_TRAIL_FAST);
+    expect(wispTrailColor(3)).toBe(COLOR_WISP_TRAIL_FAST);
     expect(COLOR_WISP_TRAIL_FAST).toBe('#ffd6f5');
     expect(wispTrailColor(8)).toBe('#ffd6f5');
     // (0xb9 + 0xff) / 2 = 0xdc, (0x67 + 0xd6) / 2 ≈ 0x9f, (0xff + 0xf5) / 2 = 0xfa
-    expect(wispTrailColor(3)).toBe('#dc9ffa');
+    expect(wispTrailColor(2)).toBe('#dc9ffa');
   });
 
   it('leaves the head its own color, with the larger head', () => {

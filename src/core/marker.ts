@@ -73,6 +73,11 @@ export class Marker {
     return { ...this.position };
   }
 
+  /** Non-cloning view of getPosition() for per-tick checks. Callers must never mutate it. */
+  getPositionRef(): Readonly<Point> {
+    return this.position;
+  }
+
   /**
    * Moves the marker to `p` outright, outside the normal tryMove() rules.
    * Only meaningful while not drawing; the Game uses it to put the marker

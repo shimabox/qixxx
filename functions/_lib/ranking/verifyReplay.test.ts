@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { GameSession } from '../../../src/core/session';
 import { Axis } from '../../../src/core/marker';
 import { encodeRle, InputSample } from '../../../src/core/rle';
-import { MAX_VERIFIED_CLAIMS } from '../../../src/config';
+import { MAX_VERIFIED_CLAIMS, GRID_WIDTH, GRID_HEIGHT } from '../../../src/config';
+import { buildStageScript } from '../../../src/core/scriptedRun';
 import { verifyReplay } from './verifyReplay';
 import { simulateReplayFromRle } from '../../../src/core/replayEngine';
 
@@ -30,6 +31,11 @@ describe('verifyReplay', () => {
     const samples: InputSample[] = [];
     let guard = 0;
     while (session.getStatus() !== 'gameover' && guard < 20000) {
+      if (session.getStatus() === 'stageclear') {
+        // A replay confirms a StageClear without a sample (core/replayEngine.ts).
+        session.update(CONFIRM);
+        continue;
+      }
       const input: InputSample = { dx: 0, dy: 1, drawHeld: true, slow: false };
       session.update({ ...input, confirm: false });
       samples.push(input);
@@ -46,6 +52,54 @@ describe('verifyReplay', () => {
       expect(result.durationTicks).toBe(session.getTotalTicks());
       expect(result.gameOverReason).toBe(session.getGameOverReason());
     }
+  });
+
+  it('accepts a ruleset 2 run with a stage clear, close calls and big claims, with the same score and stage', () => {
+    // The scripted comb (core/scriptedRun.ts) on the full-size field: it
+    // clears two stages on this seed, and its lines pass close to the Wisps
+    // and take big areas, so the score holds every new kind of point.
+    const seed = 542;
+    const session = new GameSession({ seed, captureFeedback: true });
+    session.update(CONFIRM);
+    const script = buildStageScript(GRID_WIDTH, GRID_HEIGHT);
+    const samples: InputSample[] = [];
+    let closeCalls = 0;
+    let bigClaims = 0;
+    while (session.getStatus() !== 'gameover' && samples.length < 20000) {
+      if (session.getStatus() === 'stageclear') {
+        session.update(CONFIRM);
+        continue;
+      }
+      let remaining = session.getStageTicks();
+      let input: InputSample = { dx: 0, dy: 0, drawHeld: false, slow: false };
+      for (const s of script) {
+        if (remaining < s.ticks) {
+          input = { dx: s.dx, dy: s.dy, drawHeld: s.drawHeld, slow: s.slow };
+          break;
+        }
+        remaining -= s.ticks;
+      }
+      session.update({ ...input, confirm: false });
+      samples.push(input);
+      for (const notice of session.drainClaimFeedback()) {
+        if (notice.nearMissBonus > 0) closeCalls++;
+        if (notice.bigClaim) bigClaims++;
+      }
+      session.drainMissFeedback();
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(session.getStage()).toBeGreaterThanOrEqual(2);
+    expect(closeCalls).toBeGreaterThan(0);
+    expect(bigClaims).toBeGreaterThan(0);
+
+    const result = verifyReplay(seed, encodeRle(samples));
+    expect(result).toMatchObject({
+      ok: true,
+      score: session.getScore(),
+      stage: session.getStage(),
+      durationTicks: session.getTotalTicks(),
+      gameOverReason: session.getGameOverReason(),
+    });
   });
 
   it('is deterministic: verifying the same (seed, rle) twice gives the same result', () => {
@@ -77,6 +131,10 @@ describe('verifyReplay', () => {
     const samples: InputSample[] = [];
     let guard = 0;
     while (session.getStatus() !== 'gameover' && guard < 20000) {
+      if (session.getStatus() === 'stageclear') {
+        session.update(CONFIRM);
+        continue;
+      }
       const input: InputSample = { dx: 0, dy: 1, drawHeld: true, slow: false };
       session.update({ ...input, confirm: false });
       samples.push(input);
@@ -193,8 +251,9 @@ describe('verifyReplay MAX_VERIFIED_CLAIMS (real simulation, no mocks)', () => {
     // cap was 100 (it was the old boundary test). At 300 it passes the claim
     // gate; it still isn't a valid submission (it stops right after its 101st
     // claim, never reaching gameover), so the remaining rejection is that, not
-    // the cap — the direct behavioral proof the cap was raised.
-    const seed = 424242;
+    // the cap — the direct behavioral proof the cap was raised. (Seed 424243:
+    // a board on which the notch bot reaches 101 claims under ruleset 2.)
+    const seed = 424243;
     const { rle, claims } = recordNotchClaims(seed, 101);
     expect(claims).toBe(101);
     expect(claims).toBeGreaterThan(100);
@@ -208,7 +267,7 @@ describe('verifyReplay MAX_VERIFIED_CLAIMS (real simulation, no mocks)', () => {
     // simulateReplayFromRle with MAX_VERIFIED_CLAIMS as the threshold (see
     // verifyReplay.ts). Tested at a reachable threshold, with the identical
     // predicate, so it is the real enforcement path — only the number differs.
-    const seed = 424242;
+    const seed = 424243;
     const THRESHOLD = 50;
     const { rle, claims } = recordNotchClaims(seed, 101);
     expect(claims).toBe(101);

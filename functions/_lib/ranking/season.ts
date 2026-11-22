@@ -19,4 +19,4 @@
 export { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../../src/config';
 
 /** The current season. Bumped by hand (never by a deploy script) to reset the ranking while keeping RULESET_VERSION unchanged — see this module's doc comment and docs/ranking-runbook.md §3. */
-export const CURRENT_SEASON_ID = 1;
+export const CURRENT_SEASON_ID = 2;

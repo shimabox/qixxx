@@ -2,10 +2,14 @@
 // keep producing exactly the same run — score, stages reached, lives, claims,
 // board and elapsed ticks. Anything that alters the simulation (and so would
 // change what an existing replay reproduces) fails here. The expected values
-// were captured from the code before any presentation-only feedback was added
-// to core and must not be edited to make a change pass.
+// are the ruleset 2 baseline (RULESET_VERSION 2: the per-stage table, big
+// claims, close calls, the split reward by the smaller side and the shorter
+// post-miss wait), captured when those rules were put in, and must not be
+// edited to make a change pass. Each case's run includes close calls and big
+// claims in its score.
 import { describe, it, expect } from 'vitest';
 import { runScriptedSession, ScriptedRunSummary } from './scriptedRun';
+import { RULESET_VERSION } from '../config';
 
 const BASELINE_CASES: ReadonlyArray<{
   name: string;
@@ -13,69 +17,72 @@ const BASELINE_CASES: ReadonlyArray<{
   expected: ScriptedRunSummary;
 }> = [
   {
-    name: 'small field, seed 20261114: occupancy clear, split clear, then gameover',
-    options: { seed: 20261114, fieldWidth: 40, fieldHeight: 30 },
+    name: 'small field, seed 1352: split clear, occupancy clear, then gameover',
+    options: { seed: 1352, fieldWidth: 40, fieldHeight: 30 },
     expected: {
-      score: 1084,
+      score: 2688,
       stage: 3,
       lives: 0,
-      claims: 14,
+      claims: 11,
       misses: 3,
       splits: 1,
-      totalTicks: 952,
+      totalTicks: 652,
       status: 'gameover',
       gameOverReason: 'life',
-      fieldHash: '34165db5',
-      eventsHash: '01cf13ad',
+      fieldHash: '0a99a54d',
+      eventsHash: '6a6c9fa8',
       stages: [
-        { stage: 1, score: 678, lives: 3, totalTicks: 388, fieldHash: '29aacafd', split: false },
-        { stage: 2, score: 972, lives: 2, totalTicks: 684, fieldHash: 'ced03e2d', split: true },
+        { stage: 1, score: 1058, lives: 3, totalTicks: 171, fieldHash: '7d3d9a4d', split: true },
+        { stage: 2, score: 2688, lives: 1, totalTicks: 624, fieldHash: 'b48e8025', split: false },
       ],
     },
   },
   {
-    name: 'small field, seed 77: two split clears across four stages',
-    options: { seed: 77, fieldWidth: 40, fieldHeight: 30 },
+    name: 'small field, seed 839: two split clears across three stages',
+    options: { seed: 839, fieldWidth: 40, fieldHeight: 30 },
     expected: {
-      score: 1910,
-      stage: 4,
+      score: 2015,
+      stage: 3,
       lives: 0,
       claims: 10,
       misses: 3,
       splits: 2,
-      totalTicks: 790,
+      totalTicks: 601,
       status: 'gameover',
       gameOverReason: 'life',
-      fieldHash: '0a99a54d',
-      eventsHash: '20cde565',
+      fieldHash: '34165db5',
+      eventsHash: '85e6e7ab',
       stages: [
-        { stage: 1, score: 706, lives: 2, totalTicks: 388, fieldHash: 'd23c45bd', split: false },
-        { stage: 2, score: 958, lives: 1, totalTicks: 684, fieldHash: '82eedfd5', split: true },
-        { stage: 3, score: 1910, lives: 1, totalTicks: 762, fieldHash: 'b3fdf7dd', split: true },
+        { stage: 1, score: 1023, lives: 3, totalTicks: 203, fieldHash: 'c35dbe3d', split: true },
+        { stage: 2, score: 1903, lives: 2, totalTicks: 406, fieldHash: '6b0010cd', split: true },
       ],
     },
   },
   {
-    name: 'full-size field, seed 7: fast and slow claims until gameover',
-    options: { seed: 7 },
+    name: 'full-size field, seed 120: fast and slow claims until gameover',
+    options: { seed: 120 },
     expected: {
-      score: 4012,
+      score: 6005,
       stage: 1,
       lives: 0,
-      claims: 24,
+      claims: 32,
       misses: 3,
       splits: 0,
-      totalTicks: 4657,
+      totalTicks: 5944,
       status: 'gameover',
       gameOverReason: 'life',
-      fieldHash: 'fbb8dedd',
-      eventsHash: '96609815',
+      fieldHash: 'a644be65',
+      eventsHash: 'ef3f6b41',
       stages: [],
     },
   },
 ];
 
 describe('rule invariance baseline', () => {
+  it('is the baseline of ruleset 2', () => {
+    expect(RULESET_VERSION).toBe(2);
+  });
+
   for (const { name, options, expected } of BASELINE_CASES) {
     it(name, () => {
       expect(runScriptedSession(options)).toEqual(expected);

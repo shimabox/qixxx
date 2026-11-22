@@ -3,7 +3,9 @@
 // closed line's glow, the fill reveal, the "+score" popup with its praise
 // word and chain count, the sparks from the closed line, flashes, shakes,
 // the vanished line's shards, the SPLIT! banner, the multiplier that
-// travels to the HUD and the miss's one-line reason — plus the two input holds that go with them (confirm
+// travels to the HUD, BIG CLAIM / CLOSE CALL next to a claim's score, the
+// stage's title as it starts and the miss's one-line reason — plus the two
+// input holds that go with them (confirm
 // is not passed on right after a split, and the GAME OVER modal waits a
 // moment after a game-ending miss).
 //
@@ -99,6 +101,49 @@ export interface FxMultiplierFly {
   channelOffset: number;
 }
 
+/** The rows of a claim's popup (FxPopup's text, note, praise and chain), which do not change while it shows. */
+export type FxPopupRows = Pick<FxPopup, 'text' | 'note' | 'praise' | 'chain'>;
+
+/** BIG CLAIM / CLOSE CALL +N for one claim, next to its score. */
+export interface FxClaimTags {
+  /** The claim's fill reveal: the renderer puts the tags with that claim's popup (or where it would be). */
+  revealId: number;
+  /** Fallback position (a cell), as FxPopup.anchor. */
+  anchor: Point;
+  /** One line each, top to bottom: a big claim first, then a close call. */
+  tags: Array<{ kind: 'big' | 'close'; text: string }>;
+  /** A split's claim: no score of its own, so the tags go under SPLIT! instead. */
+  split: boolean;
+  /**
+   * The rows of the claim's popup, or null when it shows none. Kept for the
+   * tags' whole life — also after the popup is gone — so the tags are placed
+   * the same way throughout and never move.
+   */
+  popup: FxPopupRows | null;
+  /** The largest size the popup bounces to (FxPopup.scale at its peak), so the tags stay clear of it all through. */
+  popupMaxScale: number;
+  /** 0 when they appear, toward 1. */
+  progress: number;
+  age: number;
+  /** Size multiplier: 1, with a short pop on their first ticks (1 throughout with reduced motion). */
+  scale: number;
+  /** The largest `scale` reaches (its pop's start, or 1 with reduced motion): the tags are placed for it. */
+  maxScale: number;
+  /** 1 while shown, fading over the last ticks (1 throughout with reduced motion). */
+  alpha: number;
+}
+
+/** STAGE n and the stage's name over the field, as a stage starts. */
+export interface FxStageTitle {
+  heading: string;
+  title: string;
+  age: number;
+  /** Size multiplier: a short pop as it appears (1 throughout with reduced motion). */
+  scale: number;
+  /** 1 while shown, fading over its last ticks (1 throughout with reduced motion). */
+  alpha: number;
+}
+
 /** The one-line cause of the last miss, next to its contact. */
 export interface FxMissReason {
   text: string;
@@ -125,6 +170,10 @@ export interface FxFrame {
   multiplierHighlight: number;
   /** The last miss's reason, while shown (reduced motion too). */
   missReason: FxMissReason | null;
+  /** BIG CLAIM / CLOSE CALL of recent claims, while shown. */
+  claimTags: FxClaimTags[];
+  /** The stage's title, while shown (reduced motion too, without the pop and the fade). */
+  stageTitle: FxStageTitle | null;
 }
 
 interface Timed {
@@ -194,6 +243,39 @@ interface MissReasonEffect extends Timed {
   anchor: Point;
 }
 
+interface ClaimTagsEffect extends Timed {
+  revealId: number;
+  anchor: Point;
+  tags: FxClaimTags['tags'];
+  split: boolean;
+  popup: FxPopupRows | null;
+}
+
+interface StageTitleEffect extends Timed {
+  heading: string;
+  title: string;
+}
+
+// The stage title and the claim tags pop in from this size over POP_TICKS,
+// and fade out over their last FADE_TICKS (neither with reduced motion).
+const LABEL_POP_SCALE = 1.25;
+const LABEL_POP_TICKS = 8;
+const LABEL_FADE_TICKS = 12;
+
+function labelMaxScale(reduced: boolean): number {
+  return reduced ? 1 : Math.max(1, LABEL_POP_SCALE);
+}
+
+function labelScale(age: number, reduced: boolean): number {
+  if (reduced || age >= LABEL_POP_TICKS) return 1;
+  return LABEL_POP_SCALE - ((LABEL_POP_SCALE - 1) * age) / LABEL_POP_TICKS;
+}
+
+function labelAlpha(effect: Timed, reduced: boolean): number {
+  if (reduced) return 1;
+  return Math.min(1, (effect.duration - effect.age) / LABEL_FADE_TICKS);
+}
+
 // Shards break off one after another: the last one starts this share of the
 // shard time after the first, then every shard drifts this many cells.
 const SHARD_STAGGER_SHARE = 0.4;
@@ -213,6 +295,8 @@ export class FxDirector {
   private banner: Timed | null = null;
   private multiplier: MultiplierEffect | null = null;
   private missReason: MissReasonEffect | null = null;
+  private claimTags: ClaimTagsEffect[] = [];
+  private stageTitle: StageTitleEffect | null = null;
   private splitLockTicks = 0;
   private gameOverHoldTicks = 0;
   // Claims in a row: the director's own tick count (every tick(), stopped
@@ -267,6 +351,36 @@ export class FxDirector {
     this.revealSeq++;
     this.reveal = { age: 0, duration: p.fillRevealTicks, id: this.revealSeq, line };
 
+    const anchor = line.length > 0 ? { ...line[Math.floor(line.length / 2)] } : { x: 0, y: 0 };
+    const share = feedback.occupancyAfter - feedback.occupancyBefore;
+    // A split shows no score; any other claim scoring points shows one.
+    const popup: FxPopupRows | null =
+      !feedback.split && feedback.areaScore > 0
+        ? {
+            text: t('fx.score', feedback.areaScore),
+            note: feedback.lineSpeed === 'slow' ? t('fx.slowNote') : null,
+            praise: praiseForClaimShare(share, p),
+            chain: chain >= 2 ? t('fx.chain', chain) : null,
+          }
+        : null;
+
+    // BIG CLAIM / CLOSE CALL go with the claim's score — on a split, which
+    // shows no score, under SPLIT!.
+    const tags: FxClaimTags['tags'] = [];
+    if (feedback.bigClaim) tags.push({ kind: 'big', text: t('fx.bigClaim') });
+    if (feedback.nearMissBonus > 0) tags.push({ kind: 'close', text: t('fx.closeCall', feedback.nearMissBonus) });
+    if (tags.length > 0 && p.claimTagTicks > 0) {
+      this.claimTags.push({
+        age: 0,
+        duration: p.claimTagTicks,
+        revealId: this.revealSeq,
+        anchor: { ...anchor },
+        tags,
+        split: feedback.split,
+        popup: popup && p.popupTicks > 0 ? popup : null,
+      });
+    }
+
     if (feedback.split) {
       this.glows.push({ age: 0, duration: p.splitFlashTicks, cells: line, extendToEdges: true });
       this.startShake(p.shakeLarge);
@@ -281,16 +395,15 @@ export class FxDirector {
       return { hitStopTicks: p.hitStopSplitTicks, chain };
     }
 
-    const share = feedback.occupancyAfter - feedback.occupancyBefore;
-    if (feedback.areaScore > 0) {
+    if (popup) {
       this.popups.push({
         age: 0,
         duration: p.popupTicks,
         revealId: this.revealSeq,
-        anchor: line.length > 0 ? { ...line[Math.floor(line.length / 2)] } : { x: 0, y: 0 },
-        text: t('fx.score', feedback.areaScore),
-        note: feedback.lineSpeed === 'slow' ? t('fx.slowNote') : null,
-        praise: praiseForClaimShare(share, p),
+        anchor,
+        text: popup.text,
+        note: popup.note,
+        praise: popup.praise,
         chain,
       });
     }
@@ -328,9 +441,21 @@ export class FxDirector {
     return { hitStopTicks: p.hitStopMissTicks };
   }
 
+  /**
+   * Shows the stage's title (`heading`: STAGE n, `title`: its name) for
+   * stageTitleTicks, replacing any still shown. Display only: play goes on
+   * under it. Live play calls this as each stage starts; a replay never does.
+   */
+  onStageStart(heading: string, title: string): void {
+    const p = this.params;
+    this.stageTitle = p.stageTitleTicks > 0 ? { age: 0, duration: p.stageTitleTicks, heading, title } : null;
+  }
+
   /** Ages every effect by one fixed tick. */
   tick(): void {
     this.ticks++;
+    this.claimTags = this.claimTags.filter(age);
+    if (this.stageTitle && !age(this.stageTitle)) this.stageTitle = null;
     this.glows = this.glows.filter(age);
     if (this.reveal && !age(this.reveal)) this.reveal = null;
     this.popups = this.popups.filter(age);
@@ -348,6 +473,7 @@ export class FxDirector {
   /** Drops every effect and hold and ends the chain (back to Title, entering a replay). */
   reset(): void {
     this.resetBoard();
+    this.stageTitle = null;
     this.banner = null;
     this.multiplier = null;
     this.splitLockTicks = 0;
@@ -362,6 +488,7 @@ export class FxDirector {
    */
   resetBoard(): void {
     this.missReason = null;
+    this.claimTags = [];
     this.glows = [];
     this.reveal = null;
     this.popups = [];
@@ -450,6 +577,28 @@ export class FxDirector {
             text: this.missReason.text,
             anchor: this.missReason.anchor,
             alpha: Math.min(1, (this.missReason.duration - this.missReason.age) / FX_MISS_REASON_FADE_TICKS),
+          }
+        : null,
+      claimTags: this.claimTags.map((c) => ({
+        revealId: c.revealId,
+        anchor: c.anchor,
+        tags: c.tags,
+        split: c.split,
+        popup: c.popup,
+        popupMaxScale: Math.max(1, p.popupBounceScale),
+        progress: c.age / c.duration,
+        age: c.age,
+        scale: labelScale(c.age, reduced),
+        maxScale: labelMaxScale(reduced),
+        alpha: labelAlpha(c, reduced),
+      })),
+      stageTitle: this.stageTitle
+        ? {
+            heading: this.stageTitle.heading,
+            title: this.stageTitle.title,
+            age: this.stageTitle.age,
+            scale: labelScale(this.stageTitle.age, reduced),
+            alpha: labelAlpha(this.stageTitle, reduced),
           }
         : null,
     };

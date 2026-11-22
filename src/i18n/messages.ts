@@ -177,6 +177,26 @@ export const messages = {
   'fx.chain': same((chain: number) => `CHAIN x${chain}`),
   'fx.score': same((points: number) => `+${points}`),
   'fx.slowNote': same('x2'),
+  'fx.bigClaim': same('BIG CLAIM'),
+  'fx.closeCall': same((points: number) => `CLOSE CALL +${points}`),
+  // The stage's title when it starts: STAGE n in the effects' face on both
+  // pages, then the stage's name — a name, so it has its own Japanese.
+  'fx.stageHeading': same((stage: number) => `STAGE ${stage}`),
+  'stageTitle.warmUp': tr('WARM-UP', 'はじまり'),
+  'stageTitle.fastPair': tr('FAST PAIR', '速い 2 匹'),
+  'stageTitle.trio': tr('TRIO', '3 匹'),
+  'stageTitle.slowSwarm': tr('SLOW SWARM', '遅い群れ'),
+  'stageTitle.emberRush': tr('EMBER RUSH', 'エンバーの群れ'),
+  'stageTitle.breather': tr('BREATHER', '息抜き'),
+  'stageTitle.quartet': tr('QUARTET', '4 匹'),
+  'stageTitle.fastFour': tr('FAST FOUR', '速い 4 匹'),
+  'stageTitle.quintet': tr('QUINTET', '5 匹'),
+  'stageTitle.fastFive': tr('FAST FIVE', '速い 5 匹'),
+  'stageTitle.bigSwarm': tr('BIG SWARM', '大きな群れ'),
+  'stageTitle.emberStorm': tr('EMBER STORM', 'エンバーの嵐'),
+  'stageTitle.sextet': tr('SEXTET', '6 匹'),
+  'stageTitle.fastSix': tr('FAST SIX', '速い 6 匹'),
+  'stageTitle.final': tr('FINAL', '最終'),
 
   // --- Miss reasons ----------------------------------------------------------
   'miss.wisp': tr('WISP HIT YOUR LINE', 'ウィスプが線に触れた'),

@@ -1,7 +1,19 @@
 import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
 import type { Ember } from '../core/patrol';
-import type { FxFrame, FxFillReveal, FxPopup } from '../fx/director';
-import { drawFlash, drawLineGlows, drawMissReason, drawPopups, drawShards, drawSparks, drawSplitBanner } from './fxLayer';
+import type { FxClaimTags, FxFrame, FxFillReveal, FxPopup } from '../fx/director';
+import {
+  drawClaimTags,
+  drawFlash,
+  drawLineGlows,
+  drawMissReason,
+  drawPopups,
+  drawShards,
+  drawSparks,
+  drawSplitBanner,
+  drawStageTitle,
+  type FxAvoidBand,
+  type FxTextBox,
+} from './fxLayer';
 import { drawHintMarks, type HintMarkShapes } from './hintLayer';
 import { wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
 
@@ -115,6 +127,8 @@ export class Renderer {
 
   private fxTextMinFontPx = 0;
   private missReasonMinFontPx = 0;
+  private fxAvoidBand: FxAvoidBand | null = null;
+  private lastFxTextBoxes: { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } = { stageTitle: null, claimTags: [] };
   private hintMarks: HintMarkShapes | null = null;
   private veilAlpha = 0;
   private lastVeilAlpha = 0;
@@ -278,13 +292,27 @@ export class Renderer {
     }
     if (fx) {
       drawPopups(this.ctx, fx.popups, (popup) => this.popupPosition(popup), this.fxTextMinFontPx);
-      this.pruneCentroids(fx.popups);
       if (fx.splitBanner) drawSplitBanner(this.ctx, fx.splitBanner);
+      // Over SPLIT!, so a split's BIG CLAIM / CLOSE CALL under it stay readable.
+      this.lastFxTextBoxes.claimTags = drawClaimTags(
+        this.ctx,
+        fx.claimTags,
+        (item) => this.popupPosition(item),
+        this.fxTextMinFontPx,
+        this.fxAvoidBand
+      );
+      this.pruneCentroids(fx.popups, fx.claimTags);
       drawFlash(this.ctx, fx.flash);
     }
     if (shaking) {
       this.ctx.restore();
     }
+    if (!fx) this.lastFxTextBoxes.claimTags = [];
+    // The stage's title: outside the shake, like the miss reason, since it is
+    // there to be read.
+    this.lastFxTextBoxes.stageTitle = fx?.stageTitle
+      ? drawStageTitle(this.ctx, fx.stageTitle, this.fxTextMinFontPx, this.fxAvoidBand)
+      : null;
     // The miss reason: over the flash so the burst never washes it out, and
     // outside the shake, since it is there to be read.
     if (fx?.missReason) drawMissReason(this.ctx, fx.missReason, this.missReasonMinFontPx);
@@ -318,14 +346,29 @@ export class Renderer {
     this.hintMarks = shapes;
   }
 
-  private popupPosition(popup: FxPopup): { x: number; y: number } {
+  /**
+   * The band of the field (logical canvas px) the stage title and the claim
+   * tags keep out of — the hint line while it is shown — or null.
+   */
+  setFxAvoidBand(band: FxAvoidBand | null): void {
+    this.fxAvoidBand = band;
+  }
+
+  /** Where the last frame drew the stage title and the claim tags (logical canvas px), for tests. */
+  getLastFxTextBoxes(): { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } {
+    return { stageTitle: this.lastFxTextBoxes.stageTitle, claimTags: [...this.lastFxTextBoxes.claimTags] };
+  }
+
+  private popupPosition(popup: { revealId: number; anchor: Point }): { x: number; y: number } {
     return this.revealCentroids.get(popup.revealId) ?? popup.anchor;
   }
 
-  private pruneCentroids(popups: readonly FxPopup[]): void {
+  private pruneCentroids(popups: readonly FxPopup[], claimTags: readonly FxClaimTags[]): void {
     if (this.revealCentroids.size === 0) return;
     for (const id of this.revealCentroids.keys()) {
-      if (!popups.some((p) => p.revealId === id)) this.revealCentroids.delete(id);
+      if (!popups.some((p) => p.revealId === id) && !claimTags.some((c) => c.revealId === id)) {
+        this.revealCentroids.delete(id);
+      }
     }
   }
 

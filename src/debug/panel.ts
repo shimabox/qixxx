@@ -19,6 +19,8 @@ import { resetSfxLevels, type SfxLevels } from '../audio/sfxLevels';
 import {
   TICK_RATE,
   SPLIT_MULTIPLIER_CAP,
+  EMBER_FIRST_SPAWN_SEC,
+  BIG_CLAIM_SHARE,
   PLAY_LOG_MAX_RUNS,
   PLAY_LOG_STREAK_STAGE,
   BGM_GAIN_TENSE,
@@ -67,7 +69,7 @@ export interface DebugFxHooks {
  * upper clamp of its own, so these panel-side maxes are the only limit.
  *
  * wispCount/wispSpeedMultiplier/emberCount/requiredOccupancyPercent's upper
- * bounds were widened again to 3x their stage-10 (STAGE_MAX_DIFFICULTY)
+ * bounds were widened again to 3x their earlier stage-10
  * values (2026-07-11 feedback: wispCount 10->30, wispSpeedMultiplier
  * 5.0->15.0, emberCount 10->30, requiredOccupancyPercent 90->99 — 99 rather
  * than a literal 3x270 since occupancy is a percentage and 100% is the
@@ -96,6 +98,15 @@ const RANGES = {
   // use case. 5s step keeps the slider's range of motion manageable at
   // either end.
   timeLimitSec: { min: 5, max: 600, step: 5 },
+  // The scoring and miss rules (config.ts BIG_CLAIM_*, NEAR_MISS_*, MISS_*,
+  // EMBER_FIRST_SPAWN_SEC): wide enough to try them well past their defaults.
+  bigClaimSharePercent: { min: 1, max: 100, step: 1 },
+  bigClaimMultiplier: { min: 1, max: 5, step: 0.05 },
+  nearMissDistanceCells: { min: 0, max: 20, step: 1 },
+  nearMissBonus: { min: 0, max: 2000, step: 10 },
+  missGraceTicks: { min: 0, max: 300, step: 1 },
+  missLineLockTicks: { min: 0, max: 300, step: 1 },
+  firstEmberSec: { min: 1, max: 60, step: 1 },
 } as const;
 
 interface SliderField {
@@ -175,6 +186,69 @@ const FIELDS: SliderField[] = [
     fromSlider: (v) => v / 100,
     format: (v) => `${Math.round(v * 100)}%`,
   },
+  {
+    key: 'bigClaimShare',
+    overrideKey: 'bigClaimShare',
+    label: 'Big claim from (share)',
+    range: RANGES.bigClaimSharePercent,
+    toSlider: (v) => Math.round(v * 100),
+    fromSlider: (v) => v / 100,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'bigClaimMultiplier',
+    overrideKey: 'bigClaimMultiplier',
+    label: 'Big claim x',
+    range: RANGES.bigClaimMultiplier,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => v.toFixed(2),
+  },
+  {
+    key: 'nearMissDistanceCells',
+    overrideKey: 'nearMissDistanceCells',
+    label: 'Close call distance (cells)',
+    range: RANGES.nearMissDistanceCells,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'nearMissBonus',
+    overrideKey: 'nearMissBonus',
+    label: 'Close call bonus',
+    range: RANGES.nearMissBonus,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missGraceTicks',
+    overrideKey: 'missGraceTicks',
+    label: 'Miss invincibility (t)',
+    range: RANGES.missGraceTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missLineLockTicks',
+    overrideKey: 'missLineLockTicks',
+    label: 'Miss line lock (t)',
+    range: RANGES.missLineLockTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'firstEmberSec',
+    overrideKey: 'firstEmberSec',
+    label: 'First Ember (s, next stage)',
+    range: RANGES.firstEmberSec,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => `${v}s`,
+  },
 ];
 
 /**
@@ -194,11 +268,12 @@ const FIELDS: SliderField[] = [
  * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
  * other slider here.
  */
-function buildExportPayload(
+export function buildExportPayload(
   params: EffectiveDebugParams,
   timeLimitTicks: number,
   fxParams?: FxParams,
-  sound?: Record<string, number | string>
+  sound?: Record<string, number | string>,
+  overrides: DebugOverrides = {}
 ): Record<string, unknown> {
   return {
     ...(fxParams ? buildFxExportPayload(fxParams) : {}),
@@ -211,15 +286,26 @@ function buildExportPayload(
     EMBER_BRANCH_CHASE_PROBABILITY: params.emberBranchChaseProbability,
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
     TIME_LIMIT_TICKS: timeLimitTicks,
+    BIG_CLAIM_SHARE: params.bigClaimShare,
+    BIG_CLAIM_MULTIPLIER: params.bigClaimMultiplier,
+    NEAR_MISS_DISTANCE_CELLS: params.nearMissDistanceCells,
+    NEAR_MISS_BONUS: params.nearMissBonus,
+    MISS_GRACE_TICKS: params.missGraceTicks,
+    MISS_LINE_LOCK_TICKS: params.missLineLockTicks,
+    // Stage 1's own wait unless overridden: the slider shows the current
+    // stage's wait, which is not this constant on other stages.
+    EMBER_FIRST_SPAWN_SEC: overrides.firstEmberSec ?? EMBER_FIRST_SPAWN_SEC,
     _notes: {
+      EMBER_FIRST_SPAWN_SEC:
+        "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
       WISP_COUNT:
-        'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
+        "Number of Wisps this stage. config.ts has no single constant for this — it is the current stage's wispCount in STAGE_TABLE.",
       WISP_SPEED_MULTIPLIER:
-        'Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from 1.0 (stage 1) to WISP_SPEED_MULTIPLIER_MAX (stage STAGE_MAX_DIFFICULTY).',
+        "Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE.",
       EMBER_COUNT:
-        'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
+        "Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the current stage's maxConcurrentEmbers in STAGE_TABLE rather than a fixed config constant.",
       DEFAULT_REQUIRED_OCCUPANCY:
-        'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
+        "Effective required occupancy for the current stage. config.ts has no single constant for this — it is the current stage's requiredOccupancy in STAGE_TABLE (DEFAULT_REQUIRED_OCCUPANCY is stage 1's).",
       TIME_LIMIT_TICKS:
         "The run's current effective time budget, in ticks (60 tick = 1s at TICK_RATE) — matches config.ts's TIME_LIMIT_TICKS constant exactly (name and unit), unlike this payload's other stage-dependent keys. Reflects the time-limit slider above, whether or not it's been touched from its config.ts default.",
     },
@@ -268,6 +354,8 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     FX_TEXT_MIN_DISPLAY_PX: p.fxTextMinDisplayPx,
     FX_MISS_REASON_TICKS: p.missReasonTicks,
     FX_MISS_REASON_MIN_DISPLAY_PX: p.missReasonMinDisplayPx,
+    FX_STAGE_TITLE_TICKS: p.stageTitleTicks,
+    FX_CLAIM_TAG_TICKS: p.claimTagTicks,
     GAMEOVER_COUNT_TICKS: p.gameOverCountTicks,
     GAMEOVER_POP_TICKS: p.gameOverPopTicks,
     GAMEOVER_SPARK_TICKS: p.gameOverSparkTicks,
@@ -317,6 +405,8 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'fxTextMinDisplayPx', label: 'Effect text min (CSS px)', range: { min: 0, max: 32, step: 1 } },
   { key: 'missReasonTicks', label: 'Miss reason (t)', range: { min: 0, max: 300, step: 1 } },
   { key: 'missReasonMinDisplayPx', label: 'Miss reason min (CSS px)', range: { min: 0, max: 32, step: 1 } },
+  { key: 'stageTitleTicks', label: 'Stage title (t)', range: { min: 0, max: 300, step: 1 } },
+  { key: 'claimTagTicks', label: 'BIG CLAIM / CLOSE CALL (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverCountTicks', label: 'GAME OVER count-up (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverPopTicks', label: 'GAME OVER pop (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverSparkTicks', label: 'GAME OVER sparks (t)', range: FX_TICKS_RANGE },
@@ -371,9 +461,13 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       occupancyAfter: share,
       lineSpeed: 'fast',
       areaScore,
+      // TEST CLAIM L is a big claim, so BIG CLAIM can be seen next to its score.
+      bigClaim: share >= BIG_CLAIM_SHARE,
+      nearMissBonus: 0,
       stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: false,
+      splitMultiplierGain: 0,
       stageCleared: false,
       closedLine: testLine(session),
     };
@@ -400,9 +494,12 @@ function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTM
       occupancyAfter: 0.05,
       lineSpeed: 'fast',
       areaScore: 0,
+      bigClaim: false,
+      nearMissBonus: 0,
       stageClearBonus: 0,
       multiplier: session.getMultiplier(),
       split: true,
+      splitMultiplierGain: 1,
       stageCleared: true,
       closedLine: testLine(session),
     };
@@ -973,6 +1070,8 @@ function buildPanel(
       } as Partial<DebugOverrides>);
       readout.textContent = field.format(field.fromSlider(sliderValue));
     });
+    // For E2E coverage to find a slider by what it sets.
+    input.dataset.debugKey = field.key;
     rows.set(field.key, { input, readout });
     panel.appendChild(row);
   }
@@ -1030,7 +1129,8 @@ function buildPanel(
       session.getEffectiveDebugParams(),
       session.getTimeLimitTicks(),
       fxHooks?.params,
-      soundSection?.exportPayload()
+      soundSection?.exportPayload(),
+      session.getDebugOverrides()
     );
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;

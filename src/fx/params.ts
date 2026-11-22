@@ -3,7 +3,8 @@
 // sparks, claim chains and the HUD score count-up), plus the HUD multiplier
 // emphasis, the STAGE CLEAR result count-up, the GAME OVER retry waits, the
 // effects' smallest on-screen text size and the miss reason's length and
-// smallest on-screen size, and the GAME OVER result's count-up, pop and
+// smallest on-screen size, the stage title's and the claim tags' lengths, and
+// the GAME OVER result's count-up, pop and
 // sparks. Starts from src/config.ts's
 // FX_* constants; the dev-only debug panel changes `fxParams` in place, and
 // FxDirector reads it on every new effect, so a change applies from the next
@@ -48,6 +49,8 @@ import {
   FX_TEXT_MIN_DISPLAY_PX,
   FX_MISS_REASON_TICKS,
   FX_MISS_REASON_MIN_DISPLAY_PX,
+  FX_STAGE_TITLE_TICKS,
+  FX_CLAIM_TAG_TICKS,
   GAMEOVER_COUNT_TICKS,
   GAMEOVER_POP_TICKS,
   GAMEOVER_SPARK_TICKS,
@@ -104,6 +107,10 @@ export interface FxParams {
   missReasonTicks: number;
   /** The miss reason is drawn at least this many CSS px tall on screen. */
   missReasonMinDisplayPx: number;
+  /** The stage's title is shown this many ticks from the stage's start. */
+  stageTitleTicks: number;
+  /** BIG CLAIM / CLOSE CALL are shown this many ticks from the claim. */
+  claimTagTicks: number;
   /** GAME OVER: the score counts up from 0 over this many ticks. */
   gameOverCountTicks: number;
   /** GAME OVER: the score and NEW RECORD pop for this many ticks. */
@@ -154,6 +161,8 @@ export function createDefaultFxParams(): FxParams {
     fxTextMinDisplayPx: FX_TEXT_MIN_DISPLAY_PX,
     missReasonTicks: FX_MISS_REASON_TICKS,
     missReasonMinDisplayPx: FX_MISS_REASON_MIN_DISPLAY_PX,
+    stageTitleTicks: FX_STAGE_TITLE_TICKS,
+    claimTagTicks: FX_CLAIM_TAG_TICKS,
     gameOverCountTicks: GAMEOVER_COUNT_TICKS,
     gameOverPopTicks: GAMEOVER_POP_TICKS,
     gameOverSparkTicks: GAMEOVER_SPARK_TICKS,

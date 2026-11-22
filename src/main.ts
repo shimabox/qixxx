@@ -1,6 +1,8 @@
 import { GameSession, SessionInput } from './core/session';
 import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
+import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
+import { getStageConfig } from './core/stage';
 import { KeyboardInput } from './input/keyboard';
 import {
   TouchControls,
@@ -117,6 +119,8 @@ declare global {
       getHint: () => { id: string; textKey: string; glow: string | null; age: number } | null;
       /** The hint's ring / arrow handed to the renderer for the last frame, or null. */
       getHintMarks: () => HintMarkShapes | null;
+      /** Where the last frame drew the stage title and BIG CLAIM / CLOSE CALL (logical canvas px). */
+      getFxTextBoxes: () => { stageTitle: FxTextBox | null; claimTags: FxTextBox[] };
       /** Forgets every seen hint (the debug panel's RESET HINTS). */
       resetHints: () => void;
       /** The Title demo (src/titleDemo.ts): its state, and what the last frame drew. */
@@ -1095,6 +1099,7 @@ function init(): void {
       return view ? { id: view.id, textKey: view.textKey, glow: view.glow, age: view.age } : null;
     },
     getHintMarks: () => lastHintMarks,
+    getFxTextBoxes: () => renderer.getLastFxTextBoxes(),
     resetHints: resetSeenHints,
     getTitleDemo: () => {
       const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
@@ -1985,6 +1990,12 @@ function updateLive(): void {
   const startedPlaying = statusBeforeThisTick !== 'playing' && session.getStatus() === 'playing';
   const stageStart = !startedPlaying ? null : statusBeforeThisTick === 'stageclear' && !step.freshRun ? 'stage' : 'run';
   stepHints(stageStart, claims, events, true);
+  // Each stage's play opens with its title over the field (live play only:
+  // a replay never comes through here). Play does not wait for it.
+  if (stageStart !== null) {
+    const stage = session.getStage();
+    fx.onStageStart(t('fx.stageHeading', stage), t(`stageTitle.${getStageConfig(stage).titleId}`));
+  }
   // A new run (from Title, PLAY WITH HINTS or a retry): the first stage's
   // tune from the top. A later stage's play, from STAGE CLEAR: that stage's
   // tune, from its top (the one playing stops right here). Through STAGE
@@ -2058,6 +2069,20 @@ function applyTitleButtonsCompact(): void {
   titleDemoLabel.style.fontSize = `${titleButtonsCompact ? TITLE_DEMO_LABEL_FONT_COMPACT_PX : TITLE_DEMO_LABEL_FONT_PX}px`;
   titleDemoLabel.style.left = `${titleButtonsCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
   titleDemoLabel.style.bottom = `${titleButtonsCompact ? TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
+}
+
+// The hint line's rows of the field, in logical canvas pixels (with a little
+// room either side), while it is shown — the band the stage title and BIG
+// CLAIM / CLOSE CALL keep out of — or null.
+function hintBarAvoidBand(): FxAvoidBand | null {
+  const el = hintBar.getElement();
+  if (el.style.display === 'none') return null;
+  const bar = el.getBoundingClientRect();
+  const field = canvas.getBoundingClientRect();
+  if (bar.height <= 0 || field.height <= 0) return null;
+  const toLogical = CANVAS_HEIGHT / field.height;
+  const margin = 4;
+  return { top: (bar.top - field.top) * toLogical - margin, bottom: (bar.bottom - field.top) * toLogical + margin };
 }
 
 // Steps the in-play hints once per live tick (src/hints/director.ts).
@@ -2139,20 +2164,8 @@ function renderFrame(): void {
     titleDemoLabelShown = demoEngine !== null;
     titleDemoLabel.style.display = titleDemoLabelShown ? 'block' : 'none';
   }
-
-  renderer.render(
-    boardGame.getField(),
-    boardGame.getMarker().getPosition(),
-    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
-    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
-    boardGame.getEmbers(),
-    boardGame.getIgniterPosition(),
-    markerVisible,
-    demoEngine ? undefined : fxFrame ?? undefined
-  );
-  // The travelling multiplier crosses the field outside #canvas-wrap, so the
-  // pause screen does not cover it: it is not drawn while paused.
-  renderMultiplierFx(paused && fxFrame ? { ...fxFrame, multiplierFly: null } : fxFrame);
+  // The hint line first, so the stage title and BIG CLAIM / CLOSE CALL drawn
+  // on the field below can keep out of where it is this frame.
   if (viewMode === 'replay') {
     hintBar.hide();
   } else {
@@ -2167,6 +2180,21 @@ function renderFrame(): void {
       (glow) => document.querySelector<HTMLElement>(`#touch-controls button[data-code="${glow === 'fast' ? 'Space' : 'KeyZ'}"]`)
     );
   }
+  renderer.setFxAvoidBand(fxFrame && (fxFrame.stageTitle || fxFrame.claimTags.length > 0) ? hintBarAvoidBand() : null);
+
+  renderer.render(
+    boardGame.getField(),
+    boardGame.getMarker().getPosition(),
+    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
+    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
+    boardGame.getEmbers(),
+    boardGame.getIgniterPosition(),
+    markerVisible,
+    demoEngine ? undefined : fxFrame ?? undefined
+  );
+  // The travelling multiplier crosses the field outside #canvas-wrap, so the
+  // pause screen does not cover it: it is not drawn while paused.
+  renderMultiplierFx(paused && fxFrame ? { ...fxFrame, multiplierFly: null } : fxFrame);
 
   const status = activeSession.getStatus();
   updateBgm();

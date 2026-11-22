@@ -20,8 +20,16 @@ export interface ClaimFeedback {
   /** Occupancy (0-1) right after this claim. */
   occupancyAfter: number;
   lineSpeed: LineSpeed;
-  /** Area points this claim scored (the stage-clear excess bonus is not included). */
+  /** Area points this claim scored (the stage-clear excess bonus is not included; a big claim's x1.5 is). */
   areaScore: number;
+  /** True when this claim filled at least BIG_CLAIM_SHARE of the field, so its area points were multiplied. */
+  bigClaim: boolean;
+  /**
+   * The close-call bonus this claim added on top of `areaScore`
+   * (NEAR_MISS_BONUS x the multiplier when a Wisp came within the near-miss
+   * distance of the line while it was drawn), 0 otherwise.
+   */
+  nearMissBonus: number;
   /**
    * The excess-occupancy bonus this claim scored: scoreStageClearBonus()'s
    * value when it cleared the stage by occupancy, 0 for a split clear and for
@@ -32,6 +40,11 @@ export interface ClaimFeedback {
   multiplier: number;
   /** True when this claim split the Wisps apart. */
   split: boolean;
+  /**
+   * How much this split raises the next stage's multiplier before the cap:
+   * the Wisp count of the smaller side (at least 1). 0 when not a split.
+   */
+  splitMultiplierGain: number;
   /** True when this claim cleared the stage (by occupancy or by a split). */
   stageCleared: boolean;
   /** The cells of the line that closed (a copy). */

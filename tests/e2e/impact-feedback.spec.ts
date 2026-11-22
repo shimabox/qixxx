@@ -125,6 +125,16 @@ const marker = (page: Page) => page.evaluate(() => window.__game__!.session.getG
 const status = (page: Page) => page.evaluate(() => window.__game__!.session.getStatus());
 
 /**
+ * Runs the clock a frame at a time until the next live tick has run. A tick
+ * is 1000/60 ms, longer than FRAME_MS, so a single frame does not always
+ * hold one; a key pressed before this has been taken by a tick after it.
+ */
+async function runOneTick(page: Page): Promise<void> {
+  const before = (await log(page)).ticks;
+  await advanceUntil(page, async () => (await log(page)).ticks > before, 10 * FRAME_MS, FRAME_MS);
+}
+
+/**
  * The scripted claim from tests/e2e/smoke.spec.ts on `?seed=1` (a seed whose
  * Wisp keeps clear of this path): along the top border, then a small box
  * down, right and back up to close it.
@@ -343,7 +353,7 @@ test.describe('impact feedback', () => {
     await expect(screen).toContainText('TOTAL');
     expect(await screen.textContent()).not.toMatch(new RegExp(`TOTAL\\s+${total}\\b`));
     await page.keyboard.press('Enter');
-    await page.clock.runFor(FRAME_MS);
+    await runOneTick(page);
     expect(await status(page)).toBe('stageclear');
     expect(await screen.textContent()).toMatch(new RegExp(`TOTAL\\s+${total}\\b`));
 

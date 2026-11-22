@@ -106,7 +106,9 @@ export class HintDirector<T> {
       this.claimCount = 0;
       this.slowShownTicks = 0;
     }
-    if (input.stageStart !== null && input.wispCount >= 2) this.enqueue('split', HINT_SPLIT_TICKS, { kind: 'ring', target: 'wisps' });
+    // The split hint waits for a later stage's start: every stage has two
+    // Wisps or more, and a first run must begin with how to draw.
+    if (input.stageStart === 'stage' && input.wispCount >= 2) this.enqueue('split', HINT_SPLIT_TICKS, { kind: 'ring', target: 'wisps' });
     for (const claim of input.claims) this.onClaim(claim.lineSpeed);
     for (const event of input.events) {
       if (event === 'ember-spawned' || event === 'ember-blaze-spawned') {

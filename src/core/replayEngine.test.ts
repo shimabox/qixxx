@@ -21,8 +21,8 @@ function recordTimeUpRun(seed: number, timeLimitTicks: number): Uint8Array {
 }
 
 /**
- * Records a run that actually spans several stages (seed 909 reaches stage 3,
- * with boundaries at ticks 0, 739 and 1191).
+ * Records a run that actually spans several stages (seed 12 reaches stage 3,
+ * with boundaries at ticks 0, 273 and 1053).
  *
  * Needed because skipToFinalStage() is untestable against a single-stage
  * replay: the final boundary is then tick 0, the skip loop never runs, and a
@@ -33,7 +33,7 @@ function recordTimeUpRun(seed: number, timeLimitTicks: number): Uint8Array {
  * is confirmed but NOT recorded, exactly as the replay protocol re-supplies
  * it on playback.
  */
-const MULTI_STAGE_SEED = 909;
+const MULTI_STAGE_SEED = 12;
 
 function recordMultiStageRun(seed: number): Uint8Array {
   const session = new GameSession({ seed });

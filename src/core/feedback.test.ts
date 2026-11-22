@@ -9,12 +9,14 @@ import { Ember } from './patrol';
 import { scoreAreaClaim, scoreStageClearBonus } from './scoring';
 import { runScriptedSession } from './scriptedRun';
 import { ClaimFeedback, MissFeedback } from './feedback';
-import { IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES } from '../config';
+import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MISS_BONUS } from '../config';
 
 const SCRIPTED_CASES = [
-  { seed: 20261114, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 77, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 7 },
+  // The rule invariance cases (core/rulesInvariance.test.ts): each has close
+  // calls and big claims.
+  { seed: 1352, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 839, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 120 },
 ];
 
 describe('captureFeedback does not change the run', () => {
@@ -29,7 +31,7 @@ describe('captureFeedback does not change the run', () => {
   it('produces nothing when capture is off: every drain is empty on every tick', () => {
     let ticks = 0;
     runScriptedSession({
-      seed: 20261114,
+      seed: 1352,
       fieldWidth: 40,
       fieldHeight: 30,
       onTick: (session) => {
@@ -48,7 +50,7 @@ describe('captureFeedback does not change the run', () => {
     let claims = 0;
     let misses = 0;
     const summary = runScriptedSession({
-      seed: 77,
+      seed: 839,
       fieldWidth: 40,
       fieldHeight: 30,
       captureFeedback: true,
@@ -63,10 +65,12 @@ describe('captureFeedback does not change the run', () => {
     expect(misses).toBeGreaterThan(0);
   });
 
-  it('accounts for every point: per tick, the score rises by the notices areaScore plus the excess-occupancy bonus', () => {
+  it('accounts for every point: per tick, the score rises by the notices areaScore and close-call bonus plus the excess-occupancy bonus', () => {
     for (const options of SCRIPTED_CASES) {
       let lastScore = 0;
       let claimsSeen = 0;
+      let closeCalls = 0;
+      let bigClaims = 0;
       runScriptedSession({
         ...options,
         captureFeedback: true,
@@ -75,7 +79,10 @@ describe('captureFeedback does not change the run', () => {
           const required = session.getGame().getRequiredOccupancy();
           let expected = 0;
           for (const n of notices) {
-            expected += n.areaScore;
+            if (n.nearMissBonus > 0) closeCalls++;
+            if (n.bigClaim) bigClaims++;
+            expect(n.nearMissBonus).toBe(n.nearMissBonus > 0 ? 200 * n.multiplier : 0);
+            expected += n.areaScore + n.nearMissBonus;
             if (n.stageCleared && !n.split) expected += scoreStageClearBonus(n.occupancyAfter, required);
           }
           claimsSeen += notices.length;
@@ -84,6 +91,8 @@ describe('captureFeedback does not change the run', () => {
         },
       });
       expect(claimsSeen).toBeGreaterThan(0);
+      expect(closeCalls).toBeGreaterThan(0);
+      if (options.fieldWidth) expect(bigClaims).toBeGreaterThan(0);
     }
   });
 
@@ -103,7 +112,7 @@ describe('captureFeedback does not change the run', () => {
             if (n.stageCleared && !n.split) {
               occupancyClears++;
               expect(notices).toHaveLength(1);
-              expect(n.stageClearBonus).toBe(gain - n.areaScore);
+              expect(n.stageClearBonus).toBe(gain - n.areaScore - n.nearMissBonus);
             } else {
               otherClaims++;
               expect(n.stageClearBonus).toBe(0);
@@ -138,10 +147,15 @@ describe('claim notices', () => {
       occupancyBefore: 0,
       occupancyAfter: game.getOccupancy(),
       lineSpeed: 'fast',
-      areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1),
+      // 18 of 24 cells: well past BIG_CLAIM_SHARE, so a big claim.
+      areaScore: scoreAreaClaim(notice.claimedCells, 'fast', 1, BIG_CLAIM_MULTIPLIER),
+      bigClaim: true,
+      // The Wisp at x=8 is one cell from the line at x=7: a close call.
+      nearMissBonus: NEAR_MISS_BONUS,
       stageClearBonus: scoreStageClearBonus(game.getOccupancy(), game.getRequiredOccupancy()),
       multiplier: 1,
       split: false,
+      splitMultiplierGain: 0,
       stageCleared: true,
       closedLine: [
         { x: 7, y: 1 },
@@ -165,7 +179,8 @@ describe('claim notices', () => {
     const [notice] = game.drainClaimFeedback();
     expect(notice.lineSpeed).toBe('slow');
     expect(notice.multiplier).toBe(3);
-    expect(notice.areaScore).toBe(scoreAreaClaim(notice.claimedCells, 'slow', 3));
+    expect(notice.bigClaim).toBe(true);
+    expect(notice.areaScore).toBe(scoreAreaClaim(notice.claimedCells, 'slow', 3, BIG_CLAIM_MULTIPLIER));
     expect(notice.stageCleared).toBe(false);
     expect(notice.split).toBe(false);
     expect(notice.stageClearBonus).toBe(0);

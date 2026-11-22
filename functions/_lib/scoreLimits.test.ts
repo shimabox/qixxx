@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { maxScoreForStage } from './scoreLimits';
-import { GRID_WIDTH, GRID_HEIGHT, SCORE_PER_CELL_SLOW, SPLIT_MULTIPLIER_CAP } from '../../src/config';
+import {
+  GRID_WIDTH,
+  GRID_HEIGHT,
+  SCORE_PER_CELL_SLOW,
+  SPLIT_MULTIPLIER_CAP,
+  BIG_CLAIM_MULTIPLIER,
+  NEAR_MISS_BONUS,
+  TIME_LIMIT_TICKS,
+} from '../../src/config';
 
 describe('maxScoreForStage', () => {
   it('is monotonically increasing with stage', () => {
@@ -20,13 +28,18 @@ describe('maxScoreForStage', () => {
     expect(maxScoreForStage(1.9)).toBe(maxScoreForStage(1));
   });
 
-  it('matches the documented derivation: full grid at slow speed * split cap, plus the max clear bonus', () => {
+  it('matches the documented derivation: full grid at slow speed * split cap * big claim, plus the max clear bonus', () => {
     const totalCells = GRID_WIDTH * GRID_HEIGHT;
-    const maxAreaScore = totalCells * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP;
-    // Max clear bonus: 100% achieved vs. the loosest (65%) requirement,
-    // i.e. 35 percentage points * STAGE_CLEAR_BONUS_PER_PERCENT_POINT (100) = 3500.
-    const maxClearBonus = 3500;
-    expect(maxScoreForStage(1)).toBe(maxAreaScore + maxClearBonus);
+    const maxAreaScore = totalCells * SCORE_PER_CELL_SLOW * SPLIT_MULTIPLIER_CAP * BIG_CLAIM_MULTIPLIER;
+    expect(maxAreaScore).toBe(259200); // 19200 * 1.0 * 9 * 1.5
+    // Max clear bonus: 100% achieved vs. the loosest (60%, stages 4 and 6)
+    // requirement, i.e. 40 percentage points * STAGE_CLEAR_BONUS_PER_PERCENT_POINT (100) = 4000.
+    const maxClearBonus = 4000;
+    // Close calls: at most one per claim, a claim takes at least 2 ticks, so
+    // TIME_LIMIT_TICKS / 2 claims, each NEAR_MISS_BONUS at the split cap.
+    const maxNearMiss = (TIME_LIMIT_TICKS / 2) * NEAR_MISS_BONUS * SPLIT_MULTIPLIER_CAP;
+    expect(maxNearMiss).toBe(9_720_000);
+    expect(maxScoreForStage(1)).toBe(maxAreaScore + maxClearBonus + maxNearMiss);
   });
 
   it('is comfortably above any realistic score for a low stage (sanity check)', () => {

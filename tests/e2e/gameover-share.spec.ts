@@ -87,7 +87,7 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     await page.keyboard.down('Space');
     await page.keyboard.down('ArrowDown');
     // On iterations after the first, this also has to wait out the previous
-    // miss's ~2s grace period before the marker can start moving at all (see
+    // miss's 0.5s line lock before the marker can start moving at all (see
     // the comment on the advanceUntil below) — 6s of game time covers grace
     // plus the short move with room to spare.
     await advanceUntil(page, async () => (await getMarkerY()) >= 5, 6_000);
@@ -97,13 +97,13 @@ test('GAME OVER modal shows score/stage, shares to X, and returns to Title', asy
     // ~1s (IGNITER_SPAWN_STILL_TICKS) for it to spawn, plus a handful of
     // IGNITER_ADVANCE_TICKS steps to climb the short line and catch up. On
     // every iteration after the first, this loop's key-down at the top also
-    // has to first wait out the ~2s post-miss grace period (MISS_GRACE_TICKS)
+    // has to first wait out the 0.5s post-miss line lock (MISS_LINE_LOCK_TICKS)
     // from the previous iteration's miss: entering an UNCLAIMED cell (i.e.
-    // starting the new line the ArrowDown above is trying to draw) is now
-    // blocked for that whole window (docs/plan.md §3.5 grace-period exploit
-    // fix, "案B") — only BORDER movement stays free during grace — so the
-    // marker sits at the border until grace elapses before it can even begin
-    // moving down. 6s of game time comfortably covers spawn + catch-up.
+    // starting the new line the ArrowDown above is trying to draw) is
+    // blocked for that window (docs/plan.md §3.5 grace-period exploit fix,
+    // "案B") — only BORDER movement stays free — so the marker sits at the
+    // border until it ends before it can even begin moving down. 6s of game
+    // time comfortably covers spawn + catch-up.
     await advanceUntil(page, async () => (await getLives()) < livesBefore, 6_000);
   }
 
