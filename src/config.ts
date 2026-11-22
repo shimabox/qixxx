@@ -385,7 +385,9 @@ export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
 // can only have two digits while the current share has one or two. The
 // widest goal is `TO BEST <6 digits>`, and the lives are INITIAL_LIVES marks
 // (or `◆xN` for a dev-only override past them). The colons went, so this
-// text is no wider than the one it replaced.
+// text is no wider than the one it replaced. An EASY run is measured with
+// its `EASY  ` lead and EASY_INITIAL_LIVES marks instead (src/hudText.ts's
+// hudWorstCaseStatsText()).
 export const HUD_WORST_CASE_STATS_TEXT =
   'STAGE 999  SCORE 999999  TO BEST 999999  TIME 3:00.0  10%/90% 80% LEFT  ◆◆◇  x9';
 

@@ -760,8 +760,8 @@ let hudGaugeGoal: HTMLDivElement;
 // frame right after a resize would wrongly skip rewriting the DOM into the
 // new line layout).
 let hudTwoLineMode = false;
-// The difficulty updateHudMode() last measured the single line for (see
-// measureRequiredSingleLineWidth()), or null before the first measure.
+// The difficulty of the shown session the HUD's line count was last decided
+// for (syncHudDifficulty(), measureRequiredSingleLineWidth()), or null before init().
 let hudLayoutDifficulty: Difficulty | null = null;
 
 // Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
