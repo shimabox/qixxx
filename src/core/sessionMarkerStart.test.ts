@@ -4,50 +4,12 @@
 // middle of each edge), drawn from the stage's own rng with one call made
 // before the Wisps'.
 import { describe, it, expect } from 'vitest';
-import { GameSession, SessionOptions } from './session';
-import { markerStartCandidates, MarkerStartEdge } from './markerStart';
+import { GameSession } from './session';
+import { markerStartCandidates } from './markerStart';
 import { mulberry32, deriveStageSeed } from './rng';
 import { getStageConfig } from './stage';
 import { GRID_WIDTH, GRID_HEIGHT } from '../config';
-import { Axis } from './marker';
-
-const INWARD: Record<MarkerStartEdge, { dx: Axis; dy: Axis }> = {
-  top: { dx: 0, dy: 1 },
-  bottom: { dx: 0, dy: -1 },
-  left: { dx: 1, dy: 0 },
-  right: { dx: -1, dy: 0 },
-};
-
-/**
- * Clears the current stage from its start: with the required occupancy
- * lowered to almost nothing, a 2-cell box drawn straight in from the start,
- * along the edge and back out is enough. The Wisps spawn well away from the
- * start, so the box never reaches them.
- */
-export function clearFromStart(session: GameSession): void {
-  session.applyDebugOverrides({ requiredOccupancy: 0.00001 });
-  const start = session.getMarkerStart()!;
-  const inward = INWARD[start.edge];
-  const along: { dx: Axis; dy: Axis } = inward.dx === 0 ? { dx: 1, dy: 0 } : { dx: 0, dy: 1 };
-  const outward: { dx: Axis; dy: Axis } = { dx: (-inward.dx) as Axis, dy: (-inward.dy) as Axis };
-  for (const step of [inward, inward, along, along, outward, outward]) {
-    session.update({ ...step, drawHeld: true, slow: false, confirm: false });
-  }
-  expect(session.getStatus(), `stage ${session.getStage()} from ${JSON.stringify(start)}`).toBe('stageclear');
-}
-
-/** A session played through to the start of `stage` (each earlier stage cleared from its start). */
-export function sessionAtStage(stage: number, options: SessionOptions): GameSession {
-  const session = new GameSession(options);
-  session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
-  while (session.getStage() < stage) {
-    clearFromStart(session);
-    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
-  }
-  expect(session.getStatus()).toBe('playing');
-  expect(session.getStageTicks()).toBe(0);
-  return session;
-}
+import { clearFromStart, sessionAtStage } from './stageStartFixture';
 
 const CANDIDATES = markerStartCandidates(GRID_WIDTH, GRID_HEIGHT);
 const key = (p: { x: number; y: number }) => `${p.x},${p.y}`;

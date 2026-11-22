@@ -156,8 +156,9 @@ export const WISP_HISTORY_LENGTH = 10;
 export const WISP_SPAWN_MARGIN_X_RATIO = 0.2;
 export const WISP_SPAWN_MARGIN_Y_RATIO = 0.25;
 // Minimum horizontal distance (grid cells) the Wisp cluster's center must
-// keep from the marker's starting column (floor(width/2)) — the actual
-// anti-exploit guarantee. On very small (e.g. test) fields the interior may
+// keep from the marker's starting column when the marker starts on the top
+// or bottom edge (floor(width/2) on stage 1) — the actual anti-exploit
+// guarantee. On very small (e.g. test) fields the interior may
 // not be wide enough to honor this fully; buildWisps() degrades gracefully
 // there (best effort, still fully clamped inside the field).
 export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN = 15;

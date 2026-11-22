@@ -24,6 +24,7 @@ import {
   WISP_SPAWN_MARGIN_X_RATIO,
   WISP_SPAWN_MARGIN_Y_RATIO,
   WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN,
+  WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW,
   TIME_LIMIT_TICKS,
 } from '../config';
 
@@ -725,17 +726,18 @@ export class GameSession {
    * old fixed-center spawn, a single straight line down the marker's own
    * start column reliably split the whole formation and instant-cleared
    * stages 2-6 with little risk. The randomized center is pushed away from
-   * the marker's start column by at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
-   * cells (best effort on fields too small to fit the full offset) so that
-   * exploit no longer works reliably.
+   * the line straight in from the marker's start — on a top/bottom start, by
+   * at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN columns from the start
+   * column; on a left/right start, by at least
+   * WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW rows from the start row (best
+   * effort on fields too small to fit the full offset) — so that exploit no
+   * longer works reliably from any start.
    */
   private buildWisps(field: Field, config: StageConfig, markerStart: MarkerStart): Wisp[] {
     const width = field.getWidth();
     const height = field.getHeight();
     const rng = this.currentStageRng ?? Math.random;
     const spacing = 3;
-
-    const markerColumn = markerStart.point.x;
 
     // Draw the cluster center from the field's interior, kept off the
     // walls by WISP_SPAWN_MARGIN_X_RATIO/_Y_RATIO on every side.
@@ -745,15 +747,15 @@ export class GameSession {
     let cy = Math.round(marginY + rng() * (height - 2 * marginY));
 
     // The actual anti-exploit guarantee: push the center away from the
-    // marker's start column if it landed too close. On a field too narrow
-    // for the full offset to fit inside the interior, this is necessarily
-    // best-effort — the clamp below still keeps every spawned Wisp safely
-    // inside the field regardless.
-    if (Math.abs(cx - markerColumn) < WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN) {
-      cx =
-        cx >= markerColumn
-          ? markerColumn + WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
-          : markerColumn - WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN;
+    // marker's start column (top/bottom start) or start row (left/right
+    // start) if it landed too close, toward the side it is already on. On a
+    // field too small for the full offset to fit inside the interior, this
+    // is necessarily best-effort — the clamp below still keeps every spawned
+    // Wisp safely inside the field regardless.
+    if (markerStart.edge === 'top' || markerStart.edge === 'bottom') {
+      cx = pushAway(cx, markerStart.point.x, WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN);
+    } else {
+      cy = pushAway(cy, markerStart.point.y, WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW);
     }
 
     // Safety clamp for small fields (e.g. tests): keeps the center itself
@@ -774,4 +776,13 @@ export class GameSession {
     }
     return wisps;
   }
+}
+
+/**
+ * `value` moved to exactly `minOffset` from `from` when it is closer than
+ * that — to the larger side when it is at or past `from`, else the smaller.
+ */
+function pushAway(value: number, from: number, minOffset: number): number {
+  if (Math.abs(value - from) >= minOffset) return value;
+  return value >= from ? from + minOffset : from - minOffset;
 }
