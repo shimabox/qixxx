@@ -39,6 +39,7 @@ interface GameHandle {
     setDebugTimeLimitTicks: (ticks: number) => void;
     applyDebugOverrides: (o: Record<string, number>) => void;
     getGame: () => { getMarker: () => { getPosition: () => Point } };
+    getMarkerStart: () => { edge: 'top' | 'right' | 'bottom' | 'left'; point: Point } | null;
   };
   getSfxLog: () => string[];
   getBgmState: () => BgmStateView;
@@ -131,12 +132,35 @@ async function clearStage(page: Page): Promise<void> {
     const session = (window as unknown as { __game__: GameHandle }).__game__.session;
     const key = (type: 'keydown' | 'keyup', code: string) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
     const before = session.getScore();
-    const plan: Array<{ down: string[]; up: string[]; done: (p: Point) => boolean }> = [
-      { down: ['ArrowLeft'], up: ['ArrowLeft'], done: (p) => p.x <= 30 },
-      { down: ['Space', 'ArrowDown'], up: ['ArrowDown'], done: (p) => p.y >= 25 },
-      { down: ['ArrowRight'], up: ['ArrowRight'], done: (p) => p.x >= 55 },
-      { down: ['ArrowUp'], up: ['ArrowUp', 'Space'], done: () => session.getScore() > before },
-    ];
+    const start = session.getMarkerStart();
+    // From the top (its middle, where stage 1 starts): along the top to x
+    // 30, then the box. From the middle of any other edge (later stages
+    // start on any edge): the same 25-cell box, drawn straight in from the
+    // start, along the edge (right on the bottom, down on the sides) and
+    // back out.
+    const arrows = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' } as const;
+    let plan: Array<{ down: string[]; up: string[]; done: (p: Point) => boolean }>;
+    if (!start || start.edge === 'top') {
+      plan = [
+        { down: ['ArrowLeft'], up: ['ArrowLeft'], done: (p) => p.x <= 30 },
+        { down: ['Space', 'ArrowDown'], up: ['ArrowDown'], done: (p) => p.y >= 25 },
+        { down: ['ArrowRight'], up: ['ArrowRight'], done: (p) => p.x >= 55 },
+        { down: ['ArrowUp'], up: ['ArrowUp', 'Space'], done: () => session.getScore() > before },
+      ];
+    } else {
+      const o = start.point;
+      const vertical = start.edge === 'bottom';
+      const inward = vertical ? arrows.up : start.edge === 'left' ? arrows.right : arrows.left;
+      const outward = vertical ? arrows.down : start.edge === 'left' ? arrows.left : arrows.right;
+      const along = vertical ? arrows.right : arrows.down;
+      const depth = (p: Point) => (vertical ? Math.abs(p.y - o.y) : Math.abs(p.x - o.x));
+      const side = (p: Point) => (vertical ? Math.abs(p.x - o.x) : Math.abs(p.y - o.y));
+      plan = [
+        { down: ['Space', inward], up: [inward], done: (p) => depth(p) >= 25 },
+        { down: [along], up: [along], done: (p) => side(p) >= 25 },
+        { down: [outward], up: [outward, 'Space'], done: () => session.getScore() > before },
+      ];
+    }
     let i = 0;
     let pressed = false;
     const timer = window.setInterval(() => {
