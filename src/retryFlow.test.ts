@@ -3,7 +3,9 @@
 import { describe, it, expect } from 'vitest';
 import { GameSession, SessionInput } from './core/session';
 import { buildStageScript } from './core/scriptedRun';
-import { stepLiveSession, LiveRunTracker, RETRY_CONFIRM_INPUT } from './retryFlow';
+import { stepLiveSession, LiveRunTracker, RETRY_CONFIRM_INPUT, freezeRunSnapshot, keepsInPlayLog } from './retryFlow';
+import { isSnapshotEligible } from './ui/ranking';
+import type { Difficulty } from './core/difficulty';
 
 // src/ is type-checked on its own (tsconfig rootDir ./src), so the server
 // module is loaded by a runtime path the compiler does not follow. The test
@@ -149,4 +151,64 @@ describe('a run started by RETRY', () => {
     // The second run really is a different board from the first.
     expect(session.getScore()).not.toBe(firstScore);
   }, 30_000);
+});
+
+describe('the run frozen at GAME OVER', () => {
+  /** A live session played to GAME OVER on `difficulty` (no seed param, no debug override). */
+  function endedRun(difficulty: Difficulty) {
+    const session = new GameSession({ seed: 77, captureFeedback: true, timeLimitTicks: 400, difficulty });
+    const driver = new Driver(session);
+    driver.tick(CONFIRM);
+    driver.playToGameOver();
+    return { session, driver };
+  }
+
+  it('posts a NORMAL run and keeps it in the play log; never an EASY one', () => {
+    const normal = endedRun('normal');
+    expect(normal.session.getScore()).toBeGreaterThan(0);
+    const normalSnapshot = freezeRunSnapshot(normal.session, normal.driver.tracker, 'normal');
+    expect(normalSnapshot).toMatchObject({ difficulty: 'normal', tainted: false, score: normal.session.getScore() });
+    expect(isSnapshotEligible(normalSnapshot)).toBe(true);
+    expect(keepsInPlayLog(normal.session, 'normal')).toBe(true);
+
+    const easy = endedRun('easy');
+    expect(easy.session.getScore()).toBeGreaterThan(0);
+    const easySnapshot = freezeRunSnapshot(easy.session, easy.driver.tracker, 'normal');
+    expect(easySnapshot).toMatchObject({ difficulty: 'easy', tainted: false, runMode: 'normal' });
+    expect(isSnapshotEligible(easySnapshot)).toBe(false);
+    expect(keepsInPlayLog(easy.session, 'normal')).toBe(false);
+  });
+
+  it('keeps neither a `?seed=` run nor a debug-tuned run in the play log', () => {
+    const seeded = endedRun('normal');
+    expect(keepsInPlayLog(seeded.session, 'seeded')).toBe(false);
+    const tuned = new GameSession({ seed: 77, timeLimitTicks: 5 });
+    tuned.update(CONFIRM);
+    tuned.applyDebugOverrides({ wispSpeedMultiplier: 1 });
+    tuned.resetDebugOverrides();
+    while (tuned.getStatus() === 'playing') tuned.update(IDLE);
+    expect(keepsInPlayLog(tuned, 'normal')).toBe(false);
+  });
+
+  it('stays as it ended when the next run’s difficulty is picked on GAME OVER, which goes into the next run', () => {
+    for (const [from, to] of [
+      ['easy', 'normal'],
+      ['normal', 'easy'],
+    ] as const) {
+      for (const retry of [true, false]) {
+        const { session, driver } = endedRun(from);
+        const snapshot = freezeRunSnapshot(session, driver.tracker, 'normal');
+        const frozen = { ...snapshot, rle: new Uint8Array(snapshot.rle) };
+        const ended = { score: session.getScore(), difficulty: session.getDifficulty() };
+        session.setNextDifficulty(to);
+        expect({ score: session.getScore(), difficulty: session.getDifficulty() }).toEqual(ended);
+        expect(freezeRunSnapshot(session, driver.tracker, 'normal')).toEqual(frozen);
+        driver.tick(CONFIRM, retry);
+        expect(session.getStatus()).toBe(retry ? 'playing' : 'title');
+        expect(session.getDifficulty()).toBe(to);
+        expect(snapshot).toEqual(frozen);
+        expect(isSnapshotEligible(snapshot)).toBe(from === 'normal');
+      }
+    }
+  });
 });

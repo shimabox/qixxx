@@ -30,7 +30,7 @@ import type { MissFeedback } from './core/feedback';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
-import { stepLiveSession, LiveRunTracker } from './retryFlow';
+import { stepLiveSession, LiveRunTracker, freezeRunSnapshot, keepsInPlayLog } from './retryFlow';
 import { ScoreRoll } from './fx/scoreRoll';
 import { loadFxFonts } from './render/fxFonts';
 import {
@@ -805,7 +805,7 @@ let liveConfirmCount = 0;
 // THE PLAY LOG (src/playLog/, src/storage/playLog.ts): every live run that
 // plays on to GAME OVER is recorded tick by tick from the notices the impact
 // feedback drains, and kept on this device only if it is a normal run with
-// no debug override at any point — not a `?seed=` run, a ranking replay or
+// no debug override at any point — not an EASY run, a `?seed=` run, a ranking replay or
 // the Title demo, which never go through updateLive(). Read-only: it never
 // feeds anything back into the run, its inputs or its ranking submission.
 // A run left before GAME OVER (the page closed or reloaded) is not kept. The
@@ -1258,18 +1258,21 @@ function resetSeenHints(): void {
 }
 
 // The live run just reached GAME OVER (see `playLog`): its record is closed,
-// and kept if the run may be. Called on the tick the status turns 'gameover',
-// not when the modal appears after the game-ending miss.
-function finishPlayLogRun(): void {
+// and kept if the run may be (a normal NORMAL-difficulty run no debug
+// override touched — src/retryFlow.ts's keepsInPlayLog()). Called on the tick
+// the status turns 'gameover', not when the modal appears after the
+// game-ending miss. True when the run was kept.
+function finishPlayLogRun(): boolean {
   const record = playLogRecorder.finish({
     stage: session.getStage(),
     score: session.getScore(),
     end: session.getGameOverReason() ?? 'life',
     endedAt: Date.now(),
   });
-  if (!record || runMode !== 'normal' || session.isRunTainted()) return;
+  if (!record || !keepsInPlayLog(session, runMode)) return false;
   playLog.append(record);
   notifyPlayLogChanged();
+  return true;
 }
 
 function notifyPlayLogChanged(): void {
@@ -2318,6 +2321,8 @@ function renderFrame(): void {
         reason: session.getGameOverReason() ?? undefined,
         highlight: view.highlight,
         bestLine: view.bestLine,
+        // An EASY run is not shared, as it is not ranked.
+        share: session.getDifficulty() === 'normal',
       });
       sfx.playGameOver(reason);
       playGameOverCues(cues);
@@ -2328,16 +2333,7 @@ function renderFrame(): void {
       // frozen here, synchronously, on the single frame the run ends —
       // `session` (not `activeSession`) deliberately, to make it explicit
       // this is the *live* run's final state and never a replay's.
-      rankingUI.offerSubmission({
-        runId: runTracker.getRunId(),
-        seed: session.getSeed(),
-        rle: runTracker.recorder.encode(),
-        score,
-        stage: session.getStage(),
-        runMode,
-        tainted: session.isRunTainted(),
-        claims: runTracker.getClaims(),
-      });
+      rankingUI.offerSubmission(freezeRunSnapshot(session, runTracker, runMode));
     }
     // The hint says what the keys do: retry, or wait for the submission panel
     // to be closed.

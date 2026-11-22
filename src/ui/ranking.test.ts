@@ -95,6 +95,7 @@ function snapshot(overrides: Partial<RunSubmissionSnapshot> = {}): RunSubmission
     stage: 2,
     runMode: 'normal',
     tainted: false,
+    difficulty: 'normal',
     claims: 3,
     ...overrides,
   };
@@ -143,6 +144,10 @@ describe('isSnapshotEligible', () => {
 
   it('rejects a run with no seed', () => {
     expect(isSnapshotEligible(snapshot({ seed: undefined }))).toBe(false);
+  });
+
+  it('rejects an EASY run, however clean otherwise', () => {
+    expect(isSnapshotEligible(snapshot({ difficulty: 'easy' }))).toBe(false);
   });
 });
 
@@ -284,7 +289,7 @@ describe('decideSubmissionOffer: races against the response', () => {
   });
 
   it('never shows the form for an ineligible run, whatever the board says', () => {
-    for (const bad of [snapshot({ runMode: 'seeded' }), snapshot({ tainted: true }), snapshot({ seed: undefined })]) {
+    for (const bad of [snapshot({ runMode: 'seeded' }), snapshot({ tainted: true }), snapshot({ seed: undefined }), snapshot({ difficulty: 'easy' })]) {
       expect(decide({ snapshot: bad, entries: [] })).toBe('ineligible-run');
     }
   });

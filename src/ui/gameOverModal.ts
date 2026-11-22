@@ -54,6 +54,8 @@ export interface GameOverScoreInfo {
    * place is kept from the start; it appears when renderResult() says so.
    */
   bestLine?: GameOverBestLine | null;
+  /** POST TO X is offered (the default); false hides it — an EASY run is not shared. */
+  share?: boolean;
 }
 
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
@@ -341,6 +343,7 @@ export class GameOverModal {
     this.lastResultKey = '';
     this.setSubmissionHold(false);
     this.resetShareButton();
+    this.shareButton.style.display = info.share === false ? 'none' : '';
     this.container.style.display = 'flex';
   }
 
