@@ -133,6 +133,9 @@ export class GameOverModal {
   private readonly shareButton: HTMLButtonElement;
   private current: GameOverScoreInfo = { score: 0, stage: 1, hiScore: 0 };
   private sharing = false;
+  // Counts show() calls: a share answer that comes back after another run's
+  // GAME OVER has been shown leaves that run's button alone.
+  private shownCount = 0;
   private density: GameOverModalDensity | null = null;
 
   constructor(anchor: HTMLElement, actions: GameOverModalActions) {
@@ -348,6 +351,7 @@ export class GameOverModal {
   /** Shows the modal populated with this run's final score info. Idempotent — safe to call again while already shown. */
   show(info: GameOverScoreInfo): void {
     this.current = info;
+    this.shownCount++;
     // The final score sizes the line; the shown one starts at the final value
     // until renderResult() says otherwise.
     const finalText = t('gameOver.score', info.score);
@@ -528,6 +532,11 @@ export class GameOverModal {
     // Repeat-click guard (docs/plan-cloudflare-x-share.md Phase 1: "連打防
     // 止"): ignored entirely while a request is already in flight.
     if (this.sharing) return;
+    // The run shown at the press is the one shared — the request and the
+    // post text alike — even if the modal shows another run by the time the
+    // answer comes back (TITLE, a new run and its GAME OVER in between).
+    const run = { score: this.current.score, stage: this.current.stage, hiScore: this.current.hiScore };
+    const shownAtPress = this.shownCount;
     this.sharing = true;
     this.shareButton.disabled = true;
     this.shareButton.textContent = t('gameOver.sharing');
@@ -554,9 +563,12 @@ export class GameOverModal {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          score: this.current.score,
-          stage: this.current.stage,
-          hi: this.current.hiScore,
+          score: run.score,
+          stage: run.stage,
+          // /share takes a high score no lower than the score. The modal's
+          // high score leaves out a debug-tuned run's points, so such a run
+          // past it shares its own score as the high score.
+          hi: Math.max(run.hiScore, run.score),
         }),
       });
       if (!response.ok) {
@@ -567,7 +579,7 @@ export class GameOverModal {
         throw new Error('share response missing id');
       }
 
-      const intentUrl = tweetIntentUrl(this.current, data.id);
+      const intentUrl = tweetIntentUrl(run, data.id);
       if (popup) {
         popup.location.href = intentUrl;
       } else {
@@ -576,12 +588,15 @@ export class GameOverModal {
         // gesture window at this point, but there's nothing more we can do.
         window.open(intentUrl, '_blank', 'noopener');
       }
+      // The button now belongs to another run's GAME OVER (show() reset it).
+      if (this.shownCount !== shownAtPress) return;
       this.resetShareButton();
     } catch {
       // Network error or non-200 response (docs/plan-cloudflare-x-share.md
       // Phase 1): surface a retryable error on the button; never touches
       // game state/progression.
       popup?.close();
+      if (this.shownCount !== shownAtPress) return;
       this.sharing = false;
       this.shareButton.disabled = false;
       this.shareButton.textContent = t('gameOver.shareFailed');
