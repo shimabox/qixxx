@@ -123,8 +123,14 @@ function runRecorded(options: { seed: number; timeLimitTicks?: number }) {
   const session = new GameSession({ ...options, fieldWidth: 40, fieldHeight: 30, captureFeedback: true });
   const recorder = new PlayLogRecorder();
   recorder.startRun();
-  const script = buildStageScript(40, 30);
+  // Each stage's script starts from that stage's marker start.
+  let script = buildStageScript(40, 30, session.getMarkerStart()!.point);
+  let scriptStage = 1;
   const inputAt = (tick: number): SessionInput => {
+    if (session.getStage() !== scriptStage) {
+      script = buildStageScript(40, 30, session.getMarkerStart()!.point);
+      scriptStage = session.getStage();
+    }
     let remaining = tick;
     for (const s of script) {
       if (remaining < s.ticks) return { dx: s.dx, dy: s.dy, drawHeld: s.drawHeld, slow: s.slow, confirm: false };

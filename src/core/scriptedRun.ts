@@ -3,12 +3,12 @@
 // pin the summary for a fixed seed so any change that alters the simulation
 // (score, stages reached, lives, claims, board, elapsed ticks) is caught.
 //
-// The script is a pure function of the tick index inside the current stage:
-// it never reads the board, so the inputs fed to the session are the same
-// list on every run. A StageClear is confirmed on its own tick, the same way
+// The script is a pure function of the stage's marker start and the tick
+// index inside the stage: it never reads the board, and a seed's starts are
+// fixed, so the inputs fed to the session are the same list on every run. A StageClear is confirmed on its own tick, the same way
 // a replay is driven (core/replayEngine.ts).
 import { GameSession, SessionInput, SessionOptions } from './session';
-import { Field } from './field';
+import { Field, Point } from './field';
 import { GameEvent } from './events';
 import { Axis } from './marker';
 
@@ -21,18 +21,39 @@ interface Segment {
 }
 
 /**
- * One stage's script on a `width` x `height` field: walk left along the top
- * border, then comb the field with vertical lines from top to bottom and
- * back, stepping right along the border between them. Every third line is
- * drawn slow. Each line closes on the opposite border and claims the strip
- * on the side without a Wisp (or splits the Wisps apart).
+ * The border walk from the marker's start to (`firstX`, 0) on the top edge:
+ * along the top edge from a top start; up the side and along the top from a
+ * left or right start; along the bottom to the bottom-left corner, up the
+ * left edge and along the top from a bottom start.
  */
-export function buildStageScript(width: number, height: number): Segment[] {
-  const segments: Segment[] = [];
-  const startX = Math.floor(width / 2);
+function walkToTopEdge(width: number, height: number, start: Point, firstX: number): Segment[] {
+  const walk = (dx: Axis, dy: Axis, ticks: number): Segment => ({ dx, dy, drawHeld: false, slow: false, ticks });
+  if (start.y === 0) {
+    return [start.x >= firstX ? walk(-1, 0, start.x - firstX) : walk(1, 0, firstX - start.x)];
+  }
+  if (start.y === height - 1) {
+    return [walk(-1, 0, start.x), walk(0, -1, height - 1), walk(1, 0, firstX)];
+  }
+  if (start.x === 0) {
+    return [walk(0, -1, start.y), walk(1, 0, firstX)];
+  }
+  return [walk(0, -1, start.y), walk(-1, 0, width - 1 - firstX)];
+}
+
+/**
+ * One stage's script on a `width` x `height` field: walk the border from the
+ * marker's `start` (the stage's start; the middle of the top edge by
+ * default) to near the top-left corner, then comb the field with vertical
+ * lines from top to bottom and back, stepping right along the border
+ * between them. Every third line is drawn slow. Each line closes on the
+ * opposite border and claims the strip on the side without a Wisp (or
+ * splits the Wisps apart). From the default start the walk is the same one
+ * the script has always made: straight left along the top.
+ */
+export function buildStageScript(width: number, height: number, start: Point = { x: Math.floor(width / 2), y: 0 }): Segment[] {
   const firstX = 3;
   const spacing = 3;
-  segments.push({ dx: -1, dy: 0, drawHeld: false, slow: false, ticks: startX - firstX });
+  const segments: Segment[] = walkToTopEdge(width, height, start, firstX);
   let goingDown = true;
   let line = 0;
   for (let x = firstX; x < width - 2; x += spacing) {
@@ -125,7 +146,9 @@ export function runScriptedSession(options: ScriptedRunOptions, maxTicks = 20000
   session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
   const width = sessionOptions.fieldWidth ?? session.getGame().getField().getWidth();
   const height = sessionOptions.fieldHeight ?? session.getGame().getField().getHeight();
-  const script = buildStageScript(width, height);
+  // Rebuilt as each stage starts, from that stage's marker start.
+  let script = buildStageScript(width, height, session.getMarkerStart()?.point);
+  let scriptStage = session.getStage();
 
   const events: GameEvent[] = [];
   const stages: StageSummary[] = [];
@@ -146,6 +169,10 @@ export function runScriptedSession(options: ScriptedRunOptions, maxTicks = 20000
       });
       session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
       continue;
+    }
+    if (session.getStage() !== scriptStage) {
+      script = buildStageScript(width, height, session.getMarkerStart()?.point);
+      scriptStage = session.getStage();
     }
     session.update(inputAt(script, session.getStageTicks()));
     onTick?.(session);

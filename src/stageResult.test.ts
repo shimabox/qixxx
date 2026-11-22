@@ -16,12 +16,15 @@ function scriptInput(script: ReturnType<typeof buildStageScript>, tick: number):
 }
 
 describe('StageResultTally on a scripted run', () => {
-  for (const options of [{ seed: 1352, fieldWidth: 40, fieldHeight: 30 }, { seed: 839, fieldWidth: 40, fieldHeight: 30 }]) {
+  // The rule invariance cases (core/rulesInvariance.test.ts); 3627 clears a stage by occupancy.
+  for (const options of [{ seed: 3627, fieldWidth: 40, fieldHeight: 30 }, { seed: 5481, fieldWidth: 40, fieldHeight: 30 }]) {
     it(`seed ${options.seed}: TOTAL is every point the stage added, AREA + BONUS, close calls and big claims included`, () => {
       const session = new GameSession({ ...options, captureFeedback: true });
       session.update({ ...IDLE, confirm: true });
       const field = session.getGame().getField();
-      const script = buildStageScript(field.getWidth(), field.getHeight());
+      // Each stage's script starts from that stage's marker start.
+      const scriptFor = () => buildStageScript(field.getWidth(), field.getHeight(), session.getMarkerStart()!.point);
+      let script = scriptFor();
       const tally = new StageResultTally();
       let stageStartScore = 0;
       let clears = 0;
@@ -36,6 +39,7 @@ describe('StageResultTally on a scripted run', () => {
           expect(tally.getTotal()).toBe(tally.getArea() + tally.getBonus());
           if (tally.getBonus() > 0) bonusSeen = true;
           session.update({ ...IDLE, confirm: true });
+          script = scriptFor();
           tally.reset();
           stageStartScore = session.getScore();
           continue;
@@ -53,7 +57,7 @@ describe('StageResultTally on a scripted run', () => {
       expect(bigClaimSeen).toBe(true);
       // A stage that ends in GAME OVER still adds up.
       expect(tally.getTotal()).toBe(session.getScore() - stageStartScore);
-      if (options.seed === 1352) expect(bonusSeen).toBe(true);
+      if (options.seed === 3627) expect(bonusSeen).toBe(true);
     });
   }
 });
