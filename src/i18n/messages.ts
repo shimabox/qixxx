@@ -42,6 +42,10 @@ export const messages = {
   // The EASY tag on the HUD and the GAME OVER screen: a label, English on
   // both pages.
   'difficulty.easy': same('EASY'),
+  // The Title screen's difficulty toggle reads the current choice: a button,
+  // so English on both pages.
+  'difficulty.toggleNormal': same('MODE: NORMAL'),
+  'difficulty.toggleEasy': same('MODE: EASY'),
 
   // --- Pause -----------------------------------------------------------------
   'pause.title': same('PAUSED'),

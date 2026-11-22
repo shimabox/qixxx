@@ -14,7 +14,8 @@ import {
 } from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
-import { loadMuted, saveMuted } from './storage/settings';
+import { loadDifficulty, loadMuted, saveDifficulty, saveMuted } from './storage/settings';
+import { DifficultyToggle } from './ui/difficultyToggle';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
@@ -106,7 +107,7 @@ import type { GameEvent } from './core/events';
 import type { ClaimFeedback } from './core/feedback';
 import { GameOverResult, GameOverRunTally, gameOverHighlightText, type GameOverCue } from './gameOverResult';
 import { sfxLevels } from './audio/sfxLevels';
-import type { SoundTestId } from './debug/panel';
+import type { DebugPanelHandle, SoundTestId } from './debug/panel';
 import { BgmPlayer, type BgmState, type BgmUpdate } from './audio/bgm';
 import { bgmTrackForStage } from './audio/bgmScore';
 
@@ -602,6 +603,10 @@ let gameOverModal: GameOverModal;
 let rankingUI: RankingUI;
 // The Title screen's HOW TO PLAY button and panel (src/ui/howToPlay.ts).
 let howToPlay: HowToPlayUI;
+// The Title screen's MODE: NORMAL / EASY toggle (src/ui/difficultyToggle.ts).
+let difficultyToggle: DifficultyToggle;
+// The `?debug` panel once it has mounted (dev builds only), else null.
+let debugPanel: DebugPanelHandle | null = null;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
 
@@ -884,6 +889,10 @@ function init(): void {
 
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
+  // The Title screen's last choice (NORMAL when none is saved or storage is
+  // unavailable): the first run is built at it, and every later one until
+  // the toggle picks another.
+  const difficulty = loadDifficulty();
   lastSavedHighScore = highScore;
   runBestAtStart = highScore;
   if (explicitSeedParam !== undefined) {
@@ -893,13 +902,13 @@ function init(): void {
     // so main.ts never needs to swap `session` mid-page-load.
     runMode = 'seeded';
     seededRunSeed = explicitSeedParam;
-    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true });
+    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true, difficulty });
   } else {
     // Normal mode's initial Title board is seeded here, at construction —
     // stage 1's board is already fully built by the time Title is ever
     // shown (see GameSession's own module doc comment), so there's no later
     // "Title -> Playing" moment this could instead hook into.
-    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true });
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true, difficulty });
   }
   // captureFeedback only adds read-only claim/miss notices for the impact
   // feedback below; the run itself (and so its replay) is unchanged.
@@ -1053,6 +1062,14 @@ function init(): void {
       titleStartRequested = true;
     },
   });
+  difficultyToggle = new DifficultyToggle({
+    anchor: canvasWrap,
+    // Under the field it must stay inside #game-root (which clips what
+    // overflows it) and on screen.
+    getBottomLimit: () => Math.min(gameRoot.getBoundingClientRect().bottom, window.innerHeight),
+    onToggle: toggleDifficulty,
+  });
+  difficultyToggle.setDifficulty(session.getNextDifficulty());
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
@@ -1174,7 +1191,7 @@ function init(): void {
   // src/debug/panel.ts and the "no debug code in dist/" build check.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
     void import('./debug/panel').then(({ initDebugPanel }) => {
-      initDebugPanel(() => session, hudRow, {
+      debugPanel = initDebugPanel(() => session, hudRow, {
         params: fxParams,
         fx,
         hitStop,
@@ -1288,6 +1305,26 @@ function finishPlayLogRun(): boolean {
 
 function notifyPlayLogChanged(): void {
   for (const listener of playLogListeners) listener();
+}
+
+// The Title screen's MODE toggle was pressed: the other difficulty is picked
+// and saved, and the run waiting on Title is built again at it, on the same
+// seed — its lives, its Wisps' speed, the HUD and the board all follow at
+// once, and starting then plays what is shown. Only on the live Title screen
+// (the toggle shows nowhere else); a Title demo playing behind it carries on.
+function toggleDifficulty(): void {
+  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return;
+  const next: Difficulty = session.getNextDifficulty() === 'easy' ? 'normal' : 'easy';
+  saveDifficulty(next);
+  session.setNextDifficulty(next);
+  session.rebuildTitleRun();
+  // The `?debug` panel shows the rebuilt run's values (its Wisp speed is the
+  // new difficulty's).
+  debugPanel?.refresh();
+  difficultyToggle.setDifficulty(next);
+  // The board is a new one: the fill reveal must not compare it with the last.
+  renderer.resetBoard();
+  lastHudKey = '';
 }
 
 function toggleMute(): void {
@@ -1816,10 +1853,15 @@ function fitCanvasToViewport(): void {
   applyTitleButtonsCompact();
   // HOW TO PLAY stays clear of RANKING on the new field width.
   howToPlay?.layout();
+  // The MODE toggle: small with the other Title buttons, and under the field
+  // on the fields too small for its corner.
+  difficultyToggle?.setFieldSize(titleButtonsCompact, tinyField);
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
   hudRow.style.width = `${cssWidth}px`;
+  // Placed last, against the field and the page as they now are.
+  difficultyToggle?.layout();
 }
 
 // Update logic (fixed timestep)
@@ -2258,6 +2300,8 @@ function renderFrame(): void {
   // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
   const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
   howToPlay.syncAvailability(liveTitle);
+  // So is the MODE toggle — and like them it stays up under an open panel.
+  difficultyToggle.setShown(liveTitle);
   // While the sound is off on the live Title screen, the sound toggle glows
   // so it is noticed before a run starts.
   setMuteButtonAttention(liveTitle && sfx.isMuted());

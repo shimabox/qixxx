@@ -829,9 +829,9 @@ function buildPlayLogSection(hooks: DebugPlayLogHooks, exportOutput: HTMLTextAre
  * sliders if it ever swaps the `GameSession` instance the `getSession`
  * getter passed to initDebugPanel() resolves to (P2 user-review fix,
  * 2026-08-11 — see initDebugPanel()'s doc comment for the full rationale).
- * No current caller does this (main.ts builds `session` once in init() and
- * never reconstructs it), so `refresh` currently goes unused, but the hook
- * stays correct for free if session-swapping is ever reintroduced.
+ * main.ts builds `session` once in init() and never swaps it; it calls
+ * `refresh` when the Title screen's MODE toggle rebuilds the run waiting on
+ * Title at the other difficulty, whose Wisp speed differs.
  */
 export interface DebugPanelHandle {
   /**
@@ -842,8 +842,8 @@ export interface DebugPanelHandle {
    * always affect whatever `getSession()` currently returns (see
    * initDebugPanel()'s doc comment), but the displayed positions would
    * otherwise still show the previous session's last values until the
-   * player touches a slider again. Currently unused, since no caller swaps
-   * sessions today.
+   * player touches a slider again. Also called after the session rebuilds
+   * its run at another difficulty (the same instance, new values).
    */
   refresh: () => void;
 }
@@ -1045,13 +1045,12 @@ function buildPanel(
   // Reads from `getSession()` fresh every call (not a captured `session`)
   // so a session swap would be picked up automatically if one were ever
   // reintroduced — see initDebugPanel()'s doc comment. Exported as this
-  // panel's `sync` (DebugPanelHandle.refresh(), currently unused since no
-  // caller swaps sessions today — see that interface's doc comment), for a
-  // future caller to invoke right after swapping sessions so the sliders'
-  // *displayed* values would catch up to the new session's own (fresh,
-  // override-free) defaults immediately, rather than silently showing the
-  // discarded session's last values until the player happens to touch a
-  // slider again.
+  // panel's `sync` (DebugPanelHandle.refresh() — see that interface's doc
+  // comment), for a caller to invoke right after the session's values change
+  // under the panel (a run rebuilt at another difficulty, or a swapped
+  // session) so the sliders' *displayed* values catch up at once, rather
+  // than showing the old values until the player happens to touch a slider
+  // again.
   const syncFromEffectiveParams = (): void => {
     const params = getSession().getEffectiveDebugParams();
     for (const field of FIELDS) {
