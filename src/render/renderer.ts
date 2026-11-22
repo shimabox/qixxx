@@ -15,6 +15,7 @@ import {
   type FxTextBox,
 } from './fxLayer';
 import { drawHintMarks, type HintMarkShapes } from './hintLayer';
+import { drawStartCue, startCueLineWidth, startCueRing, type StartCueRing } from './startCueLayer';
 import { wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
 
 /** One Wisp to draw: its trail (Wisp.getTrailRef()) and speed multiplier (Wisp.getSpeedMultiplier()). */
@@ -129,6 +130,8 @@ export class Renderer {
   private missReasonMinFontPx = 0;
   private fxAvoidBand: FxAvoidBand | null = null;
   private lastFxTextBoxes: { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } = { stageTitle: null, claimTags: [] };
+  private lastStartCue: StartCueRing | null = null;
+  private startCueMinLineWidthPx = 0;
   private hintMarks: HintMarkShapes | null = null;
   private veilAlpha = 0;
   private lastVeilAlpha = 0;
@@ -313,6 +316,17 @@ export class Renderer {
     this.lastFxTextBoxes.stageTitle = fx?.stageTitle
       ? drawStageTitle(this.ctx, fx.stageTitle, this.fxTextMinFontPx, this.fxAvoidBand)
       : null;
+    // The start cue: on the marker wherever it is now (even on a blinked-off
+    // frame), over the stage title shown at the same time so a start near
+    // the title is never hidden by it, and moved with the board when it
+    // shakes, so it stays on the marker.
+    this.lastStartCue = startCueRing(fx?.startCue ?? null, markerPosition);
+    if (this.lastStartCue) {
+      this.ctx.save();
+      if (shaking) this.ctx.translate(fx.shake.x, fx.shake.y);
+      drawStartCue(this.ctx, this.lastStartCue, this.startCueMinLineWidthPx);
+      this.ctx.restore();
+    }
     // The miss reason: over the flash so the burst never washes it out, and
     // outside the shake, since it is there to be read.
     if (fx?.missReason) drawMissReason(this.ctx, fx.missReason, this.missReasonMinFontPx);
@@ -352,6 +366,20 @@ export class Renderer {
    */
   setFxAvoidBand(band: FxAvoidBand | null): void {
     this.fxAvoidBand = band;
+  }
+
+  /**
+   * The thinnest line the start cue is drawn with (logical px): main.ts sets
+   * FX_START_CUE_MIN_LINE_DISPLAY_PX divided by the field's display scale, so
+   * the ring stays visible on a field shown small. Drawing only.
+   */
+  setStartCueMinLineWidthPx(px: number): void {
+    this.startCueMinLineWidthPx = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /** The start cue's ring the last frame drew (logical canvas px, with its line width), or null, for tests. */
+  getLastStartCue(): (StartCueRing & { lineWidth: number }) | null {
+    return this.lastStartCue ? { ...this.lastStartCue, lineWidth: startCueLineWidth(this.startCueMinLineWidthPx) } : null;
   }
 
   /** Where the last frame drew the stage title and the claim tags (logical canvas px), for tests. */

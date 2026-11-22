@@ -39,6 +39,8 @@ declare global {
 
 type GameHook = {
   getTitleDemo: () => DemoProbe;
+  /** The start cue's ring the last frame drew, or null. */
+  getStartCue: () => unknown;
   session: {
     getStatus: () => string;
     getScore: () => number;
@@ -264,6 +266,9 @@ test.describe('title demo', () => {
     await page.clock.runFor(FRAME_MS * 2);
     const first = await demo(page);
     expect(first.veil).toBeCloseTo(0.55, 5);
+    // The demo run starts its stage with no start cue around its marker.
+    const startCue = () => page.evaluate(() => (window as unknown as { __game__: GameHook }).__game__.getStartCue());
+    expect(await startCue()).toBeNull();
     await expect(page.locator('#title-demo-label')).toBeVisible();
     await expect(page.locator('#title-demo-label')).toHaveText('DEMO');
     expect(await page.locator('#title-demo-label').evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none');
@@ -273,6 +278,7 @@ test.describe('title demo', () => {
     expect(later.shown).toBe(true);
     expect(later.ticks!).toBeGreaterThan(first.ticks! + 60);
     expect(later.marker).not.toEqual(first.marker);
+    expect(await startCue()).toBeNull();
 
     // The HUD is still the live run's, and the field and the HUD lines kept their layout.
     expect(await page.locator('#hud').innerText()).toBe(hudBefore);

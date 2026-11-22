@@ -335,11 +335,17 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
 
     const wallColumn = cornered + 25;
     const marker = session.getGame().getMarker();
-    while (marker.getPosition().x > wallColumn) {
-      session.update({ dx: -1, dy: 0, drawHeld: false, confirm: false });
+    // Stage 1 starts on the top edge; with rng 0.5 every later stage starts
+    // on the bottom one (candidate floor(0.5 x 4) = 2 of top, right, bottom,
+    // left): walk along that edge to the wall
+    // column and draw across to the other.
+    const edge = session.getMarkerStart()!.edge;
+    expect(['top', 'bottom']).toContain(edge);
+    while (marker.getPosition().x !== wallColumn) {
+      session.update({ dx: marker.getPosition().x > wallColumn ? -1 : 1, dy: 0, drawHeld: false, confirm: false });
     }
     for (let tick = 0; tick < FIELD_HEIGHT - 1; tick++) {
-      session.update({ dx: 0, dy: 1, drawHeld: true, confirm: false });
+      session.update({ dx: 0, dy: edge === 'top' ? 1 : -1, drawHeld: true, confirm: false });
     }
   }
 

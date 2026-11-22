@@ -14,8 +14,8 @@ import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MI
 const SCRIPTED_CASES = [
   // The rule invariance cases (core/rulesInvariance.test.ts): each has close
   // calls and big claims.
-  { seed: 1352, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 839, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 3627, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 5481, fieldWidth: 40, fieldHeight: 30 },
   { seed: 120 },
 ];
 
