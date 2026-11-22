@@ -14,6 +14,7 @@ import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
 import type { ClaimFeedback, MissFeedback } from './feedback';
 import { mulberry32, deriveStageSeed } from './rng';
+import { MarkerStart, drawMarkerStart, topCenterMarkerStart } from './markerStart';
 import {
   INITIAL_LIVES,
   DEFAULT_SCORE_MULTIPLIER,
@@ -179,6 +180,9 @@ export class GameSession {
   // session-lifetime rng field, since a seeded run's rng source is itself
   // per-stage (see `seed` above).
   private currentStageRng?: Rng;
+  // Where the current stage's marker started (see chooseMarkerStart()), or
+  // null when a test's `gameFactory` built the stage.
+  private markerStart: MarkerStart | null = null;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
@@ -384,6 +388,14 @@ export class GameSession {
    */
   getGame(): Game {
     return this.game;
+  }
+
+  /**
+   * Where the current stage's marker started: its edge and cell. Null when
+   * the stage was built by a test's `gameFactory`.
+   */
+  getMarkerStart(): MarkerStart | null {
+    return this.markerStart ? { edge: this.markerStart.edge, point: { ...this.markerStart.point } } : null;
   }
 
   /**
@@ -655,6 +667,8 @@ export class GameSession {
     // (or undefined, i.e. Math.random downstream) for every stage, exactly
     // as before this feature existed.
     this.currentStageRng = this.seed !== undefined ? mulberry32(deriveStageSeed(this.seed, stage)) : this.baseRng;
+    // Set again by buildDefaultStageGame(); a test's gameFactory picks its own start.
+    this.markerStart = null;
     const game = this.gameFactory ? this.gameFactory(stage, carry) : this.buildDefaultStageGame(stage, carry);
 
     // Debug overrides persist across stages (docs/plan.md §6 M10): a fresh
@@ -666,13 +680,27 @@ export class GameSession {
     return game;
   }
 
+  /**
+   * Where the marker starts `stage` — the one place that decides it. Stage 1
+   * always starts at the middle of the top edge and draws nothing from the
+   * rng; every later stage draws one of the candidates (core/markerStart.ts)
+   * from the stage's own rng, with exactly one call. buildDefaultStageGame()
+   * calls this before anything else draws from that rng (the Wisps come
+   * after), and that order is part of what a replay reproduces.
+   */
+  private chooseMarkerStart(stage: number, field: Field): MarkerStart {
+    if (stage === 1) return topCenterMarkerStart(field.getWidth());
+    return drawMarkerStart(field.getWidth(), field.getHeight(), this.currentStageRng ?? Math.random);
+  }
+
   private buildDefaultStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
     const config = getStageConfig(stage);
     const field = new Field(this.fieldWidth, this.fieldHeight);
-    const markerStart: Point = { x: Math.floor(field.getWidth() / 2), y: 0 };
-    const wisps = this.buildWisps(field, config);
+    const markerStart = this.chooseMarkerStart(stage, field);
+    this.markerStart = markerStart;
+    const wisps = this.buildWisps(field, config, markerStart);
 
-    return new Game(field, markerStart, undefined, this.currentStageRng, {
+    return new Game(field, markerStart.point, undefined, this.currentStageRng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
       firstEmberSpawnTicks: config.firstEmberSpawnTicks,
@@ -701,15 +729,13 @@ export class GameSession {
    * cells (best effort on fields too small to fit the full offset) so that
    * exploit no longer works reliably.
    */
-  private buildWisps(field: Field, config: StageConfig): Wisp[] {
+  private buildWisps(field: Field, config: StageConfig, markerStart: MarkerStart): Wisp[] {
     const width = field.getWidth();
     const height = field.getHeight();
     const rng = this.currentStageRng ?? Math.random;
     const spacing = 3;
 
-    // Marker always starts at { x: floor(width/2), y: 0 } — see
-    // buildDefaultStageGame() above.
-    const markerColumn = Math.floor(width / 2);
+    const markerColumn = markerStart.point.x;
 
     // Draw the cluster center from the field's interior, kept off the
     // walls by WISP_SPAWN_MARGIN_X_RATIO/_Y_RATIO on every side.

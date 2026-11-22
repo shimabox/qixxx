@@ -161,6 +161,18 @@ export const WISP_SPAWN_MARGIN_Y_RATIO = 0.25;
 // not be wide enough to honor this fully; buildWisps() degrades gracefully
 // there (best effort, still fully clamped inside the field).
 export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN = 15;
+// The same guarantee for a marker that starts on the left or right edge: the
+// cluster center keeps at least this many rows from the marker's starting
+// row. The Wisps line up in one row, so a center on the start row would put
+// the whole cluster in reach of one straight line from the start.
+export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW = 15;
+
+// Where on its edge the marker may start a stage, as fractions of the edge's
+// length (core/markerStart.ts): each of the four edges offers these points,
+// in this order, so there are 4 x (this list's length) candidates — one at
+// the middle of each edge. Stage 1 always starts at the top edge's middle;
+// from stage 2 one candidate is drawn at random per stage.
+export const MARKER_START_FRACTIONS: readonly number[] = [0.5];
 
 // Marker movement rate: number of ticks required to advance one grid cell.
 // Fast = 1 tick/cell. Slow (M3, §5.1) halves the effective speed (2 ticks/cell).
