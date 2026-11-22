@@ -32,6 +32,7 @@ declare global {
       getReplayAutoAdvanceLog: () => boolean[];
       fx: { getFrame: () => { stageTitle: unknown } };
       getFxTextBoxes: () => { stageTitle: unknown };
+      getStartCue: () => unknown;
     };
   }
 }
@@ -1294,9 +1295,14 @@ test.describe('replay viewing', () => {
     // because this fixture spans several stages. The HUD reflects whichever
     // session is being rendered, so during replay it shows the replay's.
     await expect(page.locator('#hud')).toContainText('STAGE 1');
-    // A replay shows no stage title: not as its stage 1 plays...
+    // A replay shows no stage title and no start cue: not as its stage 1 plays...
     const noStageTitle = () =>
-      page.evaluate(() => window.__game__!.fx.getFrame().stageTitle === null && window.__game__!.getFxTextBoxes().stageTitle === null);
+      page.evaluate(
+        () =>
+          window.__game__!.fx.getFrame().stageTitle === null &&
+          window.__game__!.getFxTextBoxes().stageTitle === null &&
+          window.__game__!.getStartCue() === null
+      );
     expect(await noStageTitle()).toBe(true);
     // The control bar says which stage of how many is on screen, and marks
     // the run's LAST stage as such — on stage 1
