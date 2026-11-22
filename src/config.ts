@@ -117,6 +117,24 @@ export const TIME_LIMIT_TICKS = 10800;
 
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
+
+// EASY (src/core/difficulty.ts), chosen on the Title screen: every stage's
+// Wisps move at the stage table's speed times EASY_WISP_SPEED_FACTOR, and a
+// new run starts with EASY_INITIAL_LIVES (carried across stages as on
+// NORMAL). Everything else — time, Embers, goals, scoring — is NORMAL's.
+export const EASY_WISP_SPEED_FACTOR = 0.7;
+export const EASY_INITIAL_LIVES = 5;
+// The GAME OVER screen suggests EASY once EASY_PROMPT_STREAK_RUNS kept runs
+// in a row (the play log's newest, this one included) ended on stage
+// EASY_PROMPT_STREAK_STAGE or earlier. Back on the Title screen after it, the
+// MODE button's border lights up and pulses EASY_PROMPT_TOGGLE_PULSE_COUNT
+// times, EASY_PROMPT_TOGGLE_PULSE_SEC each (lit and still with reduced
+// motion), in EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR.
+export const EASY_PROMPT_STREAK_RUNS = 3;
+export const EASY_PROMPT_STREAK_STAGE = 3;
+export const EASY_PROMPT_TOGGLE_PULSE_COUNT = 3;
+export const EASY_PROMPT_TOGGLE_PULSE_SEC = 1.6;
+export const EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR = '#ffffff';
 // Grace period after a miss (ticks) during which no further miss can be
 // triggered (docs/plan.md §3.5 sanity: without it, an enemy sharing the
 // marker's cell — e.g. an Ember passing over a stationary marker — would
