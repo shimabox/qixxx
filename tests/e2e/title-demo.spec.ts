@@ -560,8 +560,9 @@ test.describe('title demo', () => {
   });
 });
 
-// The DEMO tag sits inside the field's box, clear of the title text and both
-// Title buttons, on every supported shape; the field and the HUD lines keep
+// The DEMO tag sits inside the field's box, in its bottom-left corner, clear
+// of the title text and the Title menu (its row and its three buttons), on
+// every supported shape; the field and the HUD lines keep
 // the layout they have without the demo.
 const LAYOUTS = [
   { viewport: { width: 1280, height: 800 }, hasTouch: false, field: { width: 1021, height: 766, left: 129.5, top: 34 } },
@@ -571,7 +572,7 @@ const LAYOUTS = [
 ];
 for (const c of LAYOUTS) {
   for (const locale of ['en-US', 'ja-JP']) {
-    test(`the DEMO tag at ${c.viewport.width}x${c.viewport.height} (${locale}) stays on the field, clear of the title text and buttons`, async ({ browser }) => {
+    test(`the DEMO tag at ${c.viewport.width}x${c.viewport.height} (${locale}) stays on the field, clear of the title text and the Title menu`, async ({ browser }) => {
       const context = await browser.newContext({ locale, viewport: c.viewport, hasTouch: c.hasTouch });
       const page = await context.newPage();
       await mockBoard(page, fullBoard());
@@ -591,7 +592,13 @@ for (const c of LAYOUTS) {
           field: r('game-canvas'),
           label: r('title-demo-label'),
           fontSize: getComputedStyle(document.getElementById('title-demo-label')!).fontSize,
-          others: { screen: r('screen'), howToPlay: r('how-to-play-button'), ranking: r('ranking-button') },
+          others: {
+            screen: r('screen'),
+            menu: r('title-menu'),
+            howToPlay: r('how-to-play-button'),
+            ranking: r('ranking-button'),
+            mode: r('difficulty-button'),
+          },
         };
       });
       expect(boxes.label.left).toBeGreaterThanOrEqual(boxes.field.left);
