@@ -64,11 +64,10 @@ import {
   HUD_GAUGE_GOAL_COLOR,
   GAMEOVER_MODAL_COMPACT_BELOW_PX,
   GAMEOVER_MODAL_TINY_BELOW_PX,
-  TITLE_BUTTONS_COMPACT_BELOW_PX,
-  TITLE_TEXT_COMPACT_OFFSET_PX,
   TITLE_DEMO_START_DELAY_TICKS,
   TITLE_DEMO_END_HOLD_TICKS,
   TITLE_DEMO_DIM_ALPHA,
+  TITLE_DEMO_LABEL_COMPACT_BELOW_PX,
   TITLE_DEMO_LABEL_FONT_PX,
   TITLE_DEMO_LABEL_FONT_COMPACT_PX,
   TITLE_DEMO_LABEL_INSET_PX,
@@ -77,6 +76,7 @@ import {
   PAUSE_OVERLAY_COMPACT_BELOW_PX,
   BGM_FADE_SEC,
   BGM_GAMEOVER_FADE_SEC,
+  TOUCH_DPAD_HIT_MARGIN,
 } from './config';
 import { hudGoalText } from './hudGoal';
 import {
@@ -100,6 +100,7 @@ import { suggestsEasy } from './playLog/summary';
 import type { PlayRecord } from './playLog/record';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
+import { TitleMenu, type TitleMenuRect } from './ui/titleMenu';
 import { PauseControl, type PauseContext, type PauseToggle } from './pause';
 import { PauseOverlay } from './ui/pauseOverlay';
 import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
@@ -366,7 +367,8 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
 // bottom-left corner while the demo board is on screen (see `titleDemo`).
 // Never clickable, so a tap there still reaches the field and starts a run.
 // Its size and distance from the corner follow the field's size
-// (applyTitleButtonsCompact()).
+// (applyTitleDemoLabelSize()); it moves to the top-left corner while the
+// Title menu takes the field's bottom edge (placeTitleDemoLabel()).
 function getTitleDemoLabelElement(wrap: HTMLDivElement): HTMLDivElement {
   let label = document.getElementById('title-demo-label') as HTMLDivElement | null;
   if (!label) {
@@ -619,6 +621,8 @@ let rankingUI: RankingUI;
 let howToPlay: HowToPlayUI;
 // The Title screen's MODE: NORMAL / EASY toggle (src/ui/difficultyToggle.ts).
 let difficultyToggle: DifficultyToggle;
+// The row holding HOW TO PLAY, RANKING and MODE (src/ui/titleMenu.ts).
+let titleMenu: TitleMenu;
 // The `?debug` panel once it has mounted (dev builds only), else null.
 let debugPanel: DebugPanelHandle | null = null;
 let muteButton: HTMLButtonElement;
@@ -699,8 +703,10 @@ let fieldDisplayScale = 1;
 // The field's on-screen width and height (CSS px), for the hint line's text size.
 let fieldCssWidth = CANVAS_WIDTH;
 let fieldCssHeight = CANVAS_HEIGHT;
-// The Title screen's buttons are the small ones (applyTitleButtonsCompact()).
-let titleButtonsCompact = false;
+// The DEMO tag is the small one (applyTitleDemoLabelSize()), and sits in the
+// field's top-left corner rather than the bottom-left (placeTitleDemoLabel()).
+let titleDemoLabelCompact = false;
+let titleDemoLabelAtTop = false;
 let hudScore: HTMLSpanElement;
 // The HUD's lives marks. Line height 0: the marks come from a fallback font
 // whose taller metrics would otherwise make the HUD line 1px taller, and with
@@ -1076,10 +1082,27 @@ function init(): void {
     // One panel at a time over the Title screen.
     onListOpen: () => howToPlay.close(),
   });
-  rankingUI.mountTitleButton();
-  howToPlay = new HowToPlayUI({
+  titleMenu = new TitleMenu({
     anchor: canvasWrap,
-    getRankingButton: () => rankingUI.getTitleButton(),
+    getScreen: () => screen,
+    getDemoLabel: () => titleDemoLabel,
+    placeDemoLabel: placeTitleDemoLabel,
+    // Under the field it must stay inside #game-root (which clips what
+    // overflows it) and on screen.
+    getVisibleRect: () => {
+      const root = gameRoot.getBoundingClientRect();
+      return {
+        left: Math.max(root.left, 0),
+        top: Math.max(root.top, 0),
+        right: Math.min(root.right, window.innerWidth),
+        bottom: Math.min(root.bottom, window.innerHeight),
+      };
+    },
+    getAvoidRects: titleMenuAvoidRects,
+  });
+  rankingUI.mountTitleButton(titleMenu.getElement());
+  howToPlay = new HowToPlayUI({
+    parent: titleMenu.getElement(),
     touch: touchDevice,
     onOpen: () => rankingUI.hideList(),
     resetHints: resetSeenHints,
@@ -1091,13 +1114,14 @@ function init(): void {
     },
   });
   difficultyToggle = new DifficultyToggle({
-    anchor: canvasWrap,
-    // Under the field it must stay inside #game-root (which clips what
-    // overflows it) and on screen.
-    getBottomLimit: () => Math.min(gameRoot.getBoundingClientRect().bottom, window.innerHeight),
+    parent: titleMenu.getElement(),
     onToggle: toggleDifficulty,
   });
   difficultyToggle.setDifficulty(session.getNextDifficulty());
+  // Left to right, and in this order for Tab.
+  titleMenu.setButtons([howToPlay.getButton(), rankingUI.getTitleButton()!, difficultyToggle.getButton()], () =>
+    difficultyToggle.reserveWidth()
+  );
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
@@ -1893,20 +1917,14 @@ function fitCanvasToViewport(): void {
   rankingUI.setSubmitPanelCompact(tinyField);
   // The pause screen's heading, RESUME and hint stay on a small field.
   pauseOverlay.setCompact(cssHeight < PAUSE_OVERLAY_COMPACT_BELOW_PX);
-  // On a small field the Title screen's two buttons shrink into one row
-  // along the top edge, clear of the title text.
-  applyTitleButtonsCompact();
-  // HOW TO PLAY stays clear of RANKING on the new field width.
-  howToPlay?.layout();
-  // The MODE toggle: small with the other Title buttons, and under the field
-  // on the fields too small for its corner.
-  difficultyToggle?.setFieldSize(titleButtonsCompact, tinyField);
+  // The DEMO tag is smaller on a small field.
+  applyTitleDemoLabelSize();
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
   hudRow.style.width = `${cssWidth}px`;
-  // Placed last, against the field and the page as they now are.
-  difficultyToggle?.layout();
+  // The Title menu is placed last, against the field and the page as they now are.
+  titleMenu?.layout();
 }
 
 // Update logic (fixed timestep)
@@ -2193,16 +2211,40 @@ function playGameOverCues(cues: readonly GameOverCue[]): void {
   }
 }
 
-// The Title screen's HOW TO PLAY and RANKING buttons, small and in one row on
-// a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall.
-function applyTitleButtonsCompact(): void {
-  titleButtonsCompact = fieldCssHeight < TITLE_BUTTONS_COMPACT_BELOW_PX;
-  rankingUI.setTitleButtonCompact(titleButtonsCompact);
-  howToPlay?.setCompact(titleButtonsCompact);
-  // The DEMO tag shrinks on the same small fields, nearer its corner.
-  titleDemoLabel.style.fontSize = `${titleButtonsCompact ? TITLE_DEMO_LABEL_FONT_COMPACT_PX : TITLE_DEMO_LABEL_FONT_PX}px`;
-  titleDemoLabel.style.left = `${titleButtonsCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
-  titleDemoLabel.style.bottom = `${titleButtonsCompact ? TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
+// The DEMO tag, small and nearer its corner on a field shown less than
+// TITLE_DEMO_LABEL_COMPACT_BELOW_PX tall.
+function applyTitleDemoLabelSize(): void {
+  titleDemoLabelCompact = fieldCssHeight < TITLE_DEMO_LABEL_COMPACT_BELOW_PX;
+  titleDemoLabel.style.fontSize = `${titleDemoLabelCompact ? TITLE_DEMO_LABEL_FONT_COMPACT_PX : TITLE_DEMO_LABEL_FONT_PX}px`;
+  titleDemoLabel.style.left = `${titleDemoLabelCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
+  placeTitleDemoLabel(titleDemoLabelAtTop);
+}
+
+// The DEMO tag in the field's bottom-left corner, or in its top-left corner
+// while the Title menu takes the field's bottom edge (src/ui/titleMenu.ts).
+function placeTitleDemoLabel(atTop: boolean): void {
+  titleDemoLabelAtTop = atTop;
+  const side = titleDemoLabelCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX;
+  const bottom = titleDemoLabelCompact ? TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX;
+  titleDemoLabel.style.top = atTop ? `${side}px` : '';
+  titleDemoLabel.style.bottom = atTop ? '' : `${bottom}px`;
+}
+
+// What the Title menu must not cover: every shown touch control (the d-pad
+// with its wider hit area), the SOUND button and the credit.
+function titleMenuAvoidRects(): TitleMenuRect[] {
+  const rects: TitleMenuRect[] = [];
+  const add = (el: Element | null, grow = 0) => {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return;
+    rects.push({ left: r.left - grow, top: r.top - grow, right: r.right + grow, bottom: r.bottom + grow });
+  };
+  add(document.getElementById('touch-dpad'), TOUCH_DPAD_HIT_MARGIN);
+  for (const button of document.querySelectorAll('#touch-controls button')) add(button);
+  add(muteButton);
+  add(creditLink);
+  return rects;
 }
 
 // The hint line's rows of the field, in logical canvas pixels (with a little
@@ -2359,6 +2401,8 @@ function renderFrame(): void {
   const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
   howToPlay.syncAvailability(liveTitle);
   // So is the MODE toggle — and like them it stays up under an open panel.
+  // The Title menu holding the three is shown and placed once the title
+  // text has been written below (titleMenu.sync()).
   difficultyToggle.setShown(liveTitle);
   // While the sound is off on the live Title screen, the sound toggle glows
   // so it is noticed before a run starts.
@@ -2402,6 +2446,7 @@ function renderFrame(): void {
       lastScreenText = text;
       screen.textContent = text;
     }
+    titleMenu.sync(lastScreenText);
     return;
   }
 
@@ -2518,11 +2563,8 @@ function renderFrame(): void {
       writeScreen(text);
     }
   }
-  // With the small Title buttons in a row along the field's top edge, the
-  // title text sits a little lower, clear of them.
-  const lowered = titleButtonsCompact && status === 'title' && viewMode === 'live' && replayEngine === null;
-  const screenTop = lowered ? `calc(50% + ${TITLE_TEXT_COMPACT_OFFSET_PX}px)` : '50%';
-  if (screen.style.top !== screenTop) screen.style.top = screenTop;
+  // The Title menu under the title text as now written.
+  titleMenu.sync(lastScreenText);
 }
 
 // The music, once per frame (see `bgm`): wanted through the live run's

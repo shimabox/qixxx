@@ -1,5 +1,5 @@
-// HOW TO PLAY: a button on the Title screen (the field's top-left corner,
-// across from RANKING) that opens a one-screen panel of four small pictures
+// HOW TO PLAY: a button on the Title screen (the first of the Title menu's,
+// src/ui/titleMenu.ts) that opens a one-screen panel of four small pictures
 // — draw, close, the side without enemies, the split — each with one line,
 // and a line on the goal and the time. It never opens by itself. Its PLAY
 // WITH HINTS button forgets the in-play hints already seen and starts a run,
@@ -28,15 +28,10 @@ import {
   HUD_ACCENT_COLOR,
   HUD_FONT,
   HUD_TEXT_COLOR,
-  TITLE_BUTTON_COMPACT_FONT_PX,
-  TITLE_BUTTON_COMPACT_INSET_PX,
-  TITLE_BUTTON_COMPACT_PADDING,
 } from '../config';
 import type { MessageKey } from '../i18n';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-// Gap between the two title buttons, and from the field's edges.
-const BUTTON_INSET_PX = 8;
 // The panel's room from the screen's edges.
 const PANEL_MARGIN_PX = 8;
 // A landscape screen lower than this lays the four pictures in one row.
@@ -55,10 +50,8 @@ const HOW_TO_PLAY_WITH_HINTS_BACKGROUND = 'rgba(0, 255, 65, 0.16)';
 const BUTTON_PRESS_KEYS: readonly string[] = ['Enter', 'NumpadEnter', 'Space'];
 
 export interface HowToPlayOptions {
-  /** #canvas-wrap: the button sits in its top-left corner. */
-  anchor: HTMLElement;
-  /** The RANKING button, to stay clear of it. */
-  getRankingButton: () => HTMLElement | null;
+  /** The Title menu's row (src/ui/titleMenu.ts): the button's parent. */
+  parent: HTMLElement;
   /** A touch device: the touch wording of the first line. */
   touch: boolean;
   /** Called when the panel opens (closes the ranking list). */
@@ -270,7 +263,6 @@ export class HowToPlayUI {
   private readonly keptKeyDowns = new WeakMap<Event, boolean>();
   private allowed: boolean | null = null;
   private opened = false;
-  private compact = false;
   // Built by buildPanel().
   private panel!: HTMLDivElement;
   private grid!: HTMLDivElement;
@@ -346,7 +338,6 @@ export class HowToPlayUI {
     this.allowed = allowed;
     this.button.style.display = allowed ? 'block' : 'none';
     if (!allowed) this.close();
-    else this.layout();
   }
 
   open(): void {
@@ -391,50 +382,6 @@ export class HowToPlayUI {
     this.options.startRun();
   }
 
-  /**
-   * The small button for a field shown less than
-   * TITLE_BUTTONS_COMPACT_BELOW_PX tall, matching RANKING's
-   * (RankingUI.setTitleButtonCompact()): the two then sit in one row along
-   * the field's top edge. main.ts calls it whenever the field is resized,
-   * before layout().
-   */
-  setCompact(compact: boolean): void {
-    if (compact === this.compact) return;
-    this.compact = compact;
-    const s = this.button.style;
-    // The roomy values are buildButton()'s own.
-    s.fontSize = compact ? `${TITLE_BUTTON_COMPACT_FONT_PX}px` : '1em';
-    s.padding = compact ? TITLE_BUTTON_COMPACT_PADDING : '8px 16px';
-    s.maxWidth = `calc(100% - ${this.inset() * 2}px)`;
-    this.layout();
-  }
-
-  private inset(): number {
-    return this.compact ? TITLE_BUTTON_COMPACT_INSET_PX : BUTTON_INSET_PX;
-  }
-
-  /**
-   * Keeps the button clear of RANKING: in the top-left corner when both fit
-   * side by side, otherwise right under RANKING in the top-right corner.
-   * Called when the button shows and whenever the field is resized.
-   */
-  layout(): void {
-    const ranking = this.options.getRankingButton();
-    const s = this.button.style;
-    const inset = this.inset();
-    s.left = `${inset}px`;
-    s.right = '';
-    s.top = `${inset}px`;
-    if (!ranking || this.button.style.display === 'none' || ranking.style.display === 'none') return;
-    const wrap = this.options.anchor.getBoundingClientRect();
-    const mine = this.button.getBoundingClientRect();
-    const theirs = ranking.getBoundingClientRect();
-    if (mine.right + inset <= theirs.left) return;
-    s.left = '';
-    s.right = `${inset}px`;
-    s.top = `${theirs.bottom - wrap.top + inset}px`;
-  }
-
   /** Lays the open panel out for the screen it is on (howToPlayPanelLayout()). */
   private fitPanel(): void {
     const layout = howToPlayPanelLayout(window.innerWidth, window.innerHeight);
@@ -445,25 +392,20 @@ export class HowToPlayUI {
     }
   }
 
+  // Its look, size and place are the Title menu's (src/ui/titleMenu.ts).
   private buildButton(): HTMLButtonElement {
-    const button = styledButton(t('howTo.button'));
+    const button = document.createElement('button');
+    stopKeyPropagation(button);
+    button.type = 'button';
+    button.textContent = t('howTo.button');
     button.id = 'how-to-play-button';
-    // Built like the RANKING button (src/ui/ranking.ts's mountTitleButton()).
-    button.style.position = 'absolute';
-    button.style.top = `${BUTTON_INSET_PX}px`;
-    button.style.left = `${BUTTON_INSET_PX}px`;
-    button.style.fontSize = '1em';
-    button.style.padding = '8px 16px';
-    button.style.maxWidth = `calc(100% - ${BUTTON_INSET_PX * 2}px)`;
-    button.style.whiteSpace = 'nowrap';
-    button.style.zIndex = '5';
     button.style.display = 'none';
     button.addEventListener('click', (event) => {
       this.open();
       (event.currentTarget as HTMLButtonElement).blur();
     });
     markEnglishOnly(button);
-    this.options.anchor.appendChild(button);
+    this.options.parent.appendChild(button);
     return button;
   }
 

@@ -775,18 +775,36 @@ export const HINT_BAR_FONT_MAX_PX = 18;
 export const HINT_BAR_FONT_PER_FIELD_WIDTH = 0.018;
 export const HINT_BAR_FONT_COMPACT_PX = 12;
 export const HINT_BAR_COMPACT_BELOW_PX = 200;
-// On a field shown less than this tall (a phone held sideways, between the
-// touch controls) the Title screen's HOW TO PLAY and RANKING buttons shrink
-// to this text size and sit in one row along the field's top edge, clear of
-// the title text.
-export const TITLE_BUTTONS_COMPACT_BELOW_PX = 200;
+// The Title screen's menu (src/ui/titleMenu.ts): HOW TO PLAY, RANKING and
+// MODE in one row under the title text, as underlined text (CSS px). The
+// roomy row's text size, and the small row's (no side padding, for a narrow
+// field) when the roomy one does not fit the field's width less
+// TITLE_MENU_INSET_PX each side; on a field too narrow for that too, the
+// small buttons stack one under another.
+export const TITLE_MENU_FONT_PX = 13;
 export const TITLE_BUTTON_COMPACT_FONT_PX = 10;
-export const TITLE_BUTTON_COMPACT_PADDING = '2px 6px';
-// Their room from the field's edges and from each other (CSS px).
-export const TITLE_BUTTON_COMPACT_INSET_PX = 4;
-// With the small buttons, the Title screen's text sits this much lower than
-// the field's middle (CSS px), clear of them.
-export const TITLE_TEXT_COMPACT_OFFSET_PX = 12;
+// The room between the title text and the row under it; between the field
+// and the row when it sits under the field; and the row's room from the
+// field's sides and bottom edge.
+export const TITLE_MENU_GAP_PX = 16;
+export const TITLE_MENU_BELOW_GAP_PX = 4;
+export const TITLE_MENU_INSET_PX = 2;
+// Each button's height at least (its press target), under the title text or
+// under the field. Along the field's bottom edge — a field with no room for
+// that — the buttons keep their own height.
+export const TITLE_MENU_MIN_TARGET_PX = 28;
+// The buttons' padding: above and below the text, and each side of it in the
+// roomy row (none in the small one).
+export const TITLE_MENU_PADDING_Y_PX = 2;
+export const TITLE_MENU_PADDING_X_PX = 4;
+// Between the buttons: in the roomy row, in the small row, and stacked.
+export const TITLE_MENU_BUTTON_GAP_PX = 12;
+export const TITLE_MENU_COMPACT_BUTTON_GAP_PX = 6;
+export const TITLE_MENU_COLUMN_GAP_PX = 2;
+// The underline, and the outline of the button the keyboard is on.
+export const TITLE_MENU_UNDERLINE_THICKNESS_PX = 1;
+export const TITLE_MENU_UNDERLINE_OFFSET_PX = 3;
+export const TITLE_MENU_FOCUS_OUTLINE_PX = 2;
 // The Title screen's demo: a top-ranked run's replay played silently behind
 // the title text (src/titleDemo.ts). It starts this many ticks after the
 // Title screen appears, trying at most this many of the board's best replays
@@ -799,11 +817,13 @@ export const TITLE_DEMO_END_HOLD_TICKS = 120;
 // at this opacity, so the title text and the buttons over it stay readable.
 export const TITLE_DEMO_DIM_ALPHA = 0.55;
 // The DEMO tag in the field's bottom-left corner: its text size (CSS px), the
-// smaller size on a field shown less than TITLE_BUTTONS_COMPACT_BELOW_PX tall,
-// and its distance from the field's left and bottom edges for each. On the
-// small field the title text, lowered by TITLE_TEXT_COMPACT_OFFSET_PX and
-// wrapped to the field's width, leaves only about the tag's own height below
-// it, so the small tag sits on the field's bottom edge.
+// smaller size on a field shown less than TITLE_DEMO_LABEL_COMPACT_BELOW_PX
+// tall, and its distance from the field's left and bottom edges for each. On
+// the small field the title text, wrapped to the field's width, leaves little
+// room below it, so the small tag sits on the field's bottom edge. When the
+// Title menu takes the field's bottom edge (src/ui/titleMenu.ts), the tag
+// moves to the top-left corner, as far from the top as from the left.
+export const TITLE_DEMO_LABEL_COMPACT_BELOW_PX = 200;
 export const TITLE_DEMO_LABEL_FONT_PX = 12;
 export const TITLE_DEMO_LABEL_FONT_COMPACT_PX = 10;
 export const TITLE_DEMO_LABEL_INSET_PX = 8;
