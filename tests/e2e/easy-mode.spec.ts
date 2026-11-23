@@ -26,7 +26,14 @@ import {
   REPLAY_FORMAT_VERSION,
 } from '../../src/config';
 import { validateSharePayload } from '../../functions/_lib/validation';
-import { advanceUntil, finishGameOverResult, loseAllLivesToIgniter } from './support/fakeClock';
+import {
+  advancePastOfferTime,
+  advanceToSubmissionPanel,
+  advanceUntil,
+  finishGameOverResult,
+  loseAllLivesToIgniter,
+  rankingOffer,
+} from './support/fakeClock';
 
 interface Point {
   x: number;
@@ -893,9 +900,10 @@ test.describe('what an EASY run is kept out of', () => {
       const readsBeforeTheEnd = boardReads;
       await endOnLives(page);
       // A NORMAL run asks the board whether it is in range, and the form
-      // opens once the answer is in — waited for, however long it takes. An
-      // EASY run never asks, so there is no answer to wait for.
-      if (difficulty === 'normal') await expect(page.locator('#ranking-submit-panel')).toBeVisible();
+      // opens once the answer is in and the result has been read. An EASY run
+      // never asks: past the time a form would have opened, there is none.
+      if (difficulty === 'normal') await advanceToSubmissionPanel(page);
+      else await advancePastOfferTime(page);
       await page.clock.runFor(500);
       const result = {
         score: await score(page),
@@ -1277,9 +1285,9 @@ test.describe('the GAME OVER suggestion', () => {
     expect(await attention(page)).toBe(false);
   });
 
-  test.describe('under the ranking submission form', () => {
-    /** The third early run's GAME OVER, with the submission form opened over the modal before the suggestion's time. */
-    async function promptUnderTheForm(page: Page): Promise<void> {
+  test.describe('with the ranking submission form', () => {
+    /** The third early run's GAME OVER on a board it gets onto: the modal is up and the board's answer is in. */
+    async function offeredGameOver(page: Page): Promise<void> {
       // An empty board: the run is in range, and the form opens.
       await page.route('**/api/ranking', (route) => {
         if (route.request().method() !== 'GET') return route.fallback();
@@ -1292,22 +1300,38 @@ test.describe('the GAME OVER suggestion', () => {
       await claimSmallBox(page);
       await loseAllLivesToIgniter(page, 90_000);
       await advanceUntil(page, async () => page.locator('#gameover-modal').isVisible(), 3_000, FRAME_MS);
-      // The clock stays where the modal opened while the board's answer comes
-      // in, so the form is up before the suggestion's time however long the
-      // answer takes.
-      await expect(page.locator('#ranking-submit-panel')).toBeVisible();
-      expect(await g(page, (h) => h.getGameOverResult().prompt)).toBe(false);
-      await finishGameOverResult(page);
-      // Its time has come, behind the form.
+      // The clock stays where the modal opened while the board's answer
+      // comes in: the form is decided on, and waits for the result to be read.
+      await expect.poll(async () => (await rankingOffer(page)).waiting).toBe(true);
       expect(await g(page, (h) => h.getPlayLog().map((r) => r.stage))).toEqual([1, 1, 1]);
-      expect(await g(page, (h) => h.getGameOverResult().prompt)).toBe(true);
-      await expect(page.locator('#ranking-submit-panel')).toBeVisible();
-      await page.clock.runFor(Math.ceil((GUARD_TICKS + 2) * TICK_MS));
     }
 
-    test('TITLE from the form, the suggestion never seen, lights nothing', async ({ page }) => {
-      await promptUnderTheForm(page);
+    /** offeredGameOver(), then the suggestion on screen with nothing over it, then the form over it. */
+    async function promptThenForm(page: Page): Promise<void> {
+      await offeredGameOver(page);
+      expect(await g(page, (h) => h.getGameOverResult().prompt)).toBe(false);
+      await advanceUntil(page, () => prompt(page).isVisible(), 2_000, FRAME_MS);
+      await expect(page.locator('#ranking-submit-panel')).toBeHidden();
+      await expectPrompt(page);
+      await advanceToSubmissionPanel(page);
+      expect(await g(page, (h) => h.getGameOverResult().prompt)).toBe(true);
+    }
+
+    test('the suggestion seen, then the form over it: TITLE from the form lights the toggle', async ({ page }) => {
+      await promptThenForm(page);
       await page.locator('#ranking-submit-title-button').click();
+      await page.clock.runFor(100);
+      expect(await status(page)).toBe('title');
+      await expect(toggle(page)).toBeVisible();
+      expect(await attention(page)).toBe(true);
+    });
+
+    test('the modal TITLE before the suggestion appears, the form waiting: lights nothing', async ({ page }) => {
+      await offeredGameOver(page);
+      await page.clock.runFor(Math.ceil((GUARD_TICKS + 2) * TICK_MS));
+      expect(await g(page, (h) => h.getGameOverResult().prompt)).toBe(false);
+      expect((await rankingOffer(page)).waiting).toBe(true);
+      await page.locator('#gameover-back-button').click();
       await page.clock.runFor(100);
       expect(await status(page)).toBe('title');
       await expect(toggle(page)).toBeVisible();
@@ -1315,7 +1339,7 @@ test.describe('the GAME OVER suggestion', () => {
     });
 
     test('TITLE once the form is closed and the suggestion is on screen lights the toggle', async ({ page }) => {
-      await promptUnderTheForm(page);
+      await promptThenForm(page);
       await page.locator('#ranking-submit-panel').getByRole('button', { name: 'SKIP', exact: true }).click();
       await page.clock.runFor(100);
       await expect(page.locator('#ranking-submit-panel')).toBeHidden();
