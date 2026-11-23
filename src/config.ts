@@ -16,7 +16,8 @@ export const MAX_FRAME_DELTA = 0.25;
 
 // Stage progression: every stage has its own character instead of every value
 // rising together with the stage number. Each row of STAGE_TABLE is one
-// stage (row 0 = stage 1); every stage past the last row plays the last row.
+// stage (row 0 = stage 1); every stage past the last row plays the last row
+// with one more Wisp per stage, up to LATE_STAGE_WISP_COUNT_MAX.
 // core/stage.ts's getStageConfig() reads it.
 //
 // `titleId` names the stage's title shown when it starts (the text itself is
@@ -61,9 +62,13 @@ export type StageTitleId =
   | 'sextet'
   | 'fastSix'
   | 'final';
-// Stage 1 alone brings its first Ember sooner than its interval, so a first
-// run meets one early. The debug panel can override this for every stage.
+// Stage 1 brings its first Ember sooner than its interval, so a first run
+// meets one early. The debug panel can override this for every stage.
 export const EMBER_FIRST_SPAWN_SEC = 15;
+// The two Ember stages (5 and 12) bring their first Ember almost at once, so
+// the stage's theme shows from its start; later Embers keep the stage's
+// interval.
+export const EMBER_STAGE_FIRST_SPAWN_SEC = 3;
 const stageRow = (
   titleId: StageTitleId,
   wispCount: number,
@@ -85,21 +90,27 @@ const stageRow = (
 });
 export const STAGE_TABLE: readonly StageTableRow[] = [
   stageRow('warmUp', 1, 1.0, 30, 2, 3, 0.65, EMBER_FIRST_SPAWN_SEC), // 1
-  stageRow('sprinter', 1, 2.8, 18, 3, 2, 0.7), // 2: one very fast Wisp
+  stageRow('sprinter', 1, 2.4, 18, 3, 2, 0.7), // 2: one very fast Wisp
   stageRow('fastPair', 2, 2.4, 16, 4, 2, 0.72), // 3: the first stage that can be split
   stageRow('slowSwarm', 6, 1.2, 20, 4, 2, 0.6), // 4: scoring stage
-  stageRow('emberRush', 3, 2.4, 10, 6, 2, 0.75), // 5
+  stageRow('emberRush', 3, 2.4, 10, 6, 2, 0.75, EMBER_STAGE_FIRST_SPAWN_SEC), // 5
   stageRow('breather', 2, 1.6, 26, 2, 3, 0.6), // 6: breather
   stageRow('quartet', 4, 2.4, 15, 6, 2, 0.78), // 7
   stageRow('fastFour', 4, 2.8, 12, 7, 2, 0.8), // 8
   stageRow('quintet', 5, 2.8, 10, 8, 1, 0.8), // 9
   stageRow('fastFive', 5, 3.0, 8, 8, 1, 0.8), // 10
   stageRow('bigSwarm', 8, 1.4, 16, 4, 2, 0.65), // 11: scoring stage
-  stageRow('emberStorm', 3, 2.8, 6, 10, 1, 0.78), // 12
+  stageRow('emberStorm', 3, 2.8, 6, 10, 1, 0.78, EMBER_STAGE_FIRST_SPAWN_SEC), // 12
   stageRow('sextet', 6, 2.6, 10, 8, 1, 0.8), // 13
   stageRow('fastSix', 6, 3.0, 8, 8, 1, 0.8), // 14
-  stageRow('final', 7, 3.0, 8, 10, 1, 0.8), // 15 and every stage after it
+  stageRow('final', 7, 3.0, 8, 10, 1, 0.8), // 15 and every stage after it (one more Wisp each stage)
 ];
+// Past the last row, each stage adds one Wisp to the last row's count (stage
+// 16 has 8, stage 17 has 9) up to this many; every other value stays the last
+// row's. The speed does not rise, so the table's rule (no step raises both the
+// count and the speed) still holds. Ten Wisps start in a row 27 cells wide,
+// well inside the normal field.
+export const LATE_STAGE_WISP_COUNT_MAX = 10;
 // The lowest goal of any stage: the largest stage-clear bonus a stage can give
 // is measured from it (functions/_lib/scoreLimits.ts).
 export const MIN_REQUIRED_OCCUPANCY = Math.min(...STAGE_TABLE.map((row) => row.requiredOccupancy));
