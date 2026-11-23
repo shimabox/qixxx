@@ -267,17 +267,23 @@ const FIELDS: SliderField[] = [
  * same EXPORT payload, under the exact `TIME_LIMIT_TICKS` name, so the
  * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
  * other slider here.
+ *
+ * `stage` is the stage being played when EXPORT is pressed, written as
+ * `STAGE` so the stage-dependent values above can be told apart by the
+ * STAGE_TABLE row they came from. It is not a config.ts constant.
  */
 export function buildExportPayload(
   params: EffectiveDebugParams,
   timeLimitTicks: number,
   fxParams?: FxParams,
   sound?: Record<string, number | string>,
-  overrides: DebugOverrides = {}
+  overrides: DebugOverrides = {},
+  stage?: number
 ): Record<string, unknown> {
   return {
     ...(fxParams ? buildFxExportPayload(fxParams) : {}),
     ...(sound ?? {}),
+    ...(stage === undefined ? {} : { STAGE: stage }),
     WISP_COUNT: params.wispCount,
     WISP_SPEED_MULTIPLIER: params.wispSpeedMultiplier,
     EMBER_COUNT: params.emberCount,
@@ -296,6 +302,12 @@ export function buildExportPayload(
     // stage's wait, which is not this constant on other stages.
     EMBER_FIRST_SPAWN_SEC: overrides.firstEmberSec ?? EMBER_FIRST_SPAWN_SEC,
     _notes: {
+      ...(stage === undefined
+        ? {}
+        : {
+            STAGE:
+              "The stage being played when EXPORT was pressed (1 = the first; STAGE_TABLE row STAGE - 1, the last row from stage 15). Not a config.ts constant: it says which stage these values belong to — WISP_COUNT, WISP_SPEED_MULTIPLIER, EMBER_MOVE_TICKS, EMBER_SPAWN_INTERVAL_SEC, EMBER_BRANCH_CHASE_PROBABILITY and DEFAULT_REQUIRED_OCCUPANCY are this stage's, and EMBER_COUNT is the Embers alive on it. EMBER_FIRST_SPAWN_SEC is not this stage's: whatever STAGE is, it is stage 1's wait for its first Ember pair, or the panel's override when there is one.",
+          }),
       EMBER_FIRST_SPAWN_SEC:
         "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
       WISP_COUNT:
@@ -1132,7 +1144,8 @@ function buildPanel(
       session.getTimeLimitTicks(),
       fxHooks?.params,
       soundSection?.exportPayload(),
-      session.getDebugOverrides()
+      session.getDebugOverrides(),
+      session.getStage()
     );
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
