@@ -192,8 +192,8 @@ export const messages = {
   // pages, then the stage's name — a name, so it has its own Japanese.
   'fx.stageHeading': same((stage: number) => `STAGE ${stage}`),
   'stageTitle.warmUp': tr('WARM-UP', 'はじまり'),
+  'stageTitle.sprinter': tr('SPRINTER', '速い 1 匹'),
   'stageTitle.fastPair': tr('FAST PAIR', '速い 2 匹'),
-  'stageTitle.trio': tr('TRIO', '3 匹'),
   'stageTitle.slowSwarm': tr('SLOW SWARM', '遅い群れ'),
   'stageTitle.emberRush': tr('EMBER RUSH', 'エンバーの群れ'),
   'stageTitle.breather': tr('BREATHER', '息抜き'),

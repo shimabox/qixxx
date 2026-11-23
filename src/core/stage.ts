@@ -26,7 +26,7 @@ export interface StageConfig {
   firstEmberSpawnTicks: number;
   /** Ticks per BORDER-cell step for every Ember (smaller is faster). */
   emberMoveTicks: number;
-  /** Branch-chase probability [0,1] for every Ember (0.7 at stage 1 -> 1.0 by stage 10). */
+  /** Branch-chase probability [0,1] for every Ember (0.7 at stage 1 -> 1.0 by stage 4). */
   emberBranchChaseProbability: number;
   /** Max Embers allowed alive at once before spawning is skipped. */
   maxConcurrentEmbers: number;

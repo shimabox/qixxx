@@ -11,20 +11,20 @@ import { TICK_RATE, EMBER_FIRST_SPAWN_SEC } from '../config';
 // to the table shows up here: title, Wisps, speed, Ember interval (s), first
 // Ember (s), max Embers, Ember move ticks, goal (%).
 const EXPECTED: ReadonlyArray<[string, number, number, number, number, number, number, number]> = [
-  ['warmUp', 2, 1.0, 30, 15, 2, 3, 65],
-  ['fastPair', 2, 1.6, 27, 27, 3, 3, 68],
-  ['trio', 3, 1.6, 24, 24, 4, 3, 70],
-  ['slowSwarm', 6, 1.0, 24, 24, 4, 3, 60],
-  ['emberRush', 3, 1.8, 12, 12, 6, 2, 72],
-  ['breather', 2, 1.4, 30, 30, 2, 3, 60],
-  ['quartet', 4, 1.8, 19, 19, 6, 2, 75],
-  ['fastFour', 4, 2.4, 16, 16, 7, 2, 78],
-  ['quintet', 5, 2.4, 13, 13, 8, 2, 80],
-  ['fastFive', 5, 3.0, 10, 10, 8, 1, 80],
-  ['bigSwarm', 8, 1.2, 20, 20, 4, 3, 65],
-  ['emberStorm', 3, 2.4, 6, 6, 10, 1, 75],
-  ['sextet', 6, 2.4, 12, 12, 8, 2, 80],
-  ['fastSix', 6, 3.0, 10, 10, 8, 1, 80],
+  ['warmUp', 1, 1.0, 30, 15, 2, 3, 65],
+  ['sprinter', 1, 2.8, 18, 18, 3, 2, 70],
+  ['fastPair', 2, 2.4, 16, 16, 4, 2, 72],
+  ['slowSwarm', 6, 1.2, 20, 20, 4, 2, 60],
+  ['emberRush', 3, 2.4, 10, 10, 6, 2, 75],
+  ['breather', 2, 1.6, 26, 26, 2, 3, 60],
+  ['quartet', 4, 2.4, 15, 15, 6, 2, 78],
+  ['fastFour', 4, 2.8, 12, 12, 7, 2, 80],
+  ['quintet', 5, 2.8, 10, 10, 8, 1, 80],
+  ['fastFive', 5, 3.0, 8, 8, 8, 1, 80],
+  ['bigSwarm', 8, 1.4, 16, 16, 4, 2, 65],
+  ['emberStorm', 3, 2.8, 6, 6, 10, 1, 78],
+  ['sextet', 6, 2.6, 10, 10, 8, 1, 80],
+  ['fastSix', 6, 3.0, 8, 8, 8, 1, 80],
   ['final', 7, 3.0, 8, 8, 10, 1, 80],
 ];
 
@@ -80,9 +80,12 @@ describe('getStageConfig (stage table)', () => {
     }
   });
 
-  it('keeps the branch-chase probability on its line from 0.7 (stage 1) to 1.0 (stage 10 and later)', () => {
+  it('keeps the branch-chase probability on its line from 0.7 (stage 1) to 1.0 (stage 4 and later)', () => {
     expect(getStageConfig(1).emberBranchChaseProbability).toBeCloseTo(0.7);
-    expect(getStageConfig(4).emberBranchChaseProbability).toBeCloseTo(0.8);
+    expect(getStageConfig(2).emberBranchChaseProbability).toBeCloseTo(0.8);
+    expect(getStageConfig(3).emberBranchChaseProbability).toBeCloseTo(0.9);
+    expect(getStageConfig(4).emberBranchChaseProbability).toBe(1.0);
+    expect(getStageConfig(5).emberBranchChaseProbability).toBe(1.0);
     expect(getStageConfig(10).emberBranchChaseProbability).toBe(1.0);
     expect(getStageConfig(11).emberBranchChaseProbability).toBe(1.0);
     expect(getStageConfig(15).emberBranchChaseProbability).toBe(1.0);

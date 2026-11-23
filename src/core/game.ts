@@ -168,7 +168,7 @@ export interface GameOptions {
   emberMoveTicks?: number;
   /**
    * Branch-chase probability for every Ember spawned/overridden this stage
-   * (docs/plan.md §12.7: 0.7 at stage 1, up to 1.0 by stage 10). Defaults to
+   * (core/stage.ts: 0.7 at stage 1, up to 1.0 by stage 4). Defaults to
    * EMBER_BRANCH_CHASE_PROBABILITY (the stage-1 baseline).
    */
   emberBranchChaseProbability?: number;

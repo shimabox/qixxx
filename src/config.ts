@@ -25,10 +25,15 @@ export const MAX_FRAME_DELTA = 0.25;
 // `emberSpawnIntervalSec`. `emberMoveTicks` is ticks per border cell (smaller
 // is faster).
 //
-// Stages 4 and 11 are scoring stages (many slow Wisps, easy to split for a
-// big multiplier) and stage 6 is a breather. Outside those three, no step
-// from one stage to the next raises both the Wisp count and their speed at
-// once, no stage moves Wisps faster than x3.0 and no goal is above 80%
+// Stage 1 is a gentle start with a single slow Wisp. Stage 2 keeps the single
+// Wisp but makes it very fast, so the second stage asks for something new
+// rather than just more of the first; stage 3 brings the second Wisp, and
+// with it the first stage that can be split (a split needs two Wisps or
+// more). Stages 4 and 11 are scoring stages (many slow Wisps, easy to split
+// for a big multiplier) and stage 6 is a breather. Skipping those three (so
+// stage 3 is followed by 5, 5 by 7 and 10 by 12), no step from one stage to
+// the next raises both the Wisp count and their speed at once, no stage
+// moves Wisps faster than x3.0 and no goal is above 80%
 // (src/core/stage.test.ts holds the table to this).
 export interface StageTableRow {
   titleId: StageTitleId;
@@ -42,8 +47,8 @@ export interface StageTableRow {
 }
 export type StageTitleId =
   | 'warmUp'
+  | 'sprinter'
   | 'fastPair'
-  | 'trio'
   | 'slowSwarm'
   | 'emberRush'
   | 'breather'
@@ -79,20 +84,20 @@ const stageRow = (
   requiredOccupancy,
 });
 export const STAGE_TABLE: readonly StageTableRow[] = [
-  stageRow('warmUp', 2, 1.0, 30, 2, 3, 0.65, EMBER_FIRST_SPAWN_SEC), // 1
-  stageRow('fastPair', 2, 1.6, 27, 3, 3, 0.68), // 2
-  stageRow('trio', 3, 1.6, 24, 4, 3, 0.7), // 3
-  stageRow('slowSwarm', 6, 1.0, 24, 4, 3, 0.6), // 4: scoring stage
-  stageRow('emberRush', 3, 1.8, 12, 6, 2, 0.72), // 5
-  stageRow('breather', 2, 1.4, 30, 2, 3, 0.6), // 6: breather
-  stageRow('quartet', 4, 1.8, 19, 6, 2, 0.75), // 7
-  stageRow('fastFour', 4, 2.4, 16, 7, 2, 0.78), // 8
-  stageRow('quintet', 5, 2.4, 13, 8, 2, 0.8), // 9
-  stageRow('fastFive', 5, 3.0, 10, 8, 1, 0.8), // 10
-  stageRow('bigSwarm', 8, 1.2, 20, 4, 3, 0.65), // 11: scoring stage
-  stageRow('emberStorm', 3, 2.4, 6, 10, 1, 0.75), // 12
-  stageRow('sextet', 6, 2.4, 12, 8, 2, 0.8), // 13
-  stageRow('fastSix', 6, 3.0, 10, 8, 1, 0.8), // 14
+  stageRow('warmUp', 1, 1.0, 30, 2, 3, 0.65, EMBER_FIRST_SPAWN_SEC), // 1
+  stageRow('sprinter', 1, 2.8, 18, 3, 2, 0.7), // 2: one very fast Wisp
+  stageRow('fastPair', 2, 2.4, 16, 4, 2, 0.72), // 3: the first stage that can be split
+  stageRow('slowSwarm', 6, 1.2, 20, 4, 2, 0.6), // 4: scoring stage
+  stageRow('emberRush', 3, 2.4, 10, 6, 2, 0.75), // 5
+  stageRow('breather', 2, 1.6, 26, 2, 3, 0.6), // 6: breather
+  stageRow('quartet', 4, 2.4, 15, 6, 2, 0.78), // 7
+  stageRow('fastFour', 4, 2.8, 12, 7, 2, 0.8), // 8
+  stageRow('quintet', 5, 2.8, 10, 8, 1, 0.8), // 9
+  stageRow('fastFive', 5, 3.0, 8, 8, 1, 0.8), // 10
+  stageRow('bigSwarm', 8, 1.4, 16, 4, 2, 0.65), // 11: scoring stage
+  stageRow('emberStorm', 3, 2.8, 6, 10, 1, 0.78), // 12
+  stageRow('sextet', 6, 2.6, 10, 8, 1, 0.8), // 13
+  stageRow('fastSix', 6, 3.0, 8, 8, 1, 0.8), // 14
   stageRow('final', 7, 3.0, 8, 10, 1, 0.8), // 15 and every stage after it
 ];
 // The lowest goal of any stage: the largest stage-clear bonus a stage can give
@@ -224,7 +229,8 @@ export const EMBER_MAX_CONCURRENT_DEFAULT = STAGE_TABLE[0].maxConcurrentEmbers;
 // feedback). 0.7 was chosen so Embers reliably threaten the marker along
 // inner borders while still occasionally patrolling straight through a
 // junction (avoids feeling perfectly omniscient); this is the stage 1
-// baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage 10.
+// baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage
+// EMBER_BRANCH_CHASE_MAX_STAGE (4).
 export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 
 // Ember line-entry generation threshold (docs/plan.md §14 M6-1 "ブレイズ"):
@@ -232,16 +238,19 @@ export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 // (a skipped cycle at the concurrency cap still counts). From this
 // generation onward, every Ember spawned that cycle is a "Blaze" — it can
 // walk onto LINE cells, not just BORDER (see patrol.ts's `canEnterLine`).
-// Debug-panel emberCount overrides and the GameOptions.embers test hook
-// always produce plain (non-Blaze) Embers, regardless of generation.
-export const EMBER_LINE_ENTRY_GENERATION = 3;
+// With 2, a stage's first natural cycle brings plain Embers and every later
+// cycle brings Blazes.
+// Debug-panel emberCount overrides always produce plain (non-Blaze) Embers,
+// and Embers passed in through the GameOptions.embers test hook keep the
+// kind they were given, regardless of generation.
+export const EMBER_LINE_ENTRY_GENERATION = 2;
 
 // The branch-chase probability is the one stage value still interpolated
 // (core/stage.ts): linearly from EMBER_BRANCH_CHASE_PROBABILITY at stage 1 to
 // EMBER_BRANCH_CHASE_PROBABILITY_MAX at EMBER_BRANCH_CHASE_MAX_STAGE, held
-// there for every later stage.
+// there for every later stage (0.7, 0.8, 0.9 on stages 1-3, then 1.0).
 export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // always chases at a branch
-export const EMBER_BRANCH_CHASE_MAX_STAGE = 10;
+export const EMBER_BRANCH_CHASE_MAX_STAGE = 4;
 // A stage's `maxConcurrentEmbers` (STAGE_TABLE) bounds both the difficulty
 // and the worst-case per-frame render cost (each Ember draws a glow halo).
 // Game.maybeSpawnEmbers() skips spawning once at that cap, but a debug-panel
