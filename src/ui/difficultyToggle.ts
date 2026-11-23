@@ -19,9 +19,7 @@ import {
   EASY_PROMPT_TOGGLE_PULSE_SEC,
   EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR,
   EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX,
-  EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX,
   EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX,
-  EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX,
 } from '../config';
 import { t } from '../i18n';
 import type { Difficulty } from '../core/difficulty';
@@ -51,9 +49,7 @@ export class DifficultyToggle {
     button.style.setProperty('--difficulty-pulse-sec', `${EASY_PROMPT_TOGGLE_PULSE_SEC}s`);
     button.style.setProperty('--difficulty-pulse-count', String(EASY_PROMPT_TOGGLE_PULSE_COUNT));
     button.style.setProperty('--difficulty-glow-rest-blur', `${EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX}px`);
-    button.style.setProperty('--difficulty-glow-rest-spread', `${EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX}px`);
     button.style.setProperty('--difficulty-glow-peak-blur', `${EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX}px`);
-    button.style.setProperty('--difficulty-glow-peak-spread', `${EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX}px`);
     button.textContent = t('difficulty.toggleNormal');
     button.addEventListener('click', (event) => {
       options.onToggle();
@@ -82,17 +78,17 @@ export class DifficultyToggle {
   }
 
   /**
-   * The lit border, pulsing EASY_PROMPT_TOGGLE_PULSE_COUNT times (lit and
-   * still with reduced motion): after the GAME OVER screen suggested EASY.
+   * The lit text, its glow pulsing EASY_PROMPT_TOGGLE_PULSE_COUNT times (lit
+   * and still with reduced motion): after the GAME OVER screen suggested EASY.
    */
   setAttention(on: boolean): void {
     if (this.hasAttention() === on) return;
     if (on) {
       this.button.dataset.attention = 'true';
-      this.button.style.borderColor = EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR;
+      this.button.style.color = EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR;
     } else {
       delete this.button.dataset.attention;
-      this.button.style.borderColor = HUD_ACCENT_COLOR;
+      this.button.style.color = HUD_ACCENT_COLOR;
     }
   }
 

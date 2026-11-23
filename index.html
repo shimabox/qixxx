@@ -225,23 +225,23 @@
       }
 
       /* After the GAME OVER screen suggested EASY, the Title screen's MODE
-         button (src/ui/difficultyToggle.ts) keeps a lit border (set there)
-         and a glow, pulsing --difficulty-pulse-count times — lit and still
-         under prefers-reduced-motion: reduce. A box-shadow only: the
-         button's box never moves. Its numbers come from src/config.ts
+         button (src/ui/difficultyToggle.ts) keeps its text lit (set there)
+         and a glow around it, pulsing --difficulty-pulse-count times — lit
+         and still under prefers-reduced-motion: reduce. A text-shadow only:
+         the button's box never moves. Its numbers come from src/config.ts
          (EASY_PROMPT_TOGGLE_*), set on the button. */
       @keyframes difficulty-attention {
         0%,
         100% {
-          box-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow-rest-spread) var(--difficulty-glow);
+          text-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow);
         }
         50% {
-          box-shadow: 0 0 var(--difficulty-glow-peak-blur) var(--difficulty-glow-peak-spread) var(--difficulty-glow);
+          text-shadow: 0 0 var(--difficulty-glow-peak-blur) var(--difficulty-glow);
         }
       }
 
       #difficulty-button[data-attention='true'] {
-        box-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow-rest-spread) var(--difficulty-glow);
+        text-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow);
         animation: difficulty-attention var(--difficulty-pulse-sec) ease-in-out var(--difficulty-pulse-count);
       }
 
