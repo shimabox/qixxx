@@ -18,6 +18,12 @@
 // decided again whenever the field is resized and whenever the title text
 // changes.
 //
+// A press on the row's own box (between or around its buttons) is taken by
+// the row, so a near miss on a small button never starts a run. While the
+// ranking list is open, the buttons take no mouse or touch press (the row
+// still takes them, so none reaches the field); the keyboard still reaches
+// them.
+//
 // DOM-only, like the rest of src/ui/.
 import {
   HUD_ACCENT_COLOR,
@@ -170,8 +176,14 @@ export class TitleMenu {
     row.style.display = 'none';
     row.style.alignItems = 'center';
     row.style.justifyContent = 'center';
-    row.style.pointerEvents = 'none';
+    row.style.pointerEvents = 'auto';
+    row.style.touchAction = 'manipulation';
     row.style.zIndex = '5';
+    // A press on the row itself, between or around its buttons, stops here:
+    // the field beneath never sees it.
+    row.addEventListener('pointerdown', (event) => {
+      if (event.target === row) event.preventDefault();
+    });
     options.anchor.appendChild(row);
     this.row = row;
     if (!document.getElementById(STYLE_ID)) {
@@ -217,6 +229,14 @@ export class TitleMenu {
       this.row.appendChild(button);
     }
     this.lastKey = null;
+  }
+
+  /**
+   * While the ranking list is open its buttons take no mouse or touch press;
+   * the row itself still does, so none reaches the field beneath.
+   */
+  setPointerBlocked(blocked: boolean): void {
+    for (const button of this.buttons) button.style.pointerEvents = blocked ? 'none' : 'auto';
   }
 
   /**

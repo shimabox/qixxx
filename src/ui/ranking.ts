@@ -314,6 +314,8 @@ export interface RankingUIOptions {
   onTitle: () => void;
   /** Called when the ranking list opens (main.ts closes HOW TO PLAY). */
   onListOpen?: () => void;
+  /** Called with true when the ranking list shows and false when it is hidden (again). */
+  onListShownChange?: (shown: boolean) => void;
   /**
    * The GAME OVER result has been on screen long enough for the submission
    * panel to open over it (src/gameOverResult.ts's isSubmissionOfferDue()).
@@ -685,6 +687,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function hideList(): void {
     listOverlay.style.display = 'none';
+    options.onListShownChange?.(false);
     browsingGeneration++;
     abortReplayWork();
   }
@@ -709,6 +712,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     const requestGeneration = browsingGeneration;
     showListStatus(t('ranking.loading'));
     listOverlay.style.display = 'flex';
+    options.onListShownChange?.(true);
 
     let entries: DisplayRankingEntry[] | null = null;
     try {

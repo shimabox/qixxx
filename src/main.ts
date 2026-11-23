@@ -1081,6 +1081,8 @@ function init(): void {
     isSubmissionOfferDue: () => gameOverResult.isSubmissionOfferDue(),
     // One panel at a time over the Title screen.
     onListOpen: () => howToPlay.close(),
+    // While the list is open, the Title menu's buttons take no mouse or touch press.
+    onListShownChange: (shown) => titleMenu?.setPointerBlocked(shown),
   });
   titleMenu = new TitleMenu({
     anchor: canvasWrap,
