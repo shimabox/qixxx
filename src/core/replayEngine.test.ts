@@ -22,7 +22,7 @@ function recordTimeUpRun(seed: number, timeLimitTicks: number): Uint8Array {
 
 /**
  * Records a run that actually spans several stages (seed 12 reaches stage 3,
- * with boundaries at ticks 0, 273 and 1053).
+ * with boundaries at ticks 0, 739 and 1500).
  *
  * Needed because skipToFinalStage() is untestable against a single-stage
  * replay: the final boundary is then tick 0, the skip loop never runs, and a

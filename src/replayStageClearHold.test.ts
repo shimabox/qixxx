@@ -85,7 +85,7 @@ describe('ReplayStageClearHold', () => {
 // draw across the field, step along the border, claim a strip at a time.
 // StageClear is confirmed but NOT recorded, exactly as the replay protocol
 // re-supplies it on playback.
-const MULTI_STAGE_SEED = 7956;
+const MULTI_STAGE_SEED = 26;
 const MULTI_STAGE_STRIP_WIDTH = 4;
 const MULTI_STAGE_FINAL_STAGE = 4;
 

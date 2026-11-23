@@ -155,14 +155,15 @@ function scriptInput(script: ReturnType<typeof buildStageScript>, tick: number):
 /**
  * Plays the scripted stages until GAME OVER. `pauseAt` lists the stage ticks
  * to pause on: each pause lasts 300 frames, during which the player holds
- * and lets go of arrows (inputs the run never reads), then resumes.
+ * and lets go of arrows (inputs the run never reads), then resumes. Returns
+ * the stage each pause happened on.
  */
-function playToGameOver(driver: PausableDriver, pauseAt: number[]): number {
+function playToGameOver(driver: PausableDriver, pauseAt: number[]): number[] {
   const session = driver.session;
   const field = session.getGame().getField();
   const script = buildStageScript(field.getWidth(), field.getHeight());
   const pending = [...pauseAt];
-  let pauses = 0;
+  const pausedOn: number[] = [];
   let guard = 0;
   driver.frame({ ...IDLE, confirm: true });
   while (session.getStatus() !== 'gameover') {
@@ -181,24 +182,26 @@ function playToGameOver(driver: PausableDriver, pauseAt: number[]): number {
       expect({ ticks: session.getTotalTicks(), score: session.getScore(), samples: driver.tracker.recorder.getSamples().length }).toEqual(before);
       expect(session.getStatus()).toBe('playing');
       expect(driver.pause.requestResume()).toBe(true);
-      pauses++;
+      pausedOn.push(session.getStage());
     }
     driver.frame(scriptInput(script, session.getStageTicks()));
   }
-  return pauses;
+  return pausedOn;
 }
 
 describe('a run paused along the way', () => {
   it('records the same inputs as the unpaused run, which the server verifier accepts with the same score and stage', async () => {
     const verifyReplay = await loadVerifyReplay();
-    // A seed whose scripted run lasts past every pause below (3180 ticks).
-    const seed = 542;
+    // A seed whose scripted run clears stage 1 at tick 3591 and plays stage 2
+    // until tick 6165: one pause comes before the clear, two after stage 2
+    // has begun.
+    const seed = 8;
 
     const plain = new PausableDriver(new GameSession({ seed, captureFeedback: true }));
-    expect(playToGameOver(plain, [])).toBe(0);
+    expect(playToGameOver(plain, [])).toEqual([]);
 
     const paused = new PausableDriver(new GameSession({ seed, captureFeedback: true }));
-    expect(playToGameOver(paused, [120, 900, 2500])).toBe(3);
+    expect(playToGameOver(paused, [120, 4000, 5500])).toEqual([1, 2, 2]);
 
     expect(paused.tracker.recorder.getSamples()).toEqual(plain.tracker.recorder.getSamples());
     expect(paused.session.getScore()).toBe(plain.session.getScore());
