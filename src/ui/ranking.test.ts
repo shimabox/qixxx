@@ -10,6 +10,7 @@ import {
   acceptedSubmissionText,
   boardNotice,
   decideSubmissionOffer,
+  DeferredSubmissionOffer,
   demoCandidateIdsFrom,
   isSnapshotEligible,
   isReplayPayloadPlayable,
@@ -21,7 +22,8 @@ import {
   type RankingEntry,
   type RunSubmissionSnapshot,
 } from './ranking';
-import { MAX_VERIFIED_CLAIMS } from '../config';
+import { GAMEOVER_RECORD_DELAY_TICKS, MAX_VERIFIED_CLAIMS, RANKING_OFFER_DELAY_TICKS } from '../config';
+import { GameOverResult, type GameOverResultInput } from '../gameOverResult';
 
 describe('acceptedSubmissionText', () => {
   it('says plainly SUBMITTED for a row the server stored as verified (no audit)', () => {
@@ -362,5 +364,121 @@ describe('formatRankingDate', () => {
   it('degrades to an empty string rather than "Invalid Date"/"NaN-NaN-NaN"', () => {
     expect(formatRankingDate('not-a-date')).toBe('');
     expect(formatRankingDate('')).toBe('');
+  });
+});
+
+describe('DeferredSubmissionOffer: the panel opens once the GAME OVER result has been read', () => {
+  const TIMING = { countTicks: 42, popTicks: 8, sparkTicks: 30 };
+  const resultInput = (over: Partial<GameOverResultInput> = {}): GameOverResultInput => ({
+    score: 12345,
+    stage: 1,
+    bestAtStart: 100,
+    recordsHighScore: true,
+    tally: { splits: 0, claims: 1, bestShare: 0.04 },
+    reducedMotion: false,
+    timing: TIMING,
+    ...over,
+  });
+
+  /**
+   * A GAME OVER screen one tick per frame: the reply decides on frame
+   * `replyAge` (before that frame's sync, as an async reply lands between
+   * frames). Returns the age the panel opened at, and the ages it was waiting.
+   */
+  function play(given: GameOverResultInput, replyAge: number, frames = 400) {
+    const result = new GameOverResult();
+    result.start(given);
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let openedAt: number | null = null;
+    const waitingAges: number[] = [];
+    for (let age = 0; age <= frames && openedAt === null; age++) {
+      if (age > 0) result.step();
+      if (age === replyAge) offer.decide(() => (openedAt = result.getAge()));
+      offer.sync();
+      if (offer.isWaiting()) waitingAges.push(age);
+    }
+    return { openedAt, waitingAges, offerAge: result.submissionOfferAge(), lastLineAge: result.lastLineAge() };
+  }
+
+  it('a reply in time: opens RANKING_OFFER_DELAY_TICKS after the last line is due, waiting from the reply until then', () => {
+    const { openedAt, waitingAges, lastLineAge } = play(resultInput(), 3);
+    expect(openedAt).toBe(lastLineAge + RANKING_OFFER_DELAY_TICKS);
+    expect(waitingAges[0]).toBe(3);
+    expect(waitingAges[waitingAges.length - 1]).toBe(lastLineAge + RANKING_OFFER_DELAY_TICKS - 1);
+    expect(waitingAges).toHaveLength(lastLineAge + RANKING_OFFER_DELAY_TICKS - 3);
+  });
+
+  it('a reply after that time: opens as it lands, with no wait', () => {
+    const offerAge = play(resultInput(), 0).offerAge;
+    const { openedAt, waitingAges } = play(resultInput(), offerAge + 25);
+    expect(openedAt).toBe(offerAge + 25);
+    expect(waitingAges).toEqual([]);
+  });
+
+  it('a score of 0 (an empty board) and reduced motion: from their own last-line time', () => {
+    const zero = play(resultInput({ score: 0, bestAtStart: 0, tally: { splits: 0, claims: 0, bestShare: 0 } }), 1);
+    expect(zero.lastLineAge).toBe(GAMEOVER_RECORD_DELAY_TICKS);
+    expect(zero.openedAt).toBe(GAMEOVER_RECORD_DELAY_TICKS + RANKING_OFFER_DELAY_TICKS);
+    const still = play(resultInput({ reducedMotion: true }), 1);
+    expect(still.lastLineAge).toBe(0);
+    expect(still.openedAt).toBe(RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('several ticks per frame: opens on the first frame past the time, not later', () => {
+    const result = new GameOverResult();
+    result.start(resultInput());
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let openedAt: number | null = null;
+    offer.decide(() => (openedAt = result.getAge()));
+    const due = result.submissionOfferAge();
+    while (openedAt === null && result.getAge() < 400) {
+      for (let i = 0; i < 5; i++) result.step();
+      offer.sync();
+      if (openedAt === null) expect(result.getAge()).toBeLessThan(due);
+    }
+    expect(openedAt).toBe(Math.ceil(due / 5) * 5);
+  });
+
+  it('cancel() — the run left GAME OVER, or a new offer took over — means it never opens', () => {
+    const result = new GameOverResult();
+    result.start(resultInput());
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let opened = 0;
+    offer.decide(() => opened++);
+    expect(offer.isWaiting()).toBe(true);
+    offer.cancel();
+    expect(offer.isWaiting()).toBe(false);
+    for (let i = 0; i < 400; i++) {
+      result.step();
+      offer.sync();
+    }
+    expect(opened).toBe(0);
+  });
+
+  it('a stopped result (TITLE, a retry) is never due: a reply landing after it opens nothing', () => {
+    const result = new GameOverResult();
+    result.start(resultInput({ timing: { ...TIMING, offerDelayTicks: 0 } }));
+    for (let i = 0; i < 200; i++) result.step();
+    result.stop();
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let opened = 0;
+    offer.decide(() => opened++);
+    offer.sync();
+    expect(opened).toBe(0);
+  });
+
+  it('a newer decision replaces a waiting one; each opens at most once', () => {
+    let due = false;
+    const offer = new DeferredSubmissionOffer(() => due);
+    const opened: string[] = [];
+    offer.decide(() => opened.push('a'));
+    offer.decide(() => opened.push('b'));
+    offer.sync();
+    expect(opened).toEqual([]);
+    due = true;
+    offer.sync();
+    offer.sync();
+    expect(opened).toEqual(['b']);
+    expect(offer.isWaiting()).toBe(false);
   });
 });

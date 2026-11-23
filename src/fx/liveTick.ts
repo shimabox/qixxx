@@ -30,9 +30,26 @@ export interface RetryHold {
   checkWaitMaxTicks: number;
   /** The submission panel is on screen (RankingUI.isSubmissionBlockingRetry() beyond the check). */
   formShown: boolean;
+  /**
+   * The check has decided to open the submission panel, which waits for the
+   * GAME OVER result to be read (RankingUI.isSubmissionOfferWaiting()). Not
+   * bounded by `checkWaitMaxTicks`: it ends when the panel opens. False when
+   * omitted.
+   */
+  offerWaiting?: boolean;
 }
 
 const NO_RETRY_HOLD: RetryHold = { guardTicks: 0, checkPending: false, checkWaitMaxTicks: 0, formShown: false };
+
+/**
+ * The GAME OVER modal's RETRY button skips the gate below (it is no stray
+ * press), except while a submission panel is waiting to open: a run that
+ * may be posted is not left by a press made just before its panel appears.
+ * TITLE always works.
+ */
+export function acceptsModalAction(action: 'retry' | 'title', hold: Pick<RetryHold, 'offerWaiting'>): boolean {
+  return action === 'title' || hold.offerWaiting !== true;
+}
 
 /**
  * Decides which GAME OVER confirm may reach the core — where a confirm now
@@ -43,9 +60,10 @@ const NO_RETRY_HOLD: RetryHold = { guardTicks: 0, checkPending: false, checkWait
  * that (a player still hammering the touch buttons, every one of which is a
  * confirm, would otherwise retry before seeing the modal), while the ranking
  * check is in flight (for at most `checkWaitMaxTicks` from the modal
- * appearing, so a reply that never comes cannot lock the keys), and while the
+ * appearing, so a reply that never comes cannot lock the keys), while the
+ * submission panel the check decided on waits to open, and while the
  * submission panel is on screen. The modal's own RETRY / TITLE buttons do not
- * go through here (src/main.ts).
+ * go through here (src/main.ts, acceptsModalAction()).
  */
 export class GameOverConfirmGate {
   private modalShown = false;
@@ -79,7 +97,7 @@ export class GameOverConfirmGate {
     this.ticksSinceModal++;
     if (this.ticksSinceModal <= hold.guardTicks) return drop;
     if (hold.checkPending && this.ticksSinceModal <= hold.checkWaitMaxTicks) return drop;
-    if (hold.formShown) return drop;
+    if (hold.offerWaiting || hold.formShown) return drop;
     return input;
   }
 }

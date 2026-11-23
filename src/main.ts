@@ -30,7 +30,7 @@ import { missReasonKey } from './fx/missReason';
 import type { MissFeedback } from './core/feedback';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
+import { acceptsModalAction, applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
 import { stepLiveSession, LiveRunTracker, freezeRunSnapshot, keepsInPlayLog } from './retryFlow';
 import { ScoreRoll } from './fx/scoreRoll';
 import { loadFxFonts } from './render/fxFonts';
@@ -156,6 +156,12 @@ declare global {
       /** The GAME OVER result as shown now (src/gameOverResult.ts). */
       getGameOverResult: () => {
         active: boolean;
+        /** Live ticks since the modal appeared (GameOverResult.step()), not the session's ticks. */
+        age: number;
+        /** The age the last line (the best line) is due at. */
+        lastLineAge: number;
+        /** The age from which the ranking submission panel may open. */
+        offerAge: number;
         /** The score the modal shows now. */
         score: number;
         finished: boolean;
@@ -166,6 +172,11 @@ declare global {
         /** Which best line shows: 'new-record', 'to-best', 'to-best-near', or null before it shows / for none. */
         best: 'new-record' | 'to-best' | 'to-best-near' | null;
       };
+      /**
+       * The GAME OVER ranking offer (src/ui/ranking.ts): the check is in
+       * flight, a panel it decided on waits to open, or a panel is open.
+       */
+      getRankingOffer: () => { checkPending: boolean; waiting: boolean; panelShown: boolean };
       /** The names of the last 64 sounds played (src/audio/sfx.ts's getLog()). */
       getSfxLog: () => string[];
       /** The music (src/audio/bgm.ts): playing in live play while the sound is on. */
@@ -836,7 +847,8 @@ const playLogListeners: Array<() => void> = [];
 // its claim notices (reset where the play log starts a run), and the modal's
 // count-up, highlight and best line with their sounds, from the frame the
 // modal appears. Display and sound only: the retry, the share and the
-// ranking never wait for it or read its counting score. It stops as soon as
+// ranking never read its counting score, and only the ranking submission
+// panel waits for it (opening after its last line). It stops as soon as
 // the run leaves GAME OVER or a replay opens, so no cue of it plays after.
 const gameOverTally = new GameOverRunTally();
 const gameOverResult = new GameOverResult();
@@ -1059,6 +1071,8 @@ function init(): void {
     // the same transition as the modal's buttons.
     onRetry: () => requestModalAction('retry'),
     onTitle: () => requestModalAction('title'),
+    // The panel opens over the GAME OVER result once it has been read.
+    isSubmissionOfferDue: () => gameOverResult.isSubmissionOfferDue(),
     // One panel at a time over the Title screen.
     onListOpen: () => howToPlay.close(),
   });
@@ -1167,6 +1181,9 @@ function init(): void {
       const best = view.bestLine;
       return {
         active: view.active,
+        age: gameOverResult.getAge(),
+        lastLineAge: gameOverResult.lastLineAge(),
+        offerAge: gameOverResult.submissionOfferAge(),
         score: view.score,
         finished: view.finished,
         highlight: view.highlight && view.highlightShown ? gameOverHighlightText(view.highlight) : null,
@@ -1179,6 +1196,14 @@ function init(): void {
               : best.near
                 ? 'to-best-near'
                 : 'to-best',
+      };
+    },
+    getRankingOffer: () => {
+      const checkPending = rankingUI.isSubmissionCheckPending();
+      return {
+        checkPending,
+        waiting: rankingUI.isSubmissionOfferWaiting(),
+        panelShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
       };
     },
     getSfxLog: () => sfx.getLog(),
@@ -1424,8 +1449,11 @@ function updateTouchLayout(): void {
 }
 
 // The modal's buttons: only meaningful while the live run is on GAME OVER.
+// RETRY is dropped (not kept for later) while a submission panel waits to
+// open (acceptsModalAction()).
 function requestModalAction(action: 'retry' | 'title'): void {
   if (viewMode !== 'live' || session.getStatus() !== 'gameover') return;
+  if (!acceptsModalAction(action, currentRetryHold())) return;
   modalAction = action;
 }
 
@@ -1439,6 +1467,7 @@ function currentRetryHold(): RetryHold {
     checkPending,
     checkWaitMaxTicks: fxParams.retryOfferWaitMaxTicks,
     formShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
+    offerWaiting: rankingUI.isSubmissionOfferWaiting(),
   };
 }
 
@@ -2418,6 +2447,7 @@ function renderFrame(): void {
           countTicks: fxParams.gameOverCountTicks,
           popTicks: fxParams.gameOverPopTicks,
           sparkTicks: fxParams.gameOverSparkTicks,
+          offerDelayTicks: fxParams.rankingOfferDelayTicks,
         },
       });
       const view = gameOverResult.view();
@@ -2444,14 +2474,19 @@ function renderFrame(): void {
       // range. Everything the offer/POST may ever read about the run is
       // frozen here, synchronously, on the single frame the run ends —
       // `session` (not `activeSession`) deliberately, to make it explicit
-      // this is the *live* run's final state and never a replay's.
+      // this is the *live* run's final state and never a replay's. Asked
+      // now, so the reply is usually in by the time the panel may open
+      // (gameOverResult.submissionOfferAge()).
       rankingUI.offerSubmission(freezeRunSnapshot(session, runTracker, runMode));
     }
     // The hint says what the keys do: retry, or wait for the submission panel
-    // to be closed.
+    // to be closed. While the panel is about to open it is kept, unseen.
     if (gameOverModalShown) {
-      const { formShown } = currentRetryHold();
-      gameOverModal.setSubmissionHold(formShown);
+      // A panel the ranking reply decided on opens on the first frame the
+      // result has been read by (a later reply opens it as it lands).
+      rankingUI.syncSubmissionOffer();
+      const { formShown, offerWaiting } = currentRetryHold();
+      gameOverModal.setSubmissionHold(formShown ? 'panel' : offerWaiting === true ? 'waiting' : 'none');
       const resultView = gameOverResult.view();
       gameOverModal.renderResult(resultView);
       // Seen only once it is on screen with no ranking submission form over
