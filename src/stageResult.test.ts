@@ -17,8 +17,8 @@ function scriptInput(script: ReturnType<typeof buildStageScript>, tick: number):
 
 describe('StageResultTally on a scripted run', () => {
   // The rule invariance cases (core/rulesInvariance.test.ts): both clear
-  // stages by occupancy, and 10505 clears one by a split as well.
-  for (const options of [{ seed: 10505, fieldWidth: 40, fieldHeight: 30 }, { seed: 735, fieldWidth: 40, fieldHeight: 30 }]) {
+  // stages by occupancy, and 6471 clears one by a split as well.
+  for (const options of [{ seed: 6471, fieldWidth: 40, fieldHeight: 30 }, { seed: 3542, fieldWidth: 40, fieldHeight: 30 }]) {
     it(`seed ${options.seed}: TOTAL is every point the stage added, AREA + BONUS, close calls and big claims included`, () => {
       const session = new GameSession({ ...options, captureFeedback: true });
       session.update({ ...IDLE, confirm: true });
@@ -64,11 +64,11 @@ describe('StageResultTally on a scripted run', () => {
 });
 
 describe('StageResultTally after a split clear', () => {
-  it("seed 699: the stage after the split adds up its one x2 claim, 456 points", () => {
-    // 699 (core/rulesInvariance.test.ts) clears stage 3 with a split and, on
+  it("seed 704: the stage after the split adds up its one x2 claim, 456 points", () => {
+    // 704 (core/rulesInvariance.test.ts) clears stage 3 with a split and, on
     // stage 4 at x2, scores one 56-cell fast line with a close call:
     // (56 x 0.5 + 200) x 2 = 456, with no stage-clear bonus (it ends in GAME OVER).
-    const session = new GameSession({ seed: 699, fieldWidth: 40, fieldHeight: 30, captureFeedback: true });
+    const session = new GameSession({ seed: 704, fieldWidth: 40, fieldHeight: 30, captureFeedback: true });
     session.update({ ...IDLE, confirm: true });
     const field = session.getGame().getField();
     const scriptFor = () => buildStageScript(field.getWidth(), field.getHeight(), session.getMarkerStart()!.point);

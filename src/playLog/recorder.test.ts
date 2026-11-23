@@ -169,7 +169,7 @@ function runRecorded(options: { seed: number; timeLimitTicks?: number }) {
 
 describe('PlayLogRecorder on a real GameSession', () => {
   it('a run lost on lives: the record matches the session', () => {
-    const { session, record, claimNotices, livesLost, clearedStages } = runRecorded({ seed: 10505 });
+    const { session, record, claimNotices, livesLost, clearedStages } = runRecorded({ seed: 6471 });
     expect(session.getGameOverReason()).toBe('life');
     expect(record.end).toBe('life');
     expect(record.stage).toBe(session.getStage());
@@ -190,7 +190,7 @@ describe('PlayLogRecorder on a real GameSession', () => {
   });
 
   it('a run that runs out of time: the record matches the session', () => {
-    const { session, record, claimNotices, livesLost } = runRecorded({ seed: 10505, timeLimitTicks: 500 });
+    const { session, record, claimNotices, livesLost } = runRecorded({ seed: 6471, timeLimitTicks: 500 });
     expect(session.getGameOverReason()).toBe('time');
     expect(record.end).toBe('time');
     expect(record.stage).toBe(session.getStage());

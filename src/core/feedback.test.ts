@@ -13,11 +13,11 @@ import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MI
 
 const SCRIPTED_CASES = [
   // The rule invariance cases (core/rulesInvariance.test.ts): each has close
-  // calls, the small-field ones big claims too, 10505 and 699 a split clear,
-  // and 699 a claim at the multiplier that split carried into the next stage.
-  { seed: 10505, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 699, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 735, fieldWidth: 40, fieldHeight: 30 },
+  // calls, the small-field ones big claims too, 6471 and 704 a split clear,
+  // and 704 a claim at the multiplier that split carried into the next stage.
+  { seed: 6471, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 704, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 3542, fieldWidth: 40, fieldHeight: 30 },
   { seed: 3246 },
 ];
 
@@ -49,13 +49,13 @@ describe('captureFeedback does not change the run', () => {
   });
 
   it('forwards one claim notice per area-claimed and one miss notice per miss when capture is on, a split clear included', () => {
-    // 10505 clears stage 3 with a split (the first stage with two Wisps), so
+    // 6471 clears stage 3 with a split (the first stage with two Wisps), so
     // the split's claim is among those counted.
     let claims = 0;
     let misses = 0;
     let splitClearNotices = 0;
     const summary = runScriptedSession({
-      seed: 10505,
+      seed: 6471,
       fieldWidth: 40,
       fieldHeight: 30,
       captureFeedback: true,
@@ -75,14 +75,14 @@ describe('captureFeedback does not change the run', () => {
     expect(summary.stages.find((s) => s.split)?.stage).toBe(3);
   });
 
-  it("reports a claim on the stage after a split clear at the carried multiplier: seed 699's one stage 4 claim is x2", () => {
-    // 699 clears stage 3 with a split and then, on stage 4 at x2, closes one
+  it("reports a claim on the stage after a split clear at the carried multiplier: seed 704's one stage 4 claim is x2", () => {
+    // 704 clears stage 3 with a split and then, on stage 4 at x2, closes one
     // 56-cell fast line with a close call before its GAME OVER. At x1 that is
     // 56 x 0.5 = 28 area points and a 200 close-call bonus; the notice must
     // carry both doubled, not the x1 values.
     const stage4: ClaimFeedback[] = [];
     const summary = runScriptedSession({
-      seed: 699,
+      seed: 704,
       fieldWidth: 40,
       fieldHeight: 30,
       captureFeedback: true,

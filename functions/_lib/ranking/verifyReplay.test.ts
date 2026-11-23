@@ -58,7 +58,7 @@ describe('verifyReplay', () => {
     // The scripted comb (core/scriptedRun.ts) on the full-size field: it
     // clears two stages on this seed, and its lines pass close to the Wisps
     // and take big areas, so the score holds every new kind of point.
-    const seed = 3849;
+    const seed = 1677;
     const session = new GameSession({ seed, captureFeedback: true });
     session.update(CONFIRM);
     const script = buildStageScript(GRID_WIDTH, GRID_HEIGHT);
@@ -108,7 +108,7 @@ describe('verifyReplay', () => {
     // this field; this one splits on this seed where splits first can (stage
     // 3, the first with two Wisps) and again on stage 4, so the server has to
     // follow the split clears and the raised multiplier the next stages play at.
-    const seed = 1630;
+    const seed = 23903;
     const session = new GameSession({ seed, captureFeedback: true });
     session.update(CONFIRM);
     const samples: InputSample[] = [];
