@@ -5,7 +5,9 @@
 // the timeline has direct unit test coverage (src/gameOverResult.test.ts).
 // src/ui/gameOverModal.ts only draws what view() returns; src/main.ts plays
 // the cues. Display only: the X share and the ranking read the session's
-// final score, never the counting one, and nothing here holds the retry.
+// final score, never the counting one, and nothing here holds the retry. The
+// ranking submission panel waits for it: submissionOfferAge() is when the
+// panel may open over it.
 import {
   FX_CLAIM_SHARE_LARGE,
   GAMEOVER_COUNT_TICK_EVERY,
@@ -13,6 +15,7 @@ import {
   GAMEOVER_NEAR_BEST_RATIO,
   GAMEOVER_POP_SCALE,
   GAMEOVER_RECORD_DELAY_TICKS,
+  RANKING_OFFER_DELAY_TICKS,
 } from './config';
 import { t } from './i18n';
 
@@ -110,6 +113,11 @@ export interface GameOverTiming {
   countTicks: number;
   popTicks: number;
   sparkTicks: number;
+  /**
+   * The ranking submission panel may open this many ticks after the last
+   * line is due (submissionOfferAge()). RANKING_OFFER_DELAY_TICKS when omitted.
+   */
+  offerDelayTicks?: number;
 }
 
 export interface GameOverResultInput {
@@ -203,6 +211,37 @@ export class GameOverResult {
 
   isActive(): boolean {
     return this.input !== null;
+  }
+
+  /** The ticks since the modal appeared (0 on that tick). */
+  getAge(): number {
+    return this.age;
+  }
+
+  /**
+   * The age the last line — the best line — is due at: after the count and
+   * GAMEOVER_RECORD_DELAY_TICKS, sooner for a score of 0 (no count), 0 under
+   * reduced motion (everything shows at once). The same for a run that shows
+   * no best line: the time it would show.
+   */
+  lastLineAge(): number {
+    return this.recordAge();
+  }
+
+  /**
+   * The age from which the ranking submission panel may open: the timing's
+   * offerDelayTicks after lastLineAge(). Counted from when the last line is
+   * due, not from the frame that first draws it, so it is the same tick
+   * however many ticks a frame runs.
+   */
+  submissionOfferAge(): number {
+    const delay = this.input?.timing.offerDelayTicks ?? RANKING_OFFER_DELAY_TICKS;
+    return this.lastLineAge() + Math.max(0, Math.round(delay));
+  }
+
+  /** Started, and submissionOfferAge() has been reached. */
+  isSubmissionOfferDue(): boolean {
+    return this.input !== null && this.age >= this.submissionOfferAge();
   }
 
   view(): GameOverResultView {

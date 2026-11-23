@@ -12,6 +12,7 @@ import {
   GAMEOVER_COUNT_TICK_EVERY,
   GAMEOVER_HIGHLIGHT_DELAY_TICKS,
   GAMEOVER_RECORD_DELAY_TICKS,
+  RANKING_OFFER_DELAY_TICKS,
 } from './config';
 
 const TIMING = { countTicks: 42, popTicks: 8, sparkTicks: 30 };
@@ -303,5 +304,99 @@ describe('GameOverResult — reduced motion and stopping', () => {
     const result = new GameOverResult();
     expect(result.view().active).toBe(false);
     expect(result.step()).toEqual([]);
+  });
+});
+
+describe('GameOverResult — when the ranking submission panel may open', () => {
+  const COUNTED_LAST_LINE = TIMING.countTicks + GAMEOVER_RECORD_DELAY_TICKS;
+
+  /** The first age isSubmissionOfferDue() holds at, stepping one tick at a time. */
+  function firstDueAge(given: GameOverResultInput, limit = 400): number | null {
+    const result = new GameOverResult();
+    result.start(given);
+    for (let age = 0; age <= limit; age++) {
+      if (age > 0) result.step();
+      if (result.isSubmissionOfferDue()) return age;
+    }
+    return null;
+  }
+
+  it('the last line is due when the best line shows; the panel RANKING_OFFER_DELAY_TICKS after that', () => {
+    const result = new GameOverResult();
+    result.start(input({ bestAtStart: 100 }));
+    expect(result.lastLineAge()).toBe(COUNTED_LAST_LINE);
+    expect(result.submissionOfferAge()).toBe(COUNTED_LAST_LINE + RANKING_OFFER_DELAY_TICKS);
+    for (let age = 1; age <= COUNTED_LAST_LINE; age++) {
+      result.step();
+      expect(result.view().bestLineShown, `age ${age}`).toBe(age >= result.lastLineAge());
+    }
+    expect(firstDueAge(input({ bestAtStart: 100 }))).toBe(COUNTED_LAST_LINE + RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('a run with no best line waits as long as one with it', () => {
+    const result = new GameOverResult();
+    result.start(input({ recordsHighScore: false }));
+    expect(result.view().bestLine).toBeNull();
+    expect(result.lastLineAge()).toBe(COUNTED_LAST_LINE);
+    expect(firstDueAge(input({ recordsHighScore: false }))).toBe(COUNTED_LAST_LINE + RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('a score of 0 has no count to wait for: the last line is due GAMEOVER_RECORD_DELAY_TICKS in', () => {
+    const zero = input({ score: 0, tally: { splits: 0, claims: 0, bestShare: 0 } });
+    const result = new GameOverResult();
+    result.start(zero);
+    expect(result.lastLineAge()).toBe(GAMEOVER_RECORD_DELAY_TICKS);
+    expect(firstDueAge(zero)).toBe(GAMEOVER_RECORD_DELAY_TICKS + RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('reduced motion shows every line at once: counted from the modal appearing', () => {
+    const still = input({ reducedMotion: true, bestAtStart: 100 });
+    const result = new GameOverResult();
+    result.start(still);
+    expect(result.lastLineAge()).toBe(0);
+    expect(result.view().bestLineShown).toBe(true);
+    expect(firstDueAge(still)).toBe(RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('follows the timing’s delay, as given when it starts', () => {
+    expect(firstDueAge(input({ timing: { ...TIMING, offerDelayTicks: 30 } }))).toBe(COUNTED_LAST_LINE + 30);
+    expect(firstDueAge(input({ timing: { ...TIMING, offerDelayTicks: 0 } }))).toBe(COUNTED_LAST_LINE);
+    const given = input({ timing: { ...TIMING, offerDelayTicks: 30 } });
+    const result = new GameOverResult();
+    result.start(given);
+    given.timing.offerDelayTicks = 200;
+    expect(result.submissionOfferAge()).toBe(COUNTED_LAST_LINE + 30);
+  });
+
+  it('several ticks in one frame: due on the first check past it, from the same start whenever the line was first drawn', () => {
+    const result = new GameOverResult();
+    result.start(input({ bestAtStart: 100 }));
+    const due = result.submissionOfferAge();
+    // Frames of 8 ticks: the best line (due at 54) is first seen at 56.
+    const FRAME = 8;
+    let firstSeenAge: number | null = null;
+    let openedAt: number | null = null;
+    while (openedAt === null && result.getAge() < 400) {
+      for (let i = 0; i < FRAME; i++) result.step();
+      if (firstSeenAge === null && result.view().bestLineShown) firstSeenAge = result.getAge();
+      expect(result.submissionOfferAge()).toBe(due);
+      if (result.isSubmissionOfferDue()) openedAt = result.getAge();
+    }
+    expect(firstSeenAge).toBe(56);
+    expect(firstSeenAge!).toBeGreaterThan(result.lastLineAge());
+    // Opened on the first frame at or past `due` (the frame before is short of it)...
+    expect(openedAt).toBe(Math.ceil(due / FRAME) * FRAME);
+    expect(openedAt! - FRAME).toBeLessThan(due);
+    // ...a frame sooner than counting the delay from the frame that drew the line.
+    expect(openedAt!).toBeLessThan(Math.ceil((firstSeenAge! + RANKING_OFFER_DELAY_TICKS) / FRAME) * FRAME);
+  });
+
+  it('never due once stopped', () => {
+    const result = new GameOverResult();
+    result.start(input({ timing: { ...TIMING, offerDelayTicks: 0 } }));
+    for (let i = 0; i < 200; i++) result.step();
+    expect(result.isSubmissionOfferDue()).toBe(true);
+    result.stop();
+    expect(result.isSubmissionOfferDue()).toBe(false);
   });
 });
