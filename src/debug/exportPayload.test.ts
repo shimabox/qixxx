@@ -10,6 +10,7 @@ import {
   BIG_CLAIM_SHARE,
   EMBER_FIRST_SPAWN_SEC,
   GAMEOVER_COUNT_TICKS,
+  LATE_STAGE_WISP_COUNT_MAX,
   MISS_GRACE_TICKS,
   MISS_LINE_LOCK_TICKS,
   NEAR_MISS_BONUS,
@@ -133,6 +134,33 @@ describe('EXPORT', () => {
     // Overridden, the item is the override on every stage.
     second.applyDebugOverrides({ firstEmberSec: 8 });
     expect(exportOf(second).EMBER_FIRST_SPAWN_SEC).toBe(8);
+  });
+
+  it('exported on stage 18, has 10 Wisps and says how the count past the table is made', () => {
+    const session = sessionAtStage(18, { seed: 1 });
+    // Back to the stage's own values: the walk on lowered every goal.
+    session.resetDebugOverrides();
+    const payload = buildExportPayload(
+      session.getEffectiveDebugParams(),
+      session.getTimeLimitTicks(),
+      undefined,
+      undefined,
+      session.getDebugOverrides(),
+      session.getStage()
+    ) as Record<string, unknown> & { _notes: Record<string, string> };
+    expect(payload.STAGE).toBe(18);
+    expect(payload.WISP_COUNT).toBe(10);
+    expect(session.getGame().getWisps()).toHaveLength(10);
+    // The note says the count is not the table's row from stage 16 on: the
+    // last row's count plus one a stage, held at LATE_STAGE_WISP_COUNT_MAX.
+    const note = payload._notes.WISP_COUNT;
+    expect(note).toContain('STAGE_TABLE');
+    expect(note).toMatch(/stage 16/);
+    expect(note).toMatch(/plus one for each stage past 15/);
+    expect(note).toContain('LATE_STAGE_WISP_COUNT_MAX');
+    expect(note).toContain(`(${LATE_STAGE_WISP_COUNT_MAX})`);
+    expect(LATE_STAGE_WISP_COUNT_MAX).toBe(10);
+    expect(payload._notes.STAGE).toContain('WISP_COUNT');
   });
 
   it('carries the GAME OVER ranking panel delay with the other GAME OVER effect timings', () => {

@@ -20,6 +20,7 @@ import {
   TICK_RATE,
   SPLIT_MULTIPLIER_CAP,
   EMBER_FIRST_SPAWN_SEC,
+  LATE_STAGE_WISP_COUNT_MAX,
   BIG_CLAIM_SHARE,
   PLAY_LOG_MAX_RUNS,
   PLAY_LOG_STREAK_STAGE,
@@ -306,12 +307,11 @@ export function buildExportPayload(
         ? {}
         : {
             STAGE:
-              "The stage being played when EXPORT was pressed (1 = the first; STAGE_TABLE row STAGE - 1, the last row from stage 15). Not a config.ts constant: it says which stage these values belong to — WISP_COUNT, WISP_SPEED_MULTIPLIER, EMBER_MOVE_TICKS, EMBER_SPAWN_INTERVAL_SEC, EMBER_BRANCH_CHASE_PROBABILITY and DEFAULT_REQUIRED_OCCUPANCY are this stage's, and EMBER_COUNT is the Embers alive on it. EMBER_FIRST_SPAWN_SEC is not this stage's: whatever STAGE is, it is stage 1's wait for its first Ember pair, or the panel's override when there is one.",
+              "The stage being played when EXPORT was pressed (1 = the first; STAGE_TABLE row STAGE - 1, the last row from stage 15, with more Wisps from stage 16 — see WISP_COUNT). Not a config.ts constant: it says which stage these values belong to — WISP_COUNT, WISP_SPEED_MULTIPLIER, EMBER_MOVE_TICKS, EMBER_SPAWN_INTERVAL_SEC, EMBER_BRANCH_CHASE_PROBABILITY and DEFAULT_REQUIRED_OCCUPANCY are this stage's, and EMBER_COUNT is the Embers alive on it. EMBER_FIRST_SPAWN_SEC is not this stage's: whatever STAGE is, it is stage 1's wait for its first Ember pair, or the panel's override when there is one.",
           }),
       EMBER_FIRST_SPAWN_SEC:
         "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
-      WISP_COUNT:
-        "Number of Wisps this stage. config.ts has no single constant for this — it is the current stage's wispCount in STAGE_TABLE.",
+      WISP_COUNT: `Number of Wisps this stage. config.ts has no single constant for this — through stage 15 it is the current stage's wispCount in STAGE_TABLE. From stage 16 on it is not in the table: it is the last row's wispCount plus one for each stage past 15, held at LATE_STAGE_WISP_COUNT_MAX (${LATE_STAGE_WISP_COUNT_MAX}).`,
       WISP_SPEED_MULTIPLIER:
         "Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE.",
       EMBER_COUNT:
