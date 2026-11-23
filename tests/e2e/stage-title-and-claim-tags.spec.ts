@@ -9,6 +9,8 @@
 // the PAUSE button and the hint line — no pixel constant of a font.
 import { test, expect, type Page } from '@playwright/test';
 import { advanceUntil } from './support/fakeClock';
+import { buildStageScript } from '../../src/core/scriptedRun';
+import { sessionAtStage } from '../../src/core/stageStartFixture';
 
 interface Box {
   x: number;
@@ -68,6 +70,10 @@ declare global {
         getStageTicks: () => number;
         getTotalTicks: () => number;
         update: (input: { dx: number; dy: number; drawHeld: boolean; slow?: boolean; confirm: boolean }) => void;
+        getMarkerStart: () => { edge: 'top' | 'bottom' | 'left' | 'right'; point: Point } | null;
+        applyDebugOverrides: (overrides: { requiredOccupancy?: number }) => void;
+        resetDebugOverrides: () => void;
+        getGame: () => { getWisps: () => unknown[] };
       };
       fx: {
         tick: () => void;
@@ -173,46 +179,85 @@ function expectPlaced(label: string, box: Rect, l: Awaited<ReturnType<typeof lay
   for (const other of l.others) expect(overlaps(box, other.rect), `${label} over ${other.name}`).toBe(false);
 }
 
-// The comb of core/scriptedRun.ts's buildStageScript() on the full field:
-// walk left on the top border, then vertical lines 3 columns apart, every
-// third one slow. Fed to the core straight from the stage's tick, the run is
-// the one core/scriptedRun.ts plays headlessly — on seed 542 its claim at
-// tick 558 is a close call and its claim at tick 681 (a split) a big claim
-// that is a close call too.
-function combScript(width: number, height: number): Segment[] {
-  const segments: Segment[] = [];
-  const startX = Math.floor(width / 2);
-  segments.push({ dx: -1, dy: 0, drawHeld: false, slow: false, ticks: startX - 3 });
-  let goingDown = true;
-  let line = 0;
-  for (let x = 3; x < width - 2; x += 3) {
-    const slow = line % 3 === 2;
-    const cells = height - 1;
-    segments.push({ dx: 0, dy: goingDown ? 1 : -1, drawHeld: true, slow, ticks: slow ? cells * 2 : cells });
-    segments.push({ dx: 1, dy: 0, drawHeld: false, slow: false, ticks: 3 });
-    goingDown = !goingDown;
-    line++;
-  }
-  segments.push({ dx: 0, dy: 0, drawHeld: false, slow: false, ticks: 1e9 });
-  return segments;
+// The comb of core/scriptedRun.ts's buildStageScript() on the full field,
+// from stage 3's start: walk the border to near the top-left corner, then
+// vertical lines 3 columns apart, every third one slow. Stages 1 and 2 are
+// cleared the way core/stageStartFixture.ts's sessionAtStage() clears them,
+// so the run is the one played headlessly there — on seed 636 stage 3 starts
+// on the right edge, its comb's claim at stage tick 1790 is a close call (not
+// a big claim) and its claim at stage tick 1912, a split that clears stage 3,
+// is a big claim and a close call.
+const SPLIT_SEED = 636;
+function stage3Comb(seed: number): Segment[] {
+  const start = sessionAtStage(3, { seed }).getMarkerStart()!.point;
+  return buildStageScript(160, 120, start).map((s) => ({ ...s, ticks: Number.isFinite(s.ticks) ? s.ticks : 1e9 }));
 }
 
-/** Makes the live session take the comb's input for each playing tick (StageClear and the rest still use the keys). */
-async function driveWithComb(page: Page): Promise<void> {
-  await page.evaluate((segments: Segment[]) => {
-    const session = window.__game__!.session;
-    const update = session.update.bind(session);
-    session.update = (input) => {
-      if (session.getStatus() !== 'playing') return update(input);
-      let remaining = session.getStageTicks();
-      for (const s of segments) {
-        if (remaining < s.ticks) return update({ dx: s.dx, dy: s.dy, drawHeld: s.drawHeld, slow: s.slow, confirm: false });
-        remaining -= s.ticks;
-      }
-      return update({ dx: 0, dy: 0, drawHeld: false, slow: false, confirm: false });
-    };
-  }, combScript(160, 120));
+/**
+ * Makes the live session play stages 1 to `boxThrough` by a small box drawn
+ * straight in from the stage's start, along the edge and back out, with the
+ * goal lowered by a debug override (core/stageStartFixture.ts's
+ * clearFromStart()), and, given `comb`, the stage after them by the comb,
+ * with the override dropped at its first tick. Every other stage, and
+ * StageClear, still take the keys.
+ *
+ * With `boxes` above 1, each of those stages is played by that many boxes in
+ * a row along the edge, all fast lines: the goal stays out of reach (a debug
+ * override too) until the last box begins, so only the last one clears.
+ */
+async function drive(page: Page, boxThrough: number, comb: Segment[] | null = null, boxes = 1): Promise<void> {
+  await page.evaluate(
+    ({ boxThrough, comb, boxes }) => {
+      const session = window.__game__!.session;
+      const update = session.update.bind(session);
+      const inward = { top: [0, 1], bottom: [0, -1], left: [1, 0], right: [-1, 0] } as const;
+      session.update = (input) => {
+        if (session.getStatus() !== 'playing') return update(input);
+        const stage = session.getStage();
+        const tick = session.getStageTicks();
+        if (stage <= boxThrough) {
+          const boxTicks = 6;
+          if (tick % boxTicks === 0 && tick < boxTicks * boxes) {
+            const last = Math.floor(tick / boxTicks) >= boxes - 1;
+            session.applyDebugOverrides({ requiredOccupancy: last ? 0.00001 : 0.99 });
+          }
+          const [ix, iy] = inward[session.getMarkerStart()!.edge];
+          const along = ix === 0 ? [1, 0] : [0, 1];
+          const box = [[ix, iy], [ix, iy], along, along, [-ix, -iy], [-ix, -iy]];
+          const [dx, dy] = tick < boxTicks * boxes ? box[tick % boxTicks] : [0, 0];
+          return update({ dx, dy, drawHeld: true, slow: false, confirm: false });
+        }
+        if (comb && stage === boxThrough + 1) {
+          if (tick === 0) session.resetDebugOverrides();
+          let remaining = tick;
+          for (const s of comb) {
+            if (remaining < s.ticks) return update({ dx: s.dx, dy: s.dy, drawHeld: s.drawHeld, slow: s.slow, confirm: false });
+            remaining -= s.ticks;
+          }
+          return update({ dx: 0, dy: 0, drawHeld: false, slow: false, confirm: false });
+        }
+        return update(input);
+      };
+    },
+    { boxThrough, comb, boxes }
+  );
 }
+
+/** From STAGE CLEAR, confirms on to the next stage and runs until its first tick (its title shown). */
+async function toNextStage(page: Page): Promise<void> {
+  const count = (await probe(page)).stageStarts.length;
+  await advanceUntil(page, async () => (await status(page)) === 'stageclear', 60_000, 20);
+  // A confirm completes the result's count-up (if still counting), the next starts the stage.
+  await page.clock.runFor(1_500);
+  for (let i = 0; i < 4 && (await probe(page)).stageStarts.length <= count; i++) {
+    await page.keyboard.press('Enter');
+    await advanceUntil(page, async () => (await probe(page)).stageStarts.length > count || (await status(page)) === 'stageclear', 300, 4);
+    if ((await probe(page)).stageStarts.length <= count) await page.clock.runFor(200);
+  }
+  await advanceUntil(page, async () => (await probe(page)).stageStarts.length > count, 2_000, 4);
+}
+
+const wispCount = (page: Page) => page.evaluate(() => window.__game__!.session.getGame().getWisps().length);
 
 test.describe('the stage title', () => {
   test('STAGE 1 WARM-UP shows from the start of play for 60 ticks, then goes', async ({ page }) => {
@@ -240,38 +285,99 @@ test.describe('the stage title', () => {
     expect((await page.evaluate(() => window.__game__!.getFxTextBoxes())).stageTitle).toBeNull();
   });
 
-  test('a later stage opens with its own title', async ({ page }) => {
+  test('later stages open with their own titles: SPRINTER (one Wisp) on stage 2, FAST PAIR (two) on stage 3', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
-    await open(page, '?seed=542');
-    await driveWithComb(page);
+    await open(page, '?seed=1');
+    await drive(page, 2);
     await page.keyboard.press('Space');
-    // Seed 542's comb clears stage 1 by a split at tick 681.
-    await advanceUntil(page, async () => (await status(page)) === 'stageclear', 30_000, 50);
-    await advanceUntil(page, async () => (await frame(page)).stageTitle === null, 5_000, 50);
-    // A confirm completes the result's count-up, the next starts stage 2.
-    await page.clock.runFor(1_500);
-    await page.keyboard.press('Enter');
-    await page.clock.runFor(50);
-    await page.keyboard.press('Enter');
-    await advanceUntil(page, async () => (await status(page)) === 'playing', 2_000, 20);
-    const starts = (await probe(page)).stageStarts;
-    expect(starts.at(-1)).toMatchObject({ heading: 'STAGE 2', title: 'FAST PAIR' });
+    await advanceUntil(page, async () => (await probe(page)).stageStarts.length > 0, 1000, 4);
+    expect(await wispCount(page)).toBe(1);
+
+    await toNextStage(page);
+    expect((await probe(page)).stageStarts.at(-1)).toMatchObject({ heading: 'STAGE 2', title: 'SPRINTER' });
     await page.clock.runFor(20);
-    expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 2', title: 'FAST PAIR' });
+    expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 2', title: 'SPRINTER' });
+    expect(await wispCount(page)).toBe(1);
+
+    await toNextStage(page);
+    expect((await probe(page)).stageStarts.at(-1)).toMatchObject({ heading: 'STAGE 3', title: 'FAST PAIR' });
+    await page.clock.runFor(20);
+    expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 3', title: 'FAST PAIR' });
+    expect(await wispCount(page)).toBe(2);
   });
 
   test('reads in Japanese on the Japanese page', async ({ browser }) => {
     const context = await browser.newContext({ locale: 'ja-JP', viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     await open(page, '?seed=1');
+    await drive(page, 2);
     await page.keyboard.press('Space');
     await advanceUntil(page, async () => (await probe(page)).stageStarts.length > 0, 1000, 4);
     await page.clock.runFor(20);
     expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 1', title: 'はじまり' });
     const l = await layout(page);
     expectPlaced('title', l.title!, l);
+
+    await toNextStage(page);
+    await page.clock.runFor(20);
+    expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 2', title: '速い 1 匹' });
+    await toNextStage(page);
+    await page.clock.runFor(20);
+    expect((await frame(page)).stageTitle).toMatchObject({ heading: 'STAGE 3', title: '速い 2 匹' });
     await context.close();
   });
+
+  // Stage 2's title, in English and in Japanese, on the field and clear of
+  // the HUD, the PAUSE button and the hint line, on a PC screen and on phones.
+  // Stage 1 is cleared on its second fast line, so stage 2 opens with the
+  // slow line's hint (due from a run's second claim) shown with the title.
+  for (const { viewport, touch } of [
+    { viewport: { width: 1280, height: 800 }, touch: false },
+    { viewport: { width: 390, height: 844 }, touch: true },
+    { viewport: { width: 844, height: 390 }, touch: true },
+    { viewport: { width: 667, height: 375 }, touch: true },
+  ]) {
+    for (const { locale, title, slowHint } of [
+      { locale: 'en-US', title: 'SPRINTER', slowHint: touch ? 'DRAW THE WHOLE LINE WITH SLOW FOR DOUBLE POINTS' : 'DRAW THE WHOLE LINE WITH SHIFT FOR DOUBLE POINTS' },
+      { locale: 'ja-JP', title: '速い 1 匹', slowHint: touch ? 'SLOW だけで最後まで引くと点が 2 倍' : 'Shift を押したまま最後まで引くと点が 2 倍' },
+    ]) {
+      test(`stage 2's title (${locale}) at ${viewport.width}x${viewport.height}${touch ? ' (touch)' : ''} stays on the field, clear of the HUD, PAUSE and the hint`, async ({
+        browser,
+      }) => {
+        const context = await browser.newContext({ locale, viewport, hasTouch: touch });
+        const page = await context.newPage();
+        await open(page, '?seed=1');
+        await drive(page, 1, null, 2);
+        await page.keyboard.press('Space');
+        await advanceUntil(page, async () => (await probe(page)).stageStarts.length > 0, 1000, 4);
+        await toNextStage(page);
+        const stage1Claims = (await probe(page)).claims.map((c) => c.notice);
+        expect(stage1Claims.map((n) => [n.lineSpeed, n.stageCleared])).toEqual([
+          ['fast', false],
+          ['fast', true],
+        ]);
+        // Over the whole time it is shown, as it pops in and settles.
+        const start = (await probe(page)).stageStarts.at(-1)!;
+        expect(start).toMatchObject({ heading: 'STAGE 2', title });
+        for (const age of [2, 10, 30, 58]) {
+          await advanceUntil(page, async () => (await probe(page)).ticks >= start.tick + age, 2_000, 4);
+          await page.clock.runFor(4); // a frame drawn
+          expect((await frame(page)).stageTitle, `age ${age}`).toMatchObject({ heading: 'STAGE 2', title });
+          await expect(page.locator('#hint-bar'), `age ${age}`).toBeVisible();
+          await expect(page.locator('#hint-bar'), `age ${age}`).toHaveText(slowHint);
+          // The PAUSE button is shown on touch screens only.
+          if (touch) await expect(page.locator('#pause-button'), `age ${age}`).toBeVisible();
+          const l = await layout(page);
+          expect(l.title, `age ${age}`).not.toBeNull();
+          expect(l.others.map((o) => o.name), `age ${age}`).toEqual(
+            expect.arrayContaining(touch ? ['hud-row', 'pause-button', 'hint-bar'] : ['hud-row', 'hint-bar'])
+          );
+          expectPlaced(`title at age ${age}`, l.title!, l);
+        }
+        await context.close();
+      });
+    }
+  }
 
   test('is shown with reduced motion, without moving', async ({ browser }) => {
     const context = await browser.newContext({ reducedMotion: 'reduce', viewport: { width: 1280, height: 800 } });
@@ -303,16 +409,22 @@ test.describe('the stage title', () => {
 });
 
 test.describe('BIG CLAIM and CLOSE CALL', () => {
-  test('show next to the claims they belong to (seed 542)', async ({ page }) => {
+  test(`show next to the claims they belong to (seed ${SPLIT_SEED}, stage 3)`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
-    await open(page, '?seed=542');
-    await driveWithComb(page);
+    await open(page, `?seed=${SPLIT_SEED}`);
+    await drive(page, 2, stage3Comb(SPLIT_SEED));
     await page.keyboard.press('Space');
+    await advanceUntil(page, async () => (await probe(page)).stageStarts.length > 0, 1000, 4);
+    await toNextStage(page);
+    await toNextStage(page);
+    expect(await page.evaluate(() => window.__game__!.session.getStage())).toBe(3);
+    const stage3Start = (await probe(page)).stageStarts.at(-1)!.tick;
+    const stage3Claims = async () => (await probe(page)).claims.filter((c) => c.tick >= stage3Start);
 
-    // Tick 558: a close call, not a big claim — CLOSE CALL +200 under its score.
-    await advanceUntil(page, async () => (await probe(page)).claims.some((c) => c.notice.nearMissBonus > 0), 30_000, 20);
+    // Stage tick 1790: a close call, not a big claim — CLOSE CALL +200 under its score.
+    await advanceUntil(page, async () => (await stage3Claims()).some((c) => c.notice.nearMissBonus > 0), 60_000, 20);
     await page.clock.runFor(20);
-    const closeCall = (await probe(page)).claims.find((c) => c.notice.nearMissBonus > 0)!.notice;
+    const closeCall = (await stage3Claims()).find((c) => c.notice.nearMissBonus > 0)!.notice;
     expect(closeCall).toMatchObject({ bigClaim: false, nearMissBonus: 200, split: false });
     let f = await frame(page);
     expect(f.claimTags).toHaveLength(1);
@@ -322,11 +434,12 @@ test.describe('BIG CLAIM and CLOSE CALL', () => {
     expect(l.tags).toHaveLength(1);
     expectPlaced('CLOSE CALL', l.tags[0], l);
 
-    // Tick 681: the split that clears stage 1 is a big claim and a close call.
-    await advanceUntil(page, async () => (await probe(page)).claims.some((c) => c.notice.bigClaim), 30_000, 20);
+    // Stage tick 1912: the split that clears stage 3 is a big claim and a close call.
+    await advanceUntil(page, async () => (await stage3Claims()).some((c) => c.notice.split), 30_000, 20);
     await page.clock.runFor(20);
-    const big = (await probe(page)).claims.find((c) => c.notice.bigClaim)!.notice;
-    expect(big).toMatchObject({ bigClaim: true, nearMissBonus: 200, split: true });
+    const big = (await stage3Claims()).find((c) => c.notice.split)!.notice;
+    expect(big).toMatchObject({ bigClaim: true, nearMissBonus: 200, split: true, stageCleared: true });
+    expect(await status(page)).toBe('stageclear');
     f = await frame(page);
     expect(f.claimTags.at(-1)!.tags).toEqual([
       { kind: 'big', text: 'BIG CLAIM' },

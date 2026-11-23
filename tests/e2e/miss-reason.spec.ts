@@ -64,7 +64,7 @@ for (const c of [
     test.use({ locale: c.locale, viewport: { width: 390, height: 844 }, hasTouch: true });
 
     test(`the field shows "${c.text}" inside it, at least 13 CSS px tall`, async ({ page }) => {
-      // A board whose two Wisps stay clear of the Igniter's line, so every
+      // A board whose Wisp stays clear of the Igniter's line, so every
       // miss is the Igniter's.
       await open(page, '?seed=2');
       await page.keyboard.press('Space');
