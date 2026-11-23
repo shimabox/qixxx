@@ -359,6 +359,7 @@ function buildFxExportPayload(p: FxParams): Record<string, unknown> {
     GAMEOVER_COUNT_TICKS: p.gameOverCountTicks,
     GAMEOVER_POP_TICKS: p.gameOverPopTicks,
     GAMEOVER_SPARK_TICKS: p.gameOverSparkTicks,
+    RANKING_OFFER_DELAY_TICKS: p.rankingOfferDelayTicks,
   };
 }
 
@@ -410,6 +411,8 @@ const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: 
   { key: 'gameOverCountTicks', label: 'GAME OVER count-up (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverPopTicks', label: 'GAME OVER pop (t)', range: FX_TICKS_RANGE },
   { key: 'gameOverSparkTicks', label: 'GAME OVER sparks (t)', range: FX_TICKS_RANGE },
+  // Read when the next GAME OVER result starts.
+  { key: 'rankingOfferDelayTicks', label: 'GAME OVER ranking panel delay (t)', range: { min: 0, max: 600, step: 1 } },
 ];
 const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
   { key: 'shakeSmall', label: 'Shake S' },

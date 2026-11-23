@@ -4,7 +4,7 @@
 // size on a phone. Everything runs on a faked page clock
 // (tests/e2e/support/fakeClock.ts), so budgets are game time.
 import { test, expect, type Page } from '@playwright/test';
-import { advanceUntil, finishGameOverResult, loseAllLivesToIgniter } from './support/fakeClock';
+import { advanceToSubmissionPanel, advanceUntil, finishGameOverResult, loseAllLivesToIgniter } from './support/fakeClock';
 
 interface Point {
   x: number;
@@ -270,12 +270,12 @@ async function mockOpenBoard(page: Page) {
   };
 }
 
-/** Plays an untainted normal run to GAME OVER and waits for the submission panel. */
+/** Plays an untainted normal run to GAME OVER and waits for the submission panel (it opens once the result has been read). */
 async function reachSubmissionPanel(page: Page): Promise<void> {
   await start(page);
   await loseAllLivesToIgniter(page);
   expect(await page.evaluate(() => window.__game__!.session.isRunTainted())).toBe(false);
-  await advanceUntil(page, async () => page.locator('#ranking-submit-panel').isVisible(), 2_000, FRAME_MS);
+  await advanceToSubmissionPanel(page, 5_000, FRAME_MS);
   await expect(page.locator('#ranking-submit-panel')).toContainText('YOU MADE THE TOP 10!');
 }
 
@@ -297,7 +297,7 @@ test.describe("the submission panel's RETRY and TITLE", () => {
 
     // The next run's panel starts empty, and its TITLE goes back to Title.
     await loseAllLivesToIgniter(page);
-    await advanceUntil(page, async () => panel.isVisible(), 2_000, FRAME_MS);
+    await advanceToSubmissionPanel(page, 5_000, FRAME_MS);
     await expect(page.getByPlaceholder('NAME')).toHaveValue('');
     await page.locator('#ranking-submit-title-button').click();
     await page.clock.runFor(100);
@@ -339,6 +339,46 @@ test.describe("the submission panel's RETRY and TITLE", () => {
   });
 });
 
+/** Reaches the submission panel and checks it fits on screen with all of its buttons in view, also with a finished POST. */
+async function expectSubmissionPanelFits(page: Page): Promise<void> {
+  const api = await mockOpenBoard(page);
+  await pinNormalSeed(page, 1);
+  await open(page);
+  await reachSubmissionPanel(page);
+  const measure = () =>
+    page.evaluate(() => {
+      const panel = document.getElementById('ranking-submit-panel')!;
+      const r = (el: Element) => el.getBoundingClientRect();
+      const buttons = [...panel.querySelectorAll('button')].filter((b) => b.offsetParent !== null);
+      return {
+        panel: r(panel),
+        overflow: panel.scrollHeight - panel.clientHeight,
+        buttons: buttons.map((b) => ({ text: b.textContent, box: r(b) })),
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      };
+    });
+  const expectFits = async (labels: string[]) => {
+    const m = await measure();
+    expect(m.overflow).toBeLessThanOrEqual(1);
+    expect(m.panel.left).toBeGreaterThanOrEqual(0);
+    expect(m.panel.top).toBeGreaterThanOrEqual(0);
+    expect(m.panel.right).toBeLessThanOrEqual(m.viewport.width);
+    expect(m.panel.bottom).toBeLessThanOrEqual(m.viewport.height);
+    expect(m.buttons.map((b) => b.text)).toEqual(labels);
+    for (const b of m.buttons) {
+      expect(b.box.top).toBeGreaterThanOrEqual(m.panel.top);
+      expect(b.box.bottom).toBeLessThanOrEqual(m.panel.bottom);
+    }
+  };
+  await expectFits(['SKIP', 'SUBMIT', 'RETRY', 'TITLE']);
+  await page.getByPlaceholder('NAME').fill('FIT');
+  await page.getByRole('button', { name: 'SUBMIT' }).click();
+  await expect.poll(api.posts).toBe(1);
+  api.release();
+  await expect(page.locator('#ranking-submit-panel')).toContainText('SUBMITTED.');
+  await expectFits(['OK', 'RETRY', 'TITLE']);
+}
+
 for (const c of [
   { name: '390x844', viewport: { width: 390, height: 844 } },
   { name: '667x375', viewport: { width: 667, height: 375 } },
@@ -347,42 +387,20 @@ for (const c of [
     test.use({ viewport: c.viewport, hasTouch: true });
 
     test('fits on screen with all of its buttons in view, also with a finished POST', async ({ page }) => {
-      const api = await mockOpenBoard(page);
-      await pinNormalSeed(page, 1);
-      await open(page);
-      await reachSubmissionPanel(page);
-      const measure = () =>
-        page.evaluate(() => {
-          const panel = document.getElementById('ranking-submit-panel')!;
-          const r = (el: Element) => el.getBoundingClientRect();
-          const buttons = [...panel.querySelectorAll('button')].filter((b) => b.offsetParent !== null);
-          return {
-            panel: r(panel),
-            overflow: panel.scrollHeight - panel.clientHeight,
-            buttons: buttons.map((b) => ({ text: b.textContent, box: r(b) })),
-            viewport: { width: window.innerWidth, height: window.innerHeight },
-          };
-        });
-      const expectFits = async (labels: string[]) => {
-        const m = await measure();
-        expect(m.overflow).toBeLessThanOrEqual(1);
-        expect(m.panel.left).toBeGreaterThanOrEqual(0);
-        expect(m.panel.top).toBeGreaterThanOrEqual(0);
-        expect(m.panel.right).toBeLessThanOrEqual(m.viewport.width);
-        expect(m.panel.bottom).toBeLessThanOrEqual(m.viewport.height);
-        expect(m.buttons.map((b) => b.text)).toEqual(labels);
-        for (const b of m.buttons) {
-          expect(b.box.top).toBeGreaterThanOrEqual(m.panel.top);
-          expect(b.box.bottom).toBeLessThanOrEqual(m.panel.bottom);
-        }
-      };
-      await expectFits(['SKIP', 'SUBMIT', 'RETRY', 'TITLE']);
-      await page.getByPlaceholder('NAME').fill('FIT');
-      await page.getByRole('button', { name: 'SUBMIT' }).click();
-      await expect.poll(api.posts).toBe(1);
-      api.release();
-      await expect(page.locator('#ranking-submit-panel')).toContainText('SUBMITTED.');
-      await expectFits(['OK', 'RETRY', 'TITLE']);
+      await expectSubmissionPanelFits(page);
+    });
+  });
+}
+
+for (const c of [
+  { name: 'a phone 844x390', viewport: { width: 844, height: 390 }, hasTouch: true },
+  { name: '1280x800', viewport: { width: 1280, height: 800 }, hasTouch: false },
+]) {
+  test.describe(`the submission panel on ${c.name}`, () => {
+    test.use({ viewport: c.viewport, hasTouch: c.hasTouch });
+
+    test('fits on screen with all of its buttons in view, also with a finished POST', async ({ page }) => {
+      await expectSubmissionPanelFits(page);
     });
   });
 }

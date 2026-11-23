@@ -5,7 +5,7 @@
 // with the language. Everything runs on a faked page clock
 // (tests/e2e/support/fakeClock.ts), so budgets are game time.
 import { test, expect, type Page } from '@playwright/test';
-import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
+import { advanceToSubmissionPanel, advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
 
 interface Point {
   x: number;
@@ -289,7 +289,7 @@ test.describe('in a Japanese browser', () => {
         await start(page);
         await loseAllLivesToIgniter(page);
         const panel = page.locator('#ranking-submit-panel');
-        await advanceUntil(page, async () => panel.isVisible(), 2_000, FRAME_MS);
+        await advanceToSubmissionPanel(page, 5_000, FRAME_MS);
         await expect(panel).toContainText('YOU MADE THE TOP 10!');
         // The modal's hint follows the panel on the next frame.
         await page.clock.runFor(100);

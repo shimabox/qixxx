@@ -317,6 +317,71 @@ export interface RankingUIOptions {
   onTitle: () => void;
   /** Called when the ranking list opens (main.ts closes HOW TO PLAY). */
   onListOpen?: () => void;
+  /**
+   * The GAME OVER result has been on screen long enough for the submission
+   * panel to open over it (src/gameOverResult.ts's isSubmissionOfferDue()).
+   * A panel the ranking reply has decided on waits for this (see
+   * DeferredSubmissionOffer). Always due when omitted.
+   */
+  isSubmissionOfferDue?: () => boolean;
+}
+
+/**
+ * The submission panel the ranking reply has decided to open, held until the
+ * GAME OVER result has been read (`isDue`): a reply that comes in time opens
+ * it on the first sync() that finds it due, one that comes later opens it at
+ * once. cancel() drops it for good — the run left GAME OVER, or a new offer
+ * replaced it. While it waits, isWaiting() holds every confirm (keys, field
+ * taps and the modal's RETRY), so a stray press cannot skip a run that may be
+ * posted; it ends by itself when it is due, so it has no upper bound of its own.
+ */
+export class DeferredSubmissionOffer {
+  private pendingOpen: (() => void) | null = null;
+
+  constructor(private readonly isDue: () => boolean) {}
+
+  /** The reply decided to open the panel with `open`. */
+  decide(open: () => void): void {
+    this.pendingOpen = null;
+    if (this.isDue()) {
+      open();
+      return;
+    }
+    this.pendingOpen = open;
+  }
+
+  /** Once per rendered frame: opens a waiting panel that has come due. */
+  sync(): void {
+    const open = this.pendingOpen;
+    if (!open || !this.isDue()) return;
+    this.pendingOpen = null;
+    open();
+  }
+
+  cancel(): void {
+    this.pendingOpen = null;
+  }
+
+  isWaiting(): boolean {
+    return this.pendingOpen !== null;
+  }
+}
+
+/**
+ * Which panel a reply's decision opens, through `offer` so both wait for the
+ * same time: the form for 'show', the explanation-only notice for
+ * 'over-claim-cap', nothing (and no wait) for any other. Returns whether one
+ * was decided on.
+ */
+export function scheduleSubmissionPanel(
+  decision: SubmissionOfferDecision,
+  offer: DeferredSubmissionOffer,
+  open: { form: () => void; overClaimCap: () => void }
+): boolean {
+  if (decision === 'show') offer.decide(open.form);
+  else if (decision === 'over-claim-cap') offer.decide(open.overClaimCap);
+  else return false;
+  return true;
 }
 
 /**
@@ -477,7 +542,11 @@ export interface RankingUI {
    * a no-op otherwise, and cheap when nothing changed.
    */
   syncReplayStatus(): void;
-  /** Offers ranking submission for the just-finished run, if eligible and provisionally in range. No-op (shows nothing) otherwise. */
+  /**
+   * Offers ranking submission for the just-finished run, if eligible and
+   * provisionally in range — the panel opens once the GAME OVER result has
+   * been read (isSubmissionOfferDue). No-op (shows nothing) otherwise.
+   */
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
@@ -528,6 +597,14 @@ export interface RankingUI {
   isSubmissionBlockingRetry(): boolean;
   /** True only for the first half of isSubmissionBlockingRetry(): the /api/ranking check is still in flight. */
   isSubmissionCheckPending(): boolean;
+  /**
+   * The check has decided to open the submission panel (the form or the
+   * over-the-cap notice), which waits until isSubmissionOfferDue() holds.
+   * Every confirm, the modal's RETRY included, is held meanwhile (main.ts).
+   */
+  isSubmissionOfferWaiting(): boolean;
+  /** Once per rendered GAME OVER frame: opens the waiting panel once it is due. */
+  syncSubmissionOffer(): void;
 }
 
 export function initRankingUI(options: RankingUIOptions): RankingUI {
@@ -1246,10 +1323,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     return checkingFor !== null || submitOverlay.style.display !== 'none';
   }
 
+  // The panel a reply has decided on, until the GAME OVER result has been
+  // read (see DeferredSubmissionOffer).
+  const deferredOffer = new DeferredSubmissionOffer(options.isSubmissionOfferDue ?? (() => true));
+
   function offerSubmission(snapshot: RunSubmissionSnapshot): void {
     submitOverlay.style.display = 'none';
     activeSubmission = null;
     checkingFor = null;
+    deferredOffer.cancel();
     if (!isSnapshotEligible(snapshot)) return;
     activeSubmission = snapshot;
     checkingFor = snapshot;
@@ -1271,41 +1353,48 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         // Explanation only: no name field, no SUBMIT. The snapshot is dropped
         // right away — there is nothing a retry could change about it.
         activeSubmission = null;
-        nameInput.style.display = 'none';
-        handleRow.style.display = 'none';
-        handleInput.style.display = 'none';
-        submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
-        postButton.style.display = 'none';
-        skipButton.textContent = t('submit.ok');
-        syncSubmitNavButtons();
-        submitOverlay.style.display = 'flex';
-        return;
-      }
-      if (decision !== 'show') {
+      } else if (decision !== 'show') {
         // Drop the snapshot for anything except a live, still-current run
         // whose score simply didn't make the cut — in the latter case a
         // 'superseded' offer already owns `activeSubmission` and must not be
         // cleared out from under it.
         if (decision !== 'superseded' && activeSubmission === snapshot) activeSubmission = null;
-        return;
       }
-
-      // Per-run reset (unchanged): a fresh offer starts from an empty form,
-      // both values included.
-      nameInput.value = '';
-      handleInput.value = '';
-      handleCheckbox.checked = false;
-      handleInput.style.display = 'none';
-      handleRow.style.display = 'flex';
-      nameInput.style.display = 'block';
-      syncRetainedValueHint(); // both empty now -> hides itself
-      submitStatus.textContent = '';
-      postButton.style.display = 'inline-block';
-      postButton.disabled = false;
-      skipButton.textContent = t('submit.skip');
-      syncSubmitNavButtons();
-      submitOverlay.style.display = 'flex';
+      // Either panel opens once the GAME OVER result has been read.
+      scheduleSubmissionPanel(decision, deferredOffer, {
+        form: openSubmissionForm,
+        overClaimCap: () => openOverClaimCapNotice(snapshot),
+      });
     })();
+  }
+
+  function openOverClaimCapNotice(snapshot: RunSubmissionSnapshot): void {
+    nameInput.style.display = 'none';
+    handleRow.style.display = 'none';
+    handleInput.style.display = 'none';
+    submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
+    postButton.style.display = 'none';
+    skipButton.textContent = t('submit.ok');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
+  }
+
+  function openSubmissionForm(): void {
+    // Per-run reset (unchanged): a fresh offer starts from an empty form,
+    // both values included.
+    nameInput.value = '';
+    handleInput.value = '';
+    handleCheckbox.checked = false;
+    handleInput.style.display = 'none';
+    handleRow.style.display = 'flex';
+    nameInput.style.display = 'block';
+    syncRetainedValueHint(); // both empty now -> hides itself
+    submitStatus.textContent = '';
+    postButton.style.display = 'inline-block';
+    postButton.disabled = false;
+    skipButton.textContent = t('submit.skip');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
   }
 
   // ---- Replay-viewer control bar ----
@@ -1624,6 +1713,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // 'superseded' / 'stale-run' guards).
     activeSubmission = null;
     checkingFor = null;
+    // ...and a panel still waiting for its time never opens.
+    deferredOffer.cancel();
   }
 
   return {
@@ -1643,5 +1734,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     getDemoCandidateIds: () => demoCandidateIds,
     isSubmissionBlockingRetry,
     isSubmissionCheckPending,
+    isSubmissionOfferWaiting: () => deferredOffer.isWaiting(),
+    syncSubmissionOffer: () => deferredOffer.sync(),
   };
 }

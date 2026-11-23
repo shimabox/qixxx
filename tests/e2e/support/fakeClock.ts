@@ -27,10 +27,81 @@ export async function advanceUntil(
 /**
  * Runs the faked clock on through the GAME OVER result (src/gameOverResult.ts):
  * the score's count-up, then the highlight and the best line after it — about
- * 54 ticks from the modal appearing; 1.2s of game time covers it.
+ * 54 ticks from the modal appearing; 1.2s of game time covers it. A ranking
+ * submission panel opens later (advanceToSubmissionPanel()).
  */
 export async function finishGameOverResult(page: Page): Promise<void> {
   await page.clock.runFor(1_200);
+}
+
+/** The GAME OVER result's timing as window.__game__.getGameOverResult() reads it (src/gameOverResult.ts). */
+export interface GameOverTiming {
+  active: boolean;
+  /** Live ticks since the modal appeared — not the session's ticks, which stand still on GAME OVER. */
+  age: number;
+  /** The age the last line (the best line) is due at. */
+  lastLineAge: number;
+  /** The age from which the ranking submission panel may open. */
+  offerAge: number;
+}
+
+export function gameOverTiming(page: Page): Promise<GameOverTiming> {
+  return page.evaluate(() => {
+    const r = (window as unknown as { __game__: { getGameOverResult: () => GameOverTiming } }).__game__.getGameOverResult();
+    return { active: r.active, age: r.age, lastLineAge: r.lastLineAge, offerAge: r.offerAge };
+  });
+}
+
+/** The GAME OVER ranking offer as window.__game__.getRankingOffer() reads it (src/ui/ranking.ts). */
+export interface RankingOfferState {
+  /** GET /api/ranking for the run is in flight. */
+  checkPending: boolean;
+  /** Its reply decided to open the submission panel, which waits for its time. */
+  waiting: boolean;
+  /** A submission panel is open. */
+  panelShown: boolean;
+}
+
+export function rankingOffer(page: Page): Promise<RankingOfferState> {
+  return page.evaluate(() =>
+    (window as unknown as { __game__: { getRankingOffer: () => RankingOfferState } }).__game__.getRankingOffer()
+  );
+}
+
+/**
+ * Runs the clock a frame (`stepMs`, shorter than a tick) at a time until the
+ * GAME OVER result has gone exactly one tick on: each frame then runs at most
+ * one tick, so every rendered frame is seen.
+ */
+export async function runOneGameOverTick(page: Page, stepMs = 16): Promise<number> {
+  const before = (await gameOverTiming(page)).age;
+  await advanceUntil(page, async () => (await gameOverTiming(page)).age > before, 10 * stepMs, stepMs);
+  const after = (await gameOverTiming(page)).age;
+  if (after !== before + 1) throw new Error(`runOneGameOverTick: went from ${before} to ${after}`);
+  return after;
+}
+
+/**
+ * Runs the faked clock until the ranking submission panel is open. It opens
+ * RANKING_OFFER_DELAY_TICKS (90) after the GAME OVER result's last line is
+ * due — about 2.4s of game time from the modal for a counted score, plus the
+ * last miss's hold before the modal — or as soon as a later reply lands.
+ * A game-time budget.
+ */
+export async function advanceToSubmissionPanel(page: Page, maxMs = 5_000, stepMs = 16): Promise<void> {
+  await advanceUntil(page, () => page.locator('#ranking-submit-panel').isVisible(), maxMs, stepMs);
+}
+
+/**
+ * Runs the faked clock on to where a submission panel would have opened had
+ * the run been offered one (the result's offerAge), and a little past it.
+ * Only once the modal is up.
+ */
+export async function advancePastOfferTime(page: Page, stepMs = 16): Promise<void> {
+  await advanceUntil(page, async () => {
+    const timing = await gameOverTiming(page);
+    return timing.active && timing.age >= timing.offerAge + 10;
+  }, 5_000, stepMs);
 }
 
 interface IgniterProbe {

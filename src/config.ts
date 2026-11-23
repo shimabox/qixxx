@@ -675,6 +675,12 @@ export const GAMEOVER_RECORD_DELAY_TICKS = 12;
 export const GAMEOVER_SPARK_TICKS = 30;
 export const GAMEOVER_SPARK_COUNT = 12;
 export const GAMEOVER_NEAR_BEST_RATIO = 0.1;
+// The ranking submission panel opens this many live ticks after the GAME OVER
+// result's last line (the best line) is due — counted from when it is due,
+// also for a run with no best line, from the modal appearing under reduced
+// motion — so the result is read before the panel covers it. A ranking reply
+// that comes later opens it at once.
+export const RANKING_OFFER_DELAY_TICKS = 90;
 // How far a GAME OVER spark travels from the NEW RECORD line (CSS px).
 export const GAMEOVER_SPARK_DISTANCE_PX = 26;
 // The effects' text (+score, praise, CHAIN xN) is never drawn smaller than

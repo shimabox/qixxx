@@ -54,6 +54,7 @@ import {
   GAMEOVER_COUNT_TICKS,
   GAMEOVER_POP_TICKS,
   GAMEOVER_SPARK_TICKS,
+  RANKING_OFFER_DELAY_TICKS,
   FxShakeSpec,
 } from '../config';
 import { t, type MessageKey } from '../i18n';
@@ -117,6 +118,8 @@ export interface FxParams {
   gameOverPopTicks: number;
   /** GAME OVER: the sparks around NEW RECORD last this many ticks. */
   gameOverSparkTicks: number;
+  /** GAME OVER: the ranking submission panel opens this many ticks after the result's last line is due. */
+  rankingOfferDelayTicks: number;
 }
 
 /** A fresh copy of the config.ts starting values. */
@@ -166,6 +169,7 @@ export function createDefaultFxParams(): FxParams {
     gameOverCountTicks: GAMEOVER_COUNT_TICKS,
     gameOverPopTicks: GAMEOVER_POP_TICKS,
     gameOverSparkTicks: GAMEOVER_SPARK_TICKS,
+    rankingOfferDelayTicks: RANKING_OFFER_DELAY_TICKS,
   };
 }
 

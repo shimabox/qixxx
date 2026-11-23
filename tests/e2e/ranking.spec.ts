@@ -12,7 +12,13 @@ import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
 import { simulateReplayFromRle } from '../../src/core/replayEngine';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
-import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
+import {
+  advancePastOfferTime,
+  advanceToSubmissionPanel,
+  advanceUntil,
+  loseAllLivesToIgniter,
+  rankingOffer,
+} from './support/fakeClock';
 
 // Minimal shape of the window.__game__ debug hook main.ts publishes,
 // matching smoke.spec.ts's own local (not imported) declaration.
@@ -156,68 +162,51 @@ async function stubDeterministicNormalSeed(page: Page): Promise<void> {
   }, SEED_VALUE);
 }
 
+const FAKE_CLOCK_START = new Date('2026-01-01T00:00:00Z');
+
+/**
+ * Opens the game on a faked, paused page clock (tests/e2e/support/fakeClock.ts):
+ * the game only advances through `page.clock.runFor()`, so every budget is
+ * game time and the run plays out the same on any machine.
+ */
+async function gotoOnFakeClock(page: Page): Promise<void> {
+  await page.clock.install({ time: FAKE_CLOCK_START });
+  await page.goto(APP_URL);
+  await page.clock.pauseAt(new Date(FAKE_CLOCK_START.getTime() + 60_000));
+  await page.clock.runFor(100);
+}
+
 /**
  * Drives a fresh, fully POST-eligible run (normal mode, no `?debug`, no
- * `?seed=`) to a real 'life' gameover, by the cheapest deterministic route
- * the real game offers: draw a short line inward, then stand still on it and
- * let the Igniter (src/core/fuse.ts) spawn and catch up. Three of those cost
- * three lives and end the run.
- *
- * Chosen over chasing a Wisp (what this suite used to do) on two counts.
- * Determinism: the Igniter is pure, spawning a fixed number of ticks after
- * the marker stops and advancing on a fixed cadence, with no dependence on
- * enemy RNG, on the marker ever intercepting a moving target, or on how
- * promptly this loop re-reads and re-steers. Headless simulation of this
- * exact pattern reaches a 'life' gameover — never a 'stageclear' — in
- * ~1319 ticks (~22s) at every seed tried, because standing still on a line
- * claims nothing. And cost: it needs one page.evaluate() every 300ms and a
- * key pulse only after each life is lost, where the chase needed two or
- * three evaluate() round trips every 80ms for ~34s. That difference is not
- * cosmetic — this file runs four real-gameplay tests serially while the
- * other Playwright worker runs the rest of the suite, and the chase's IPC
- * load was enough to push a timing-sensitive neighbouring test
- * (tests/e2e/gameover-share.spec.ts, whose polls allow only 8s) over its
- * budget under full-suite contention.
- *
- * The `grace === 0` guard matters: for a while after each miss, entering an
- * UNCLAIMED cell is blocked (docs/plan.md §3.5's grace-period exploit fix),
- * so a draw pulse issued then would do nothing at all and the run
- * would sit at the border forever. Re-pulsing whenever the marker is idle —
- * rather than once per observed life change — also self-heals if a pulse is
- * ever swallowed.
+ * `?seed=`) on the faked clock (gotoOnFakeClock()) to a real 'life'
+ * gameover, by the cheapest deterministic route the real game offers: draw a
+ * short line inward, then stand still on it and let the Igniter
+ * (src/core/fuse.ts) spawn and catch up — three times
+ * (tests/e2e/support/fakeClock.ts's loseAllLivesToIgniter()). Standing still
+ * on a line claims nothing, so it never ends on STAGE CLEAR.
  */
-async function reachGameoverDeterministically(page: Page, timeoutMs = 90_000): Promise<void> {
+async function reachGameoverDeterministically(page: Page): Promise<void> {
   await page.keyboard.press('Space'); // Title -> Playing
-  await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+  await page.clock.runFor(100);
+  expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('playing');
+  await loseAllLivesToIgniter(page, 90_000);
+}
 
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const state = await page.evaluate(() => {
-      const session = window.__game__!.session;
-      const game = session.getGame();
-      return {
-        status: session.getStatus(),
-        drawing: game.getMarker().isDrawing(),
-        grace: game.getGraceTicks(),
-      };
-    });
-    if (state.status === 'gameover') return;
+/**
+ * reachGameoverDeterministically(), then on until the submission panel has
+ * opened: after the GAME OVER result's last line, once the board has answered.
+ */
+async function reachSubmissionPanel(page: Page): Promise<void> {
+  await reachGameoverDeterministically(page);
+  await advanceToSubmissionPanel(page);
+  await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+}
 
-    if (state.status === 'playing' && !state.drawing && state.grace === 0) {
-      // Cut a fresh stub of line into the field, then let go: the marker is
-      // left stationary mid-line, which is exactly the condition the Igniter
-      // spawns on.
-      await page.keyboard.down('KeyX');
-      await page.keyboard.down('ArrowDown');
-      await page.waitForTimeout(200);
-      await page.keyboard.up('ArrowDown');
-      await page.keyboard.up('KeyX');
-    }
-    await page.waitForTimeout(300);
-  }
-
-  const status = await page.evaluate(() => window.__game__?.session.getStatus());
-  throw new Error(`reachGameoverDeterministically: timed out after ${timeoutMs}ms, status was "${status}"`);
+/** Clicks the GAME OVER modal's TITLE button and lets the tick that takes it run. */
+async function backToTitle(page: Page): Promise<void> {
+  await page.locator('#gameover-back-button').click();
+  await page.clock.runFor(100);
+  expect(await page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
 }
 
 /** Records a short, deterministic "wander, then time runs out" replay (mirrors src/core/replayEngine.test.ts's recordTimeUpRun) and base64-encodes it for a mocked replay payload. */
@@ -585,17 +574,12 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
 
 test.describe('name-input submission flow', () => {
   // Serialized (unlike this file's other, network-only describes): every
-  // test here drives ~22s of real, wall-clock-timed gameplay via
-  // reachGameoverDeterministically(). Running them concurrently in separate
-  // Chromium workers (playwright.config.ts's fullyParallel default) contends
-  // for real CPU/frame-rate — both between themselves and against the other
-  // worker's suite — which is exactly the pressure that used to make these
-  // miss their budget. Serial keeps this file's gameplay load to one run at
-  // a time.
+  // test here plays ~22s of game time on the faked clock via
+  // reachGameoverDeterministically(), which keeps one run at a time.
   test.describe.configure({ mode: 'serial' });
-  // 90s is reachGameoverDeterministically()'s own internal budget for a run
-  // that normally completes in ~22s; 120s leaves room for that plus the
-  // surrounding assertions/waits without masking a genuine hang.
+  // Driving ~1300 ticks through the faked clock takes a while of real time;
+  // 120s leaves room for that plus the surrounding assertions without
+  // masking a genuine hang.
   test.setTimeout(120_000);
 
   // Doubles as the browser half of the ANTI-GRIEFING pair: pending rows share the board
@@ -642,10 +626,8 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL); // no ?seed= — normal mode is required for POST-eligibility
-    await reachGameoverDeterministically(page);
-
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page); // no ?seed= — normal mode is required for POST-eligibility
+    await reachSubmissionPanel(page);
 
     // X-handle checkbox swaps the input.
     const nameInput = page.getByPlaceholder('NAME');
@@ -683,8 +665,7 @@ test.describe('name-input submission flow', () => {
     // the modal's TITLE button goes back to Title (a key would start the next
     // run instead).
     await page.getByRole('button', { name: 'OK' }).click();
-    await page.locator('#gameover-back-button').click();
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await backToTitle(page);
     await page.locator('#ranking-button').click();
     await expect(page.getByText('#1  999000  STAGE 9  FAKE0')).toBeVisible();
     await expect(page.getByText('#3  998998  STAGE 9  FAKE2')).toBeVisible();
@@ -702,9 +683,8 @@ test.describe('name-input submission flow', () => {
     await page.route('**/api/scores', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
 
     const nameInput = page.getByPlaceholder('NAME');
     const handleInput = page.getByPlaceholder('@handle');
@@ -793,9 +773,8 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
 
     const nameInput = page.getByPlaceholder('NAME');
     const handleInput = page.getByPlaceholder('@handle');
@@ -836,9 +815,8 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
 
     await page.getByRole('button', { name: 'SKIP' }).click();
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
@@ -854,15 +832,21 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
+    await gotoOnFakeClock(page);
+    const getsBeforeTheRun = rankingGetCount();
     await reachGameoverDeterministically(page);
+    await advanceUntil(page, () => page.locator('#gameover-modal').isVisible(), 3_000, 16);
 
-    // Not vacuous: the provisional-rank GET really was served (i.e. the
-    // gameover flow reached the in-range decision, and the sibling test
-    // above proves the overlay *does* appear when the score strictly beats
-    // that same full board) — it simply decided "out of range" this time.
-    await expect.poll(rankingGetCount).toBeGreaterThanOrEqual(1);
-    await page.waitForTimeout(500); // let any (incorrect) overlay reveal settle before asserting its absence
+    // Not vacuous: this GAME OVER's provisional-rank GET really was served
+    // and answered (i.e. the gameover flow reached the in-range decision, and
+    // the sibling test above proves the overlay *does* appear when the score
+    // strictly beats that same full board) — it simply decided "out of
+    // range" this time.
+    await expect.poll(rankingGetCount).toBeGreaterThan(getsBeforeTheRun);
+    await expect.poll(async () => (await rankingOffer(page)).checkPending).toBe(false);
+    // Past the time a panel would have opened at, there is none.
+    await advancePastOfferTime(page);
+    expect(await rankingOffer(page)).toEqual({ checkPending: false, waiting: false, panelShown: false });
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     await expect(page.getByPlaceholder('NAME')).toBeHidden();
     expect(scoresPostCount).toBe(0);
@@ -901,11 +885,10 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
+    await gotoOnFakeClock(page);
 
     // --- Run A: reach gameover, submit, leave the POST hanging ---
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await reachSubmissionPanel(page);
     await page.getByPlaceholder('NAME').fill('RUN-A');
     await page.getByRole('button', { name: 'SUBMIT' }).click();
     await firstPostReceived;
@@ -921,10 +904,8 @@ test.describe('name-input submission flow', () => {
     // A's snapshot is dropped, exactly as leaving GAME OVER drops it), then
     // TITLE goes back to Title.
     await page.getByRole('button', { name: 'SKIP' }).click();
-    await page.locator('#gameover-back-button').click();
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await backToTitle(page);
+    await reachSubmissionPanel(page);
 
     const nameInput = page.getByPlaceholder('NAME');
     const submitButton = page.getByRole('button', { name: 'SUBMIT' });
@@ -1025,11 +1006,10 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
+    await gotoOnFakeClock(page);
 
     // --- Run 1: an ordinary accepted submission, which mints the token ---
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await reachSubmissionPanel(page);
     await page.getByPlaceholder('NAME').fill('RUN-ONE');
     await page.getByRole('button', { name: 'SUBMIT' }).click();
     await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
@@ -1041,7 +1021,9 @@ test.describe('name-input submission flow', () => {
     expect(pending).toHaveLength(CAP); // the queue is now full
 
     // --- Reload: a brand-new page, and the token must come back with it ---
+    // The faked clock stays installed across the reload.
     await page.reload();
+    await page.clock.runFor(100);
     expect(await page.evaluate(() => localStorage.getItem('qixxx:ranking:submitterToken'))).toBe(firstToken);
 
     // --- Run 2, attempt 1: my pending row outscores this run, so nothing is
@@ -1049,8 +1031,7 @@ test.describe('name-input submission flow', () => {
     const myRow = pending.find((row) => row.token === firstToken)!;
     myRow.score = 10_000_000;
 
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await reachSubmissionPanel(page);
     const submitButton = page.getByRole('button', { name: 'SUBMIT' });
     await page.getByPlaceholder('NAME').fill('RUN-TWO');
     await submitButton.click();
@@ -1095,8 +1076,8 @@ test.describe('name-input submission flow', () => {
     });
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
     await page.getByPlaceholder('NAME').fill('RATE-LIMITED');
     const submitButton = page.getByRole('button', { name: 'SUBMIT' });
     await submitButton.click();
@@ -1134,10 +1115,8 @@ test.describe('name-input submission flow', () => {
       });
     });
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
-
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
     await page.getByPlaceholder('NAME').fill('NO-STORAGE');
     await page.getByRole('button', { name: 'SUBMIT' }).click();
     await expect(page.getByText('SUBMITTED — PENDING VERIFICATION.')).toBeVisible();
@@ -1157,11 +1136,19 @@ test.describe('name-input submission flow', () => {
     // read the *live* seed/InputRecorder at submit time, i.e. the run now in
     // progress rather than the one that earned the score.
     let scoresPostCount = 0;
-    let rankingGets = 0;
+    // This GAME OVER's GET is held, still in flight, until the player has moved on.
+    let gameOverGets = 0;
+    let releaseGameOverGet: () => void = () => {};
+    const gameOverGetReleased = new Promise<void>((resolve) => (releaseGameOverGet = resolve));
     await page.route('**/api/ranking', async (route) => {
       if (route.request().method() !== 'GET') return route.fallback();
-      rankingGets++;
-      await new Promise((resolve) => setTimeout(resolve, 3000)); // still in flight when the player moves on
+      const onGameOver = await page
+        .evaluate(() => window.__game__?.session.getStatus() === 'gameover')
+        .catch(() => false);
+      if (onGameOver) {
+        gameOverGets++;
+        await gameOverGetReleased;
+      }
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -1173,25 +1160,49 @@ test.describe('name-input submission flow', () => {
       return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
+    // Counts the GET /api/ranking replies the page has read: once it goes up,
+    // the code awaiting that read has run on it too.
+    await page.addInitScript(() => {
+      const json = Response.prototype.json;
+      Response.prototype.json = async function (this: Response) {
+        const value: unknown = await json.call(this);
+        if (new URL(this.url).pathname === '/api/ranking') {
+          const w = window as unknown as { __rankingRepliesRead?: number };
+          w.__rankingRepliesRead = (w.__rankingRepliesRead ?? 0) + 1;
+        }
+        return value;
+      };
+    });
+    const repliesRead = () => page.evaluate(() => (window as unknown as { __rankingRepliesRead?: number }).__rankingRepliesRead ?? 0);
+
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
+    await gotoOnFakeClock(page);
     await reachGameoverDeterministically(page);
+    await advanceUntil(page, () => page.locator('#gameover-modal').isVisible(), 3_000, 16);
 
     // The RANKING button stays hidden on GAME OVER too (browsing is Title-only).
     await expect(page.locator('#ranking-button')).toBeHidden();
 
-    // Leave the finished run behind while the GET is still outstanding.
-    await expect.poll(() => rankingGets).toBeGreaterThanOrEqual(1);
+    // Leave the finished run behind while this GAME OVER's GET is still outstanding.
+    await expect.poll(() => gameOverGets).toBe(1);
+    expect((await rankingOffer(page)).checkPending).toBe(true);
     // GAME OVER -> Title (a brand-new run id). The modal's TITLE button: the
     // keys are held while the ranking check is in flight.
-    await page.locator('#gameover-back-button').click();
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await backToTitle(page);
 
     // ...and it really does come back on the Title a finished run returns to.
     await expect(page.locator('#ranking-button')).toBeVisible();
 
-    // Let the stale response land (3s delay above) plus margin.
-    await page.waitForTimeout(4000);
+    // Only now does the stale reply land; once the page has read it, run on
+    // past the time its panel would have opened at.
+    const readBefore = await repliesRead();
+    releaseGameOverGet();
+    await expect.poll(repliesRead).toBe(readBefore + 1);
+    // Read with the result's clock stopped on Title: the reply has left no
+    // panel waiting to open, not just none on screen yet.
+    expect(await rankingOffer(page)).toEqual({ checkPending: false, waiting: false, panelShown: false });
+    await page.clock.runFor(4_000);
+    expect(gameOverGets).toBe(1);
     await expect(page.getByText('YOU MADE THE TOP 10!')).toBeHidden();
     await expect(page.getByPlaceholder('NAME')).toBeHidden();
     expect(scoresPostCount).toBe(0);
@@ -1221,8 +1232,8 @@ test.describe('submission panel hold (fake clock)', () => {
     const status = () => page.evaluate(() => window.__game__?.session.getStatus());
     expect(await status()).toBe('playing');
     await loseAllLivesToIgniter(page);
-    const panel = page.getByText('YOU MADE THE TOP 10!');
-    await advanceUntil(page, () => panel.isVisible(), 2_000, FRAME_MS);
+    await advanceToSubmissionPanel(page, 5_000, FRAME_MS);
+    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
     await page.clock.runFor(FRAME_MS * 2); // the hint follows on the next rendered frame
     await expect(page.locator('#gameover-hint')).toHaveText('POST OR SKIP TO CONTINUE');
     // A tap on the field, away from the panel in its middle.
@@ -1994,15 +2005,14 @@ test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audi
   test.describe.configure({ mode: 'serial' });
 
   test('a real run is SUBMITTED. straight onto both boards as a verified row, and its replay plays', async ({ page, request }) => {
-    // One real, wall-clock-timed run (~22s) plus a replay.
+    // One run (~22s of game time on the faked clock) plus a replay.
     test.setTimeout(120_000);
     await routeApiToAuditDisabledServer(page, '203.0.113.71');
     const postResponse = page.waitForResponse((response) => response.url().endsWith('/api/scores') && response.request().method() === 'POST');
 
     await stubDeterministicNormalSeed(page);
-    await page.goto(APP_URL);
-    await reachGameoverDeterministically(page);
-    await expect(page.getByText('YOU MADE THE TOP 10!')).toBeVisible();
+    await gotoOnFakeClock(page);
+    await reachSubmissionPanel(page);
     // A name free of "audit"/"disabled", so the no-mode-in-the-response check
     // below cannot trip over the row's own name.
     await page.getByPlaceholder('NAME').fill('LIVEPOST');
@@ -2040,8 +2050,9 @@ test.describe('RANKING_AUDIT_MODE=disabled (real Pages Functions server, no audi
     // the modal's TITLE button goes back to Title (a key would start the next
     // run instead).
     await page.getByRole('button', { name: 'OK' }).click();
-    await page.locator('#gameover-back-button').click();
-    await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
+    await backToTitle(page);
+    // The replay plays on the page's own clock from here.
+    await page.clock.resume();
     await page.locator('#ranking-button').click();
     const row = page.locator('#ranking-list-body > *').filter({ hasText: 'LIVEPOST' });
     await expect(row).toHaveCount(1);

@@ -13,7 +13,7 @@ import { KeyboardInput } from '../input/keyboard';
 import { FxDirector } from './director';
 import { HitStop } from './hitStop';
 import { createDefaultFxParams } from './params';
-import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource, RetryHold } from './liveTick';
+import { acceptsModalAction, applyImpactNotices, beginLiveTick, GameOverConfirmGate, FeedbackSource, RetryHold } from './liveTick';
 import { ScoreRoll } from './scoreRoll';
 import type { ClaimFeedback, MissFeedback } from '../core/feedback';
 import {
@@ -511,6 +511,58 @@ describe('GAME OVER retry guard', () => {
     h.pressConfirm();
     h.tick();
     expect(h.session.getStatus()).toBe('title');
+  });
+});
+
+describe('GAME OVER: a submission panel waiting to open', () => {
+  function modalUp(): LiveHarness {
+    const h = new LiveHarness(clearFactory, 3);
+    h.start();
+    h.ticks(3); // a 3-tick time limit
+    expect(h.session.getStatus()).toBe('gameover');
+    h.render();
+    expect(h.modalShown).toBe(true);
+    return h;
+  }
+
+  it('holds keys from the reply until the panel opens, past checkWaitMaxTicks', () => {
+    const h = modalUp();
+    // A short check limit: the wait for the panel is not bounded by it.
+    h.retryHold = { ...h.retryHold, checkPending: true, checkWaitMaxTicks: 10 };
+    h.ticks(5);
+    h.retryHold = { ...h.retryHold, checkPending: false, offerWaiting: true };
+    for (let t = 1; t <= RETRY_OFFER_WAIT_MAX_TICKS * 3; t++) {
+      h.pressConfirm();
+      h.tick();
+    }
+    expect(h.session.getStatus()).toBe('gameover');
+    // Open: the panel's own hold, as before.
+    h.retryHold = { ...h.retryHold, offerWaiting: false, formShown: true };
+    h.pressConfirm();
+    h.tick();
+    expect(h.session.getStatus()).toBe('gameover');
+    h.retryHold = { ...h.retryHold, formShown: false };
+    h.pressConfirm();
+    h.tick();
+    expect(h.session.getStatus()).toBe('title');
+  });
+
+  it('a hold with no offerWaiting is the hold it always was', () => {
+    const h = modalUp();
+    const confirmsBefore = h.confirmsDelivered();
+    h.retryHold = { guardTicks: RETRY_CONFIRM_GUARD_TICKS, checkPending: false, checkWaitMaxTicks: RETRY_OFFER_WAIT_MAX_TICKS, formShown: false };
+    h.ticks(RETRY_CONFIRM_GUARD_TICKS);
+    h.pressConfirm();
+    h.tick();
+    expect(h.confirmsDelivered()).toBe(confirmsBefore + 1);
+  });
+
+  it("the modal's RETRY is refused only while the panel waits to open; TITLE always works", () => {
+    expect(acceptsModalAction('retry', { offerWaiting: true })).toBe(false);
+    expect(acceptsModalAction('title', { offerWaiting: true })).toBe(true);
+    expect(acceptsModalAction('retry', { offerWaiting: false })).toBe(true);
+    expect(acceptsModalAction('retry', {})).toBe(true);
+    expect(acceptsModalAction('title', {})).toBe(true);
   });
 });
 

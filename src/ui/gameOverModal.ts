@@ -69,6 +69,9 @@ export interface GameOverScoreInfo {
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
 export type GameOverModalDensity = 'normal' | 'compact' | 'tiny';
 
+/** What holds the keyboard and the field for the ranking offer (GameOverModal.setSubmissionHold()). */
+export type SubmissionHold = 'none' | 'waiting' | 'panel';
+
 /** What the modal's buttons ask main.ts for; main.ts passes it on as confirm until the run leaves GAME OVER. */
 export interface GameOverModalActions {
   /** RETRY: the next run, straight to stage 1. */
@@ -78,8 +81,8 @@ export interface GameOverModalActions {
 }
 
 const HINT_RETRY: MessageKey = 'gameOver.hintRetry';
-// While the ranking offer holds the keyboard and the field (src/ui/ranking.ts's
-// isSubmissionBlockingRetry()).
+// While the ranking submission panel is open and holds the keyboard and the
+// field (src/ui/ranking.ts's isSubmissionBlockingRetry()).
 const HINT_SUBMISSION: MessageKey = 'gameOver.hintSubmission';
 // Every button's tap target is at least this tall.
 const BUTTON_MIN_HEIGHT_PX = 44;
@@ -393,7 +396,7 @@ export class GameOverModal {
     this.toBestLine.style.textShadow = near ? `0 0 8px ${COLOR_FX_NEON_CYAN}, 0 0 16px ${COLOR_FX_NEON_CYAN}` : '';
     this.sparkLayer.style.display = 'none';
     this.lastResultKey = '';
-    this.setSubmissionHold(false);
+    this.setSubmissionHold('none');
     this.resetShareButton();
     this.shareButton.style.display = info.share === false ? 'none' : '';
     // Its text only while shown, so the modal's text reads as before otherwise.
@@ -447,10 +450,20 @@ export class GameOverModal {
     }
   }
 
-  /** The hint while the ranking offer holds the keyboard and the field (true) or not. */
-  setSubmissionHold(held: boolean): void {
-    const text = t(held ? HINT_SUBMISSION : HINT_RETRY);
+  /**
+   * The hint for what the keyboard and the field do now:
+   * - 'none': they retry.
+   * - 'waiting': nothing, until the submission panel the ranking reply
+   *   decided on opens. The hint keeps the retry text, so the modal keeps
+   *   its width and its buttons their place and size, but is not seen, so
+   *   it never asks for a key that does nothing yet.
+   * - 'panel': the submission panel is open; they wait for it to be closed.
+   */
+  setSubmissionHold(hold: SubmissionHold): void {
+    const text = t(hold === 'panel' ? HINT_SUBMISSION : HINT_RETRY);
     if (this.hint.textContent !== text) this.hint.textContent = text;
+    const visibility = hold === 'waiting' ? 'hidden' : 'visible';
+    if (this.hint.style.visibility !== visibility) this.hint.style.visibility = visibility;
   }
 
   /**
