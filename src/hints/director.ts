@@ -106,8 +106,9 @@ export class HintDirector<T> {
       this.claimCount = 0;
       this.slowShownTicks = 0;
     }
-    // The split hint waits for a later stage's start: every stage has two
-    // Wisps or more, and a first run must begin with how to draw.
+    // The split hint waits for the start of a later stage that has two Wisps
+    // or more (a split needs them; on NORMAL stage 3 is the first): a first
+    // run must begin with how to draw.
     if (input.stageStart === 'stage' && input.wispCount >= 2) this.enqueue('split', HINT_SPLIT_TICKS, { kind: 'ring', target: 'wisps' });
     for (const claim of input.claims) this.onClaim(claim.lineSpeed);
     for (const event of input.events) {
