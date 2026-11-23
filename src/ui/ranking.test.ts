@@ -18,6 +18,7 @@ import {
   limitRankingName,
   rankInThresholdFrom,
   RankInThresholdTracker,
+  scheduleSubmissionPanel,
   stopKeyPropagation,
   type RankingEntry,
   type RunSubmissionSnapshot,
@@ -465,6 +466,35 @@ describe('DeferredSubmissionOffer: the panel opens once the GAME OVER result has
     offer.decide(() => opened++);
     offer.sync();
     expect(opened).toBe(0);
+  });
+
+  it('the over-the-cap notice waits for the same time as the form; any other decision opens nothing and holds nothing', () => {
+    const openedAt = (decision: Parameters<typeof scheduleSubmissionPanel>[0]) => {
+      const result = new GameOverResult();
+      result.start(resultInput());
+      const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+      const opened: Array<{ panel: string; age: number }> = [];
+      const scheduled = scheduleSubmissionPanel(decision, offer, {
+        form: () => opened.push({ panel: 'form', age: result.getAge() }),
+        overClaimCap: () => opened.push({ panel: 'notice', age: result.getAge() }),
+      });
+      const waiting = offer.isWaiting();
+      for (let i = 0; i < 400; i++) {
+        result.step();
+        offer.sync();
+      }
+      return { scheduled, waiting, opened };
+    };
+    const due = (() => {
+      const r = new GameOverResult();
+      r.start(resultInput());
+      return r.submissionOfferAge();
+    })();
+    expect(openedAt('show')).toEqual({ scheduled: true, waiting: true, opened: [{ panel: 'form', age: due }] });
+    expect(openedAt('over-claim-cap')).toEqual({ scheduled: true, waiting: true, opened: [{ panel: 'notice', age: due }] });
+    for (const decision of ['out-of-range', 'fetch-failed', 'superseded', 'stale-run', 'run-no-longer-over', 'ineligible-run'] as const) {
+      expect(openedAt(decision), decision).toEqual({ scheduled: false, waiting: false, opened: [] });
+    }
   });
 
   it('a newer decision replaces a waiting one; each opens at most once', () => {

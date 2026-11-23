@@ -368,6 +368,23 @@ export class DeferredSubmissionOffer {
 }
 
 /**
+ * Which panel a reply's decision opens, through `offer` so both wait for the
+ * same time: the form for 'show', the explanation-only notice for
+ * 'over-claim-cap', nothing (and no wait) for any other. Returns whether one
+ * was decided on.
+ */
+export function scheduleSubmissionPanel(
+  decision: SubmissionOfferDecision,
+  offer: DeferredSubmissionOffer,
+  open: { form: () => void; overClaimCap: () => void }
+): boolean {
+  if (decision === 'show') offer.decide(open.form);
+  else if (decision === 'over-claim-cap') offer.decide(open.overClaimCap);
+  else return false;
+  return true;
+}
+
+/**
  * Formats GET /api/ranking's ISO-8601 `createdAt` as a plain `YYYY-MM-DD`
  * in the *viewer's* local timezone. Each row includes its date, score, stage,
  * and name. Built from the Date's local parts by
@@ -1334,49 +1351,50 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       });
       if (decision === 'over-claim-cap') {
         // Explanation only: no name field, no SUBMIT. The snapshot is dropped
-        // right away — there is nothing a retry could change about it. Opens
-        // when the form would (deferredOffer).
+        // right away — there is nothing a retry could change about it.
         activeSubmission = null;
-        deferredOffer.decide(() => {
-          nameInput.style.display = 'none';
-          handleRow.style.display = 'none';
-          handleInput.style.display = 'none';
-          submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
-          postButton.style.display = 'none';
-          skipButton.textContent = t('submit.ok');
-          syncSubmitNavButtons();
-          submitOverlay.style.display = 'flex';
-        });
-        return;
-      }
-      if (decision !== 'show') {
+      } else if (decision !== 'show') {
         // Drop the snapshot for anything except a live, still-current run
         // whose score simply didn't make the cut — in the latter case a
         // 'superseded' offer already owns `activeSubmission` and must not be
         // cleared out from under it.
         if (decision !== 'superseded' && activeSubmission === snapshot) activeSubmission = null;
-        return;
       }
-
-      // Opens once the GAME OVER result has been read (deferredOffer).
-      deferredOffer.decide(() => {
-        // Per-run reset (unchanged): a fresh offer starts from an empty form,
-        // both values included.
-        nameInput.value = '';
-        handleInput.value = '';
-        handleCheckbox.checked = false;
-        handleInput.style.display = 'none';
-        handleRow.style.display = 'flex';
-        nameInput.style.display = 'block';
-        syncRetainedValueHint(); // both empty now -> hides itself
-        submitStatus.textContent = '';
-        postButton.style.display = 'inline-block';
-        postButton.disabled = false;
-        skipButton.textContent = t('submit.skip');
-        syncSubmitNavButtons();
-        submitOverlay.style.display = 'flex';
+      // Either panel opens once the GAME OVER result has been read.
+      scheduleSubmissionPanel(decision, deferredOffer, {
+        form: openSubmissionForm,
+        overClaimCap: () => openOverClaimCapNotice(snapshot),
       });
     })();
+  }
+
+  function openOverClaimCapNotice(snapshot: RunSubmissionSnapshot): void {
+    nameInput.style.display = 'none';
+    handleRow.style.display = 'none';
+    handleInput.style.display = 'none';
+    submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
+    postButton.style.display = 'none';
+    skipButton.textContent = t('submit.ok');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
+  }
+
+  function openSubmissionForm(): void {
+    // Per-run reset (unchanged): a fresh offer starts from an empty form,
+    // both values included.
+    nameInput.value = '';
+    handleInput.value = '';
+    handleCheckbox.checked = false;
+    handleInput.style.display = 'none';
+    handleRow.style.display = 'flex';
+    nameInput.style.display = 'block';
+    syncRetainedValueHint(); // both empty now -> hides itself
+    submitStatus.textContent = '';
+    postButton.style.display = 'inline-block';
+    postButton.disabled = false;
+    skipButton.textContent = t('submit.skip');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
   }
 
   // ---- Replay-viewer control bar ----
