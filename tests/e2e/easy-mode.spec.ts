@@ -16,14 +16,15 @@ import type { PlayLogFile, PlayRecord } from '../../src/playLog/record';
 import {
   EASY_INITIAL_LIVES,
   EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX,
-  EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX,
   EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX,
-  EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX,
+  EASY_PROMPT_TOGGLE_PULSE_COUNT,
+  EASY_PROMPT_TOGGLE_PULSE_SEC,
   EASY_WISP_SPEED_FACTOR,
   GRID_WIDTH,
   INITIAL_LIVES,
   RULESET_VERSION,
   REPLAY_FORMAT_VERSION,
+  TITLE_MENU_GAP_PX,
 } from '../../src/config';
 import { validateSharePayload } from '../../functions/_lib/validation';
 import {
@@ -537,7 +538,7 @@ const LAYOUTS = [
   { name: '667x375 touch', viewport: { width: 667, height: 375 }, hasTouch: true, below: true },
 ];
 
-const TITLE_BOXES = ['#difficulty-button', '#how-to-play-button', '#ranking-button', '#title-demo-label', '#screen', '#game-canvas', '#hud', '#mute-button', '#credit-link'];
+const TITLE_BOXES = ['#difficulty-button', '#how-to-play-button', '#ranking-button', '#title-demo-label', '#screen', '#game-canvas', '#game-root', '#hud', '#mute-button', '#credit-link'];
 
 /** Every shown touch control's box. */
 async function touchControlBoxes(page: Page): Promise<Box[]> {
@@ -584,21 +585,26 @@ for (const layout of LAYOUTS) {
       const field = b['#game-canvas']!;
       expect(t, label).not.toBeNull();
       expect(inside(t, viewport), label).toBe(true);
+      expect(inside(t, b['#game-root']!), label).toBe(true);
       for (const other of ['#how-to-play-button', '#ranking-button', '#title-demo-label', '#screen', '#hud', '#mute-button', '#credit-link']) {
         expect(b[other], `${label} ${other}`).not.toBeNull();
         expect(overlaps(t, b[other]!), `${label}: the toggle and ${other}`).toBe(false);
       }
       for (const control of await touchControlBoxes(page)) expect(overlaps(t, control), `${label}: a touch control`).toBe(false);
+      // The last of the Title menu's row, right of RANKING.
+      expect(t.left, label).toBeGreaterThanOrEqual(b['#ranking-button']!.right - 0.5);
+      expect(Math.abs(t.top - b['#ranking-button']!.top), label).toBeLessThanOrEqual(0.5);
       if (layout.below) {
-        // Under the field, lined up with its right edge.
+        // Under the field.
         expect(t.top).toBeGreaterThanOrEqual(field.bottom);
-        expect(Math.abs(t.right - field.right)).toBeLessThanOrEqual(0.5);
       } else {
-        // In the field's bottom-right corner.
+        // On the field, under the title text.
         expect(inside(t, field), label).toBe(true);
-        expect(t.left).toBeGreaterThan(field.left + field.width / 2);
-        expect(t.top).toBeGreaterThan(field.top + field.height / 2);
+        expect(t.top).toBeGreaterThanOrEqual(b['#screen']!.bottom);
       }
+      // Pressed where it shows.
+      const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, { x: t.left + t.width / 2, y: t.top + t.height / 2 });
+      expect(hit, label).toBe('difficulty-button');
       // The HUD: whole, on screen, clear of the SOUND button and the credit.
       const hud = await hudState(page);
       expect(hud.clipped, label).toBe(false);
@@ -631,14 +637,15 @@ for (const layout of LAYOUTS) {
 test.describe('a field held to its size by a short window', () => {
   test.use({ viewport: { width: 500, height: 450 }, hasTouch: true });
 
-  test('keeps the toggle whole on screen, in the field’s corner, and pressable both ways', async ({ page }) => {
+  test('keeps the toggle whole on screen, along the field’s bottom edge, and pressable both ways', async ({ page }) => {
     await open(page);
     const b = await boxesOf(page, ['#difficulty-button', '#game-canvas', '#game-root']);
     const t = b['#difficulty-button']!;
     const field = b['#game-canvas']!;
-    // A small field: there is no room under it, so the toggle is in its corner.
+    // A small field: there is no room under it, so the toggle is on it, in its lower half.
     expect(field.height).toBeLessThan(200);
     expect(inside(t, field)).toBe(true);
+    expect(t.top).toBeGreaterThan(field.top + field.height / 2);
     expect(inside(t, b['#game-root']!)).toBe(true);
     expect(inside(t, { left: 0, top: 0, right: 500, bottom: 450, width: 0, height: 0 })).toBe(true);
     // Not covered: a tap at its middle lands on it, both ways.
@@ -1197,39 +1204,62 @@ test.describe('the GAME OVER suggestion', () => {
     await leaveGameOver(page, 'title');
     await expect(toggle(page)).toBeVisible();
     expect(await attention(page)).toBe(true);
-    // A lit border that pulses three times; lit and still with reduced motion.
+    // Lit text (and underline) whose glow pulses three times; lit and still with reduced motion.
     const look = () =>
       toggle(page).evaluate((el) => {
         const s = getComputedStyle(el);
-        return { border: s.borderTopColor, animation: s.animationName, count: s.animationIterationCount };
+        return {
+          color: s.color,
+          underline: s.textDecorationColor,
+          animation: s.animationName,
+          count: s.animationIterationCount,
+          duration: s.animationDuration,
+        };
       });
+    const rowBoxes = () => boxesOf(page, ['#title-menu', '#how-to-play-button', '#ranking-button', '#difficulty-button']);
+    const boxesLit = await rowBoxes();
     const lit = await look();
-    expect(lit).toMatchObject({ border: 'rgb(255, 255, 255)', animation: 'difficulty-attention', count: '3' });
-    // The glow's numbers are src/config.ts's: in the middle of a pulse, the peak.
-    const glow = (blur: number, spread: number) => `rgb(255, 255, 255) 0px 0px ${blur}px ${spread}px`;
-    const peak = await toggle(page).evaluate((el) => {
-      const pulse = el.getAnimations()[0];
-      const duration = Number(pulse.effect!.getTiming().duration);
-      pulse.pause();
-      pulse.currentTime = duration / 2;
-      const shadow = getComputedStyle(el).boxShadow;
-      pulse.play();
-      return shadow;
+    expect(lit).toMatchObject({
+      color: 'rgb(255, 255, 255)',
+      underline: 'rgb(255, 255, 255)',
+      animation: 'difficulty-attention',
+      count: String(EASY_PROMPT_TOGGLE_PULSE_COUNT),
+      duration: `${EASY_PROMPT_TOGGLE_PULSE_SEC}s`,
     });
-    expect(peak).toBe(glow(EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX, EASY_PROMPT_TOGGLE_GLOW_PEAK_SPREAD_PX));
+    // The glow's numbers are src/config.ts's: at rest at the start of a
+    // pulse, the peak in its middle — never an invalid (dropped) declaration.
+    const glow = (blur: number) => `rgb(255, 255, 255) 0px 0px ${blur}px`;
+    const shadowAt = (fraction: number) =>
+      toggle(page).evaluate((el, at) => {
+        const pulse = el.getAnimations()[0];
+        const duration = Number(pulse.effect!.getTiming().duration);
+        pulse.pause();
+        pulse.currentTime = duration * at;
+        const shadow = getComputedStyle(el).textShadow;
+        pulse.play();
+        return shadow;
+      }, fraction);
+    expect(await shadowAt(0)).toBe(glow(EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX));
+    expect(await shadowAt(0.5)).toBe(glow(EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX));
+    // The glow never moves the row.
+    expect(await rowBoxes()).toEqual(boxesLit);
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    expect(await look()).toMatchObject({ border: 'rgb(255, 255, 255)', animation: 'none' });
+    expect(await look()).toMatchObject({ color: 'rgb(255, 255, 255)', underline: 'rgb(255, 255, 255)', animation: 'none' });
     // Lit and still: the glow at rest.
-    expect(await toggle(page).evaluate((el) => getComputedStyle(el).boxShadow)).toBe(
-      glow(EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX, EASY_PROMPT_TOGGLE_GLOW_REST_SPREAD_PX)
-    );
+    expect(await toggle(page).evaluate((el) => getComputedStyle(el).textShadow)).toBe(glow(EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX));
+    expect(await rowBoxes()).toEqual(boxesLit);
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     await toggle(page).click();
     await page.clock.runFor(100);
     expect(await attention(page)).toBe(false);
     expect((await look()).animation).toBe('none');
-    expect((await look()).border).not.toBe('rgb(255, 255, 255)');
+    expect((await look()).color).not.toBe('rgb(255, 255, 255)');
+    expect(await toggle(page).evaluate((el) => getComputedStyle(el).textShadow)).toBe('none');
     await expect(toggle(page)).toHaveText('MODE: EASY');
+    // EASY's HUD may take more lines and so shrink the field; the row stays
+    // under the title text all the same.
+    const after = await boxesOf(page, ['#title-menu', '#screen']);
+    expect(Math.abs(after['#title-menu']!.top - after['#screen']!.bottom - TITLE_MENU_GAP_PX)).toBeLessThanOrEqual(1);
   });
 
   test('a run started from the lit Title screen turns it off; RETRY from the suggestion lights nothing; a GAME OVER without it lights nothing', async ({ page }) => {

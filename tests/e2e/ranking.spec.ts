@@ -468,7 +468,8 @@ test.describe('ranking browsing is a Title-screen-only affordance', () => {
     await page.goto(APP_URL);
 
     const rankingButton = page.locator('#ranking-button');
-    for (let i = 0; i < 3; i++) {
+    // The credit, SOUND, then the Title menu left to right: HOW TO PLAY, RANKING.
+    for (let i = 0; i < 4; i++) {
       await page.keyboard.press('Tab');
       await expect.poll(() => page.evaluate(() => window.__game__?.session.getStatus())).toBe('title');
     }

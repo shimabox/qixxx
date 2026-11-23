@@ -19,9 +19,6 @@ import {
   HUD_ACCENT_COLOR,
   MAX_VERIFIED_CLAIMS,
   RANKING_BOARD_SIZE,
-  TITLE_BUTTON_COMPACT_FONT_PX,
-  TITLE_BUTTON_COMPACT_INSET_PX,
-  TITLE_BUTTON_COMPACT_PADDING,
   TITLE_DEMO_MAX_CANDIDATES,
 } from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
@@ -317,6 +314,8 @@ export interface RankingUIOptions {
   onTitle: () => void;
   /** Called when the ranking list opens (main.ts closes HOW TO PLAY). */
   onListOpen?: () => void;
+  /** Called with true when the ranking list shows and false when it is hidden (again). */
+  onListShownChange?: (shown: boolean) => void;
   /**
    * The GAME OVER result has been on screen long enough for the submission
    * panel to open over it (src/gameOverResult.ts's isSubmissionOfferDue()).
@@ -526,8 +525,8 @@ function styledButton(label: string): HTMLButtonElement {
 }
 
 export interface RankingUI {
-  /** Mounts the RANKING button (canvas-wrap's top-right corner — see mountTitleButton()'s own comment for why not the HUD row). Shown only on the Title screen; see syncAvailability(). */
-  mountTitleButton(): void;
+  /** Mounts the RANKING button into `parent`, the Title menu's row (see mountTitleButton()'s own comment for why not the HUD row). Shown only on the Title screen; see syncAvailability(). */
+  mountTitleButton(parent: HTMLElement): void;
   /**
    * Shows/hides the RANKING button to match the live session's status, and
    * force-closes the list if browsing is no longer allowed. Call once per
@@ -554,13 +553,6 @@ export interface RankingUI {
   hideList(): void;
   /** The RANKING button, once mounted. */
   getTitleButton(): HTMLButtonElement | null;
-  /**
-   * Shrinks the RANKING button (TITLE_BUTTON_COMPACT_FONT_PX, tighter
-   * padding, closer to the corner) for a field shown less than
-   * TITLE_BUTTONS_COMPACT_BELOW_PX tall, where the roomy one covers the title
-   * text. main.ts calls it whenever the field is resized.
-   */
-  setTitleButtonCompact(compact: boolean): void;
   /**
    * Packs the submission panel tighter (smaller text, less padding and
    * spacing) for a field too small to hold its roomy layout — a phone held
@@ -695,6 +687,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function hideList(): void {
     listOverlay.style.display = 'none';
+    options.onListShownChange?.(false);
     browsingGeneration++;
     abortReplayWork();
   }
@@ -719,6 +712,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     const requestGeneration = browsingGeneration;
     showListStatus(t('ranking.loading'));
     listOverlay.style.display = 'flex';
+    options.onListShownChange?.(true);
 
     let entries: DisplayRankingEntry[] | null = null;
     try {
@@ -1613,77 +1607,28 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
-  function mountTitleButton(): void {
+  function mountTitleButton(parent: HTMLElement): void {
     const button = document.createElement('button');
     stopKeyPropagation(button);
     button.id = 'ranking-button';
     button.type = 'button';
     button.textContent = t('ranking.button');
-    // Mounted into `anchor` (canvas-wrap) and absolutely positioned to
-    // preserve the HUD row's single-line width budget, which main.ts
-    // calculates in measureNonHudRowWidth()/wouldSingleLineFit(). Adding a
-    // persistent HUD-row sibling reduces the available width and can clip
-    // text in narrow viewports. The canvas's top-right corner does not
-    // participate in that layout.
-    button.style.position = 'absolute';
-    button.style.top = '8px';
-    button.style.right = '8px';
-    button.style.font = HUD_FONT;
-    // BIGGER THAN MUTE, BUT STYLED EXACTLY LIKE IT. The original 0.75em
-    // thin outline
-    // read as a disabled caption and went unnoticed on the Title screen, but
-    // the glowing, bold, tinted answer to that was too loud. So the size
-    // stays (full HUD font size, generous padding — that is what makes it
-    // findable) while every decoration matches main.ts's MUTE button
-    // verbatim: same accent colour, same near-transparent fill, same 1px
-    // border and 4px radius, and no glow or weight of its own.
-    // `em`-relative sizing keeps it scaling with canvas-wrap exactly as
-    // before, so nothing here is pinned to a pixel viewport.
-    button.style.fontSize = '1em';
-    button.style.color = HUD_ACCENT_COLOR;
-    button.style.background = 'rgba(10, 14, 39, 0.7)';
-    button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-    button.style.borderRadius = '4px';
-    button.style.padding = '8px 16px';
-    // Never let the button spill out of the canvas box on a narrow phone —
-    // it is absolutely positioned inside canvas-wrap, so without this a wide
-    // enough label could overhang the field. (At 390px the label measures
-    // ~135px against a ~390px-wide canvas, so this is a guard, not a
-    // constraint that currently binds.)
-    button.style.maxWidth = 'calc(100% - 16px)';
-    button.style.cursor = 'pointer';
-    button.style.pointerEvents = 'auto';
-    button.style.userSelect = 'none';
-    button.style.zIndex = '5';
+    // Not in the HUD row, whose single-line width budget main.ts calculates
+    // in measureNonHudRowWidth()/wouldSingleLineFit(): a persistent HUD-row
+    // sibling would reduce the available width and could clip text in
+    // narrow viewports. Its look, size and place are the Title menu's
+    // (src/ui/titleMenu.ts).
     button.addEventListener('click', (event) => {
       void showList(); // itself gated on browsingAllowed(), against a click racing syncAvailability()
       (event.currentTarget as HTMLButtonElement).blur();
     });
-    anchor.appendChild(button);
+    parent.appendChild(button);
     titleButton = button;
-    // A field already known to be small: the compact button from the start.
-    if (titleButtonCompact) {
-      titleButtonCompact = false;
-      setTitleButtonCompact(true);
-    }
     // Mounted during init(), before the first frame ever renders: start from
     // the real current state rather than flashing the button on a non-Title
     // screen for one frame.
     lastBrowsingAllowed = null;
     syncAvailability();
-  }
-
-  let titleButtonCompact = false;
-  function setTitleButtonCompact(compact: boolean): void {
-    if (compact === titleButtonCompact) return;
-    titleButtonCompact = compact;
-    if (!titleButton) return;
-    // The roomy values are mountTitleButton()'s own.
-    titleButton.style.fontSize = compact ? `${TITLE_BUTTON_COMPACT_FONT_PX}px` : '1em';
-    titleButton.style.padding = compact ? TITLE_BUTTON_COMPACT_PADDING : '8px 16px';
-    titleButton.style.top = compact ? `${TITLE_BUTTON_COMPACT_INSET_PX}px` : '8px';
-    titleButton.style.right = compact ? `${TITLE_BUTTON_COMPACT_INSET_PX}px` : '8px';
-    titleButton.style.maxWidth = compact ? `calc(100% - ${TITLE_BUTTON_COMPACT_INSET_PX * 2}px)` : 'calc(100% - 16px)';
   }
 
   let submitPanelCompact = false;
@@ -1727,7 +1672,6 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       if (listOverlay.style.display !== 'none') hideList();
     },
     getTitleButton: () => titleButton,
-    setTitleButtonCompact,
     setSubmitPanelCompact,
     loadRankInThreshold,
     getRankInThreshold: () => rankInThreshold.get(),

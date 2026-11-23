@@ -1,11 +1,11 @@
-// HOW TO PLAY (src/ui/howToPlay.ts): the Title screen's button across from
-// RANKING, its one-screen panel, and the confirms it holds back. Plus the
+// HOW TO PLAY (src/ui/howToPlay.ts): the Title menu's first button, its
+// one-screen panel, and the confirms it holds back. Plus the
 // in-play hints staying off a replay. Runs on a faked page clock
 // (tests/e2e/support/fakeClock.ts), so budgets are game time.
 import { test, expect, type Page, type Browser } from '@playwright/test';
 import { GameSession } from '../../src/core/session';
 import { encodeRle, type InputSample } from '../../src/core/rle';
-import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
+import { RULESET_VERSION, REPLAY_FORMAT_VERSION, TITLE_BUTTON_COMPACT_FONT_PX, TITLE_MENU_FONT_PX } from '../../src/config';
 import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
 
 declare global {
@@ -83,18 +83,30 @@ test.describe('the HOW TO PLAY button', () => {
 
   for (const locale of ['en-US', 'ja-JP'] as const) {
     for (const viewport of VIEWPORTS) {
-      test(`stays clear of RANKING and the title text, both on the field, at ${viewport.width}x${viewport.height} (${locale})`, async ({ browser }) => {
+      test(`stays clear of RANKING and the title text, both whole and pressable, at ${viewport.width}x${viewport.height} (${locale})`, async ({ browser }) => {
         const page = await newPage(browser, locale, viewport);
         await open(page);
         const field = await rect(page, '#game-canvas');
+        const root = await rect(page, '#game-root');
         const how = await rect(page, '#how-to-play-button');
         const ranking = await rect(page, '#ranking-button');
         const intersects = (a: typeof how, b: typeof how) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-        for (const r of [how, ranking]) {
-          expect(r.left).toBeGreaterThanOrEqual(field.left);
-          expect(r.right).toBeLessThanOrEqual(field.right);
-          expect(r.top).toBeGreaterThanOrEqual(field.top);
-          expect(r.bottom).toBeLessThanOrEqual(field.bottom);
+        const within = (a: typeof how, b: typeof how) =>
+          a.left >= b.left - 0.5 && a.right <= b.right + 0.5 && a.top >= b.top - 0.5 && a.bottom <= b.bottom + 0.5;
+        const screenBox = { left: 0, top: 0, right: viewport.width, bottom: viewport.height, width: viewport.width, height: viewport.height };
+        // On the field where the Title menu sits under the title text; just
+        // under it on a field too small for that (667x375). Either way whole
+        // inside #game-root, on screen, and pressed where it shows.
+        const onField = within(how, field) && within(ranking, field);
+        expect(onField).toBe(viewport.width !== 667);
+        for (const [id, r] of [
+          ['how-to-play-button', how],
+          ['ranking-button', ranking],
+        ] as const) {
+          expect(within(r, root)).toBe(true);
+          expect(within(r, screenBox)).toBe(true);
+          const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+          expect(hit).toBe(id);
         }
         expect(intersects(how, ranking)).toBe(false);
         // Same build as RANKING.
@@ -117,23 +129,14 @@ test.describe('the HOW TO PLAY button', () => {
         // The title text stays on the field.
         expect(text.box.top).toBeGreaterThanOrEqual(field.top);
         expect(text.box.bottom).toBeLessThanOrEqual(field.bottom);
+        // In one row, HOW TO PLAY on the left and RANKING on the right, the
+        // same size: small on a field too narrow for the roomy row.
+        expect(Math.abs(how.top - ranking.top)).toBeLessThanOrEqual(1);
+        expect(how.right).toBeLessThanOrEqual(ranking.left);
         const fontPx = (selector: string) => page.locator(selector).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-        if (field.height < 200) {
-          // A small field: both small, in one row along the top edge, HOW TO
-          // PLAY on the left and RANKING on the right.
-          expect(await fontPx('#how-to-play-button')).toBe(10);
-          expect(await fontPx('#ranking-button')).toBe(10);
-          expect(Math.abs(how.top - ranking.top)).toBeLessThanOrEqual(1);
-          expect(how.right).toBeLessThanOrEqual(ranking.left);
-        } else {
-          // RANKING keeps its own size and spacing elsewhere.
-          const style = await page.locator('#ranking-button').evaluate((el) => {
-            const s = (el as HTMLElement).style;
-            return { fontSize: s.fontSize, padding: s.padding, top: s.top, right: s.right };
-          });
-          expect(style).toEqual({ fontSize: '1em', padding: '8px 16px', top: '8px', right: '8px' });
-          expect(await fontPx('#ranking-button')).toBeGreaterThan(10);
-        }
+        const size = viewport.width === 667 ? TITLE_BUTTON_COMPACT_FONT_PX : TITLE_MENU_FONT_PX;
+        expect(await fontPx('#how-to-play-button')).toBe(size);
+        expect(await fontPx('#ranking-button')).toBe(size);
         await page.context().close();
       });
     }
@@ -452,7 +455,12 @@ test.describe('HOW TO PLAY and the ranking list', () => {
     await open(page);
     await page.locator('#ranking-button').click();
     await expect(page.locator('#ranking-list-body')).toBeVisible();
-    await page.locator('#how-to-play-button').click();
+    // With the list open, HOW TO PLAY is reached from the keyboard (the
+    // Title menu takes no press of the mouse then).
+    const focused = () => page.evaluate(() => document.activeElement?.id ?? '');
+    for (let i = 0; i < 20 && (await focused()) !== 'how-to-play-button'; i++) await page.keyboard.press('Tab');
+    expect(await focused()).toBe('how-to-play-button');
+    await page.keyboard.press('Enter');
     await expect(page.locator('#how-to-play')).toBeVisible();
     await expect(page.locator('#ranking-list-body')).toBeHidden();
     // The panel covers the page; close it, then open the list.
