@@ -14,7 +14,8 @@ import {
 } from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
-import { loadMuted, saveMuted } from './storage/settings';
+import { loadDifficulty, loadMuted, saveDifficulty, saveMuted } from './storage/settings';
+import { DifficultyToggle } from './ui/difficultyToggle';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
@@ -30,7 +31,7 @@ import type { MissFeedback } from './core/feedback';
 import { fxParams } from './fx/params';
 import { HitStop } from './fx/hitStop';
 import { applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
-import { stepLiveSession, LiveRunTracker } from './retryFlow';
+import { stepLiveSession, LiveRunTracker, freezeRunSnapshot, keepsInPlayLog } from './retryFlow';
 import { ScoreRoll } from './fx/scoreRoll';
 import { loadFxFonts } from './render/fxFonts';
 import {
@@ -44,7 +45,6 @@ import {
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
   FX_START_CUE_MIN_LINE_DISPLAY_PX,
-  HUD_WORST_CASE_STATS_TEXT,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
   RULESET_VERSION,
@@ -54,7 +54,6 @@ import {
   COLOR_FX_NEON_CYAN,
   COLOR_FX_NEON_MAGENTA,
   FX_TEXT_FONT_FAMILY,
-  INITIAL_LIVES,
   HUD_MULTIPLIER_BASE_SCALE,
   HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE,
   HUD_GAUGE_HEIGHT_PX,
@@ -80,7 +79,16 @@ import {
   BGM_GAMEOVER_FADE_SEC,
 } from './config';
 import { hudGoalText } from './hudGoal';
-import { floorPercent, hudLines, livesText, HUD_SCORE_SLOT, HUD_LIVES_SLOT, MultiplierEmphasis } from './hudText';
+import {
+  floorPercent,
+  hudLines,
+  hudWorstCaseStatsText,
+  livesText,
+  HUD_SCORE_SLOT,
+  HUD_LIVES_SLOT,
+  MultiplierEmphasis,
+} from './hudText';
+import { initialLivesFor, type Difficulty } from './core/difficulty';
 import { detectLocale, getLocale, setLocale, t } from './i18n';
 import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
 import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
@@ -88,6 +96,7 @@ import { HintDirector, type HintView } from './hints/director';
 import { HintSeenStore } from './storage/hints';
 import { PlayLogStore } from './storage/playLog';
 import { PlayLogRecorder } from './playLog/recorder';
+import { suggestsEasy } from './playLog/summary';
 import type { PlayRecord } from './playLog/record';
 import { HintBar } from './ui/hintBar';
 import { HowToPlayUI } from './ui/howToPlay';
@@ -99,7 +108,7 @@ import type { GameEvent } from './core/events';
 import type { ClaimFeedback } from './core/feedback';
 import { GameOverResult, GameOverRunTally, gameOverHighlightText, type GameOverCue } from './gameOverResult';
 import { sfxLevels } from './audio/sfxLevels';
-import type { SoundTestId } from './debug/panel';
+import type { DebugPanelHandle, SoundTestId } from './debug/panel';
 import { BgmPlayer, type BgmState, type BgmUpdate } from './audio/bgm';
 import { bgmTrackForStage } from './audio/bgmScore';
 
@@ -152,6 +161,8 @@ declare global {
         finished: boolean;
         /** The highlight line's text once it shows, else null. */
         highlight: string | null;
+        /** The EASY suggestion shows in the highlight's place. */
+        prompt: boolean;
         /** Which best line shows: 'new-record', 'to-best', 'to-best-near', or null before it shows / for none. */
         best: 'new-record' | 'to-best' | 'to-best-near' | null;
       };
@@ -595,6 +606,10 @@ let gameOverModal: GameOverModal;
 let rankingUI: RankingUI;
 // The Title screen's HOW TO PLAY button and panel (src/ui/howToPlay.ts).
 let howToPlay: HowToPlayUI;
+// The Title screen's MODE: NORMAL / EASY toggle (src/ui/difficultyToggle.ts).
+let difficultyToggle: DifficultyToggle;
+// The `?debug` panel once it has mounted (dev builds only), else null.
+let debugPanel: DebugPanelHandle | null = null;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
 
@@ -745,6 +760,9 @@ let hudGaugeGoal: HTMLDivElement;
 // frame right after a resize would wrongly skip rewriting the DOM into the
 // new line layout).
 let hudTwoLineMode = false;
+// The difficulty of the shown session the HUD's line count was last decided
+// for (syncHudDifficulty(), measureRequiredSingleLineWidth()), or null before init().
+let hudLayoutDifficulty: Difficulty | null = null;
 
 // Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
 // P3): `null` is a sentinel distinct from any real screenText() result
@@ -805,7 +823,7 @@ let liveConfirmCount = 0;
 // THE PLAY LOG (src/playLog/, src/storage/playLog.ts): every live run that
 // plays on to GAME OVER is recorded tick by tick from the notices the impact
 // feedback drains, and kept on this device only if it is a normal run with
-// no debug override at any point — not a `?seed=` run, a ranking replay or
+// no debug override at any point — not an EASY run, a `?seed=` run, a ranking replay or
 // the Title demo, which never go through updateLive(). Read-only: it never
 // feeds anything back into the run, its inputs or its ranking submission.
 // A run left before GAME OVER (the page closed or reloaded) is not kept. The
@@ -822,6 +840,17 @@ const playLogListeners: Array<() => void> = [];
 // the run leaves GAME OVER or a replay opens, so no cue of it plays after.
 const gameOverTally = new GameOverRunTally();
 const gameOverResult = new GameOverResult();
+// THE EASY SUGGESTION: decided on the tick the live run reaches GAME OVER,
+// from the play log it was just kept in (src/playLog/summary.ts's
+// suggestsEasy()); shown in the highlight's place on the GAME OVER screen.
+// Taking TITLE from that screen once the suggestion is on it (easyPromptShown)
+// lights the Title screen's MODE toggle until it is pressed or a run starts;
+// TITLE before the suggestion appears, or RETRY, does nothing more.
+let easySuggested = false;
+// The suggestion has been seen on this GAME OVER screen: it appears a little
+// after the screen does (src/gameOverResult.ts), and TITLE works before that;
+// while the ranking submission form covers the modal, it is not seen yet.
+let easyPromptShown = false;
 
 // THE MUSIC (src/audio/bgm.ts): on every page, playing through the sound
 // effects' context and master gain, so the SOUND button turns both on and off
@@ -874,6 +903,10 @@ function init(): void {
 
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
+  // The Title screen's last choice (NORMAL when none is saved or storage is
+  // unavailable): the first run is built at it, and every later one until
+  // the toggle picks another.
+  const difficulty = loadDifficulty();
   lastSavedHighScore = highScore;
   runBestAtStart = highScore;
   if (explicitSeedParam !== undefined) {
@@ -883,13 +916,13 @@ function init(): void {
     // so main.ts never needs to swap `session` mid-page-load.
     runMode = 'seeded';
     seededRunSeed = explicitSeedParam;
-    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true });
+    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true, difficulty });
   } else {
     // Normal mode's initial Title board is seeded here, at construction —
     // stage 1's board is already fully built by the time Title is ever
     // shown (see GameSession's own module doc comment), so there's no later
     // "Title -> Playing" moment this could instead hook into.
-    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true });
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true, difficulty });
   }
   // captureFeedback only adds read-only claim/miss notices for the impact
   // feedback below; the run itself (and so its replay) is unchanged.
@@ -1043,6 +1076,14 @@ function init(): void {
       titleStartRequested = true;
     },
   });
+  difficultyToggle = new DifficultyToggle({
+    anchor: canvasWrap,
+    // Under the field it must stay inside #game-root (which clips what
+    // overflows it) and on screen.
+    getBottomLimit: () => Math.min(gameRoot.getBoundingClientRect().bottom, window.innerHeight),
+    onToggle: toggleDifficulty,
+  });
+  difficultyToggle.setDifficulty(session.getNextDifficulty());
   // The board's entry score for the HUD's goal slot: asked for once now, and
   // refreshed by each GAME OVER's own ranking check — never during play. A
   // seeded run's goal slot shows the high score, so it does not need it.
@@ -1088,6 +1129,7 @@ function init(): void {
   window.addEventListener('pointerup', () => sfx.resume());
   window.addEventListener('touchend', () => sfx.resume());
 
+  hudLayoutDifficulty = session.getDifficulty();
   fitCanvasToViewport();
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
@@ -1128,6 +1170,7 @@ function init(): void {
         score: view.score,
         finished: view.finished,
         highlight: view.highlight && view.highlightShown ? gameOverHighlightText(view.highlight) : null,
+        prompt: view.prompt && view.promptShown,
         best:
           !best || !view.bestLineShown
             ? null
@@ -1163,7 +1206,7 @@ function init(): void {
   // src/debug/panel.ts and the "no debug code in dist/" build check.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
     void import('./debug/panel').then(({ initDebugPanel }) => {
-      initDebugPanel(() => session, hudRow, {
+      debugPanel = initDebugPanel(() => session, hudRow, {
         params: fxParams,
         fx,
         hitStop,
@@ -1258,22 +1301,46 @@ function resetSeenHints(): void {
 }
 
 // The live run just reached GAME OVER (see `playLog`): its record is closed,
-// and kept if the run may be. Called on the tick the status turns 'gameover',
-// not when the modal appears after the game-ending miss.
-function finishPlayLogRun(): void {
+// and kept if the run may be (a normal NORMAL-difficulty run no debug
+// override touched — src/retryFlow.ts's keepsInPlayLog()). Called on the tick
+// the status turns 'gameover', not when the modal appears after the
+// game-ending miss. True when the run was kept.
+function finishPlayLogRun(): boolean {
   const record = playLogRecorder.finish({
     stage: session.getStage(),
     score: session.getScore(),
     end: session.getGameOverReason() ?? 'life',
     endedAt: Date.now(),
   });
-  if (!record || runMode !== 'normal' || session.isRunTainted()) return;
+  if (!record || !keepsInPlayLog(session, runMode)) return false;
   playLog.append(record);
   notifyPlayLogChanged();
+  return true;
 }
 
 function notifyPlayLogChanged(): void {
   for (const listener of playLogListeners) listener();
+}
+
+// The Title screen's MODE toggle was pressed: the other difficulty is picked
+// and saved, and the run waiting on Title is built again at it, on the same
+// seed — its lives, its Wisps' speed, the HUD and the board all follow at
+// once, and starting then plays what is shown. Only on the live Title screen
+// (the toggle shows nowhere else); a Title demo playing behind it carries on.
+function toggleDifficulty(): void {
+  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return;
+  const next: Difficulty = session.getNextDifficulty() === 'easy' ? 'normal' : 'easy';
+  saveDifficulty(next);
+  session.setNextDifficulty(next);
+  session.rebuildTitleRun();
+  // The `?debug` panel shows the rebuilt run's values (its Wisp speed is the
+  // new difficulty's).
+  debugPanel?.refresh();
+  difficultyToggle.setDifficulty(next);
+  difficultyToggle.setAttention(false);
+  // The board is a new one: the fill reveal must not compare it with the last.
+  renderer.resetBoard();
+  lastHudKey = '';
 }
 
 function toggleMute(): void {
@@ -1485,14 +1552,21 @@ function measureNonHudRowWidth(): number {
 // value: a 'seeded' run's `SEED <n>  ` can be measured exactly here rather
 // than guessed at some hypothetical worst case, since unlike SCORE/HI it can
 // never change again once `?seed=` is parsed in init().
+//
+// The HUD's difficulty is that of the session it shows (currentSession()):
+// an EASY run adds its `EASY  ` lead and two more lives marks
+// (hudWorstCaseStatsText()); a NORMAL one measures exactly as before.
+// renderFrame() decides again whenever the shown difficulty changes
+// (syncHudDifficulty()).
 function measureRequiredSingleLineWidth(): number {
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  const difficulty = currentSession().getDifficulty();
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
   const probe = document.createElement('span');
   probe.style.position = 'absolute';
   probe.style.visibility = 'hidden';
   probe.style.whiteSpace = 'nowrap';
   probe.style.font = window.getComputedStyle(hud).font;
-  probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  probe.textContent = `${modePrefix}${hudWorstCaseStatsText(initialLivesFor(difficulty))}`;
   // Measured in the HUD's own language: on a Japanese page, <body> would hand
   // the probe `lang="ja"`, whose generic monospace may be another face with
   // another width than the HUD's (src/ui/sentenceFont.ts).
@@ -1602,7 +1676,11 @@ function updateHud(): void {
   // the counting-up display value).
   // A first play has no best to chase until its first point: plain HI then.
   const noBestYet = runBestAtStart === 0 && activeSession.getScore() === 0;
-  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || noBestYet;
+  // The difficulty of the session shown: a ranking replay's is NORMAL even
+  // while EASY is picked. An EASY run chases nothing: its score is never a
+  // best or a ranking entry, so the slot shows the NORMAL high score.
+  const difficulty = activeSession.getDifficulty();
+  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || difficulty === 'easy' || noBestYet;
   const goal = hudGoalText({
     mode: goalIsHiScore ? 'hi' : 'chase',
     score: activeSession.getScore(),
@@ -1620,13 +1698,13 @@ function updateHud(): void {
 
   updateGauge(occupancyPercent, goalPercent);
 
-  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode].join('|');
+  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode, difficulty].join('|');
   if (key === lastHudKey) return;
   lastHudKey = key;
 
   // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal',
-  // `SEED <n>  ` for a `?seed=` run.
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  // `SEED <n>  ` for a `?seed=` run, led by `EASY  ` for an EASY one.
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
   const { lines, timeLine } = hudLines(
     {
       modePrefix,
@@ -1644,7 +1722,8 @@ function updateHud(): void {
   // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
   hudMultiplier.textContent = t('hud.multiplier', multiplier);
   hudScore.textContent = String(score);
-  hudLives.textContent = livesText(lives, INITIAL_LIVES);
+  // One slot per life the shown run started with: five for an EASY run.
+  hudLives.textContent = livesText(lives, initialLivesFor(difficulty));
   const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
   lineElements.forEach((el, index) => {
     el.textContent = '';
@@ -1790,10 +1869,15 @@ function fitCanvasToViewport(): void {
   applyTitleButtonsCompact();
   // HOW TO PLAY stays clear of RANKING on the new field width.
   howToPlay?.layout();
+  // The MODE toggle: small with the other Title buttons, and under the field
+  // on the fields too small for its corner.
+  difficultyToggle?.setFieldSize(titleButtonsCompact, tinyField);
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
   hudRow.style.width = `${cssWidth}px`;
+  // Placed last, against the field and the page as they now are.
+  difficultyToggle?.layout();
 }
 
 // Update logic (fixed timestep)
@@ -1960,6 +2044,13 @@ function updateLive(): void {
   });
   if (step.freshRun) {
     modalAction = null;
+    // Back on the Title screen from a GAME OVER that showed the EASY
+    // suggestion: the MODE toggle is lit. A retry went straight into a run,
+    // and a GAME OVER left before the suggestion appeared never showed it:
+    // nothing.
+    difficultyToggle.setAttention(easyPromptShown && !step.retried);
+    easySuggested = false;
+    easyPromptShown = false;
   } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
     // The next stage's board replaces this one: drop the effects tied to the
     // old board. SPLIT! and the travelling multiplier keep running.
@@ -1968,6 +2059,9 @@ function updateLive(): void {
     renderer.resetBoard();
     stageResultTally.reset();
   }
+
+  // A run started: the MODE toggle is no longer lit.
+  if (session.getStatus() !== 'title') difficultyToggle.setAttention(false);
 
   const events = session.drainEvents();
   // Records this tick's input if it played a tick (a no-op on title,
@@ -1988,7 +2082,10 @@ function updateLive(): void {
   // The play log counts this tick for the stage it started on, and closes
   // the run on the tick it reaches GAME OVER.
   playLogRecorder.observeTick({ stageBefore: stageBeforeThisTick, statusBefore: statusBeforeThisTick, claims, misses });
-  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') finishPlayLogRun();
+  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') {
+    const kept = finishPlayLogRun();
+    easySuggested = suggestsEasy(playLog.list(), kept);
+  }
   // The hints read what this tick did. A stage's play starts when the status
   // turns 'playing': a new run's from Title or GAME OVER, a later stage's
   // from STAGE CLEAR.
@@ -2034,6 +2131,9 @@ function updateLive(): void {
   // board isn't the standard one. Skips the write entirely while any debug
   // override is active, mirroring the pre-existing highscore guard
   // (docs/plan.md §6 M10: "デバッグパネル使用中はハイスコアを保存しない").
+  // The session's high score never takes in an EASY run's score or a
+  // debug-tuned one's (GameSession.countsTowardHighScore()), so neither can
+  // be written here — not after a RESET, nor in the run after it.
   if (shouldPersistHighScore(runMode)) {
     const currentHighScore = session.getHighScore();
     if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
@@ -2135,8 +2235,21 @@ function resolveHintMark(view: HintView<Ember> | null): ResolvedHintMark | null 
   return game.getEmbers().includes(mark.ember) ? { kind: 'ring', centers: [mark.ember.getPosition()] } : null;
 }
 
+// The HUD's line count is decided for the difficulty of the session it shows
+// (measureRequiredSingleLineWidth()). Whenever that changes — the Title
+// screen's toggle, a new run built at another difficulty, a ranking replay
+// opening over an EASY pick or closing — the layout is decided again before
+// the HUD is written.
+function syncHudDifficulty(): void {
+  const difficulty = currentSession().getDifficulty();
+  if (difficulty === hudLayoutDifficulty) return;
+  hudLayoutDifficulty = difficulty;
+  fitCanvasToViewport();
+}
+
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
+  syncHudDifficulty();
   const activeSession = currentSession();
   const game = activeSession.getGame();
   // The board drawn: the Title demo's while it plays, otherwise the active
@@ -2216,6 +2329,8 @@ function renderFrame(): void {
   // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
   const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
   howToPlay.syncAvailability(liveTitle);
+  // So is the MODE toggle — and like them it stays up under an open panel.
+  difficultyToggle.setShown(liveTitle);
   // While the sound is off on the live Title screen, the sound toggle glows
   // so it is noticed before a run starts.
   setMuteButtonAttention(liveTitle && sfx.isMuted());
@@ -2284,10 +2399,10 @@ function renderFrame(): void {
       gameOverModalShown = true;
       gameOverConfirmGate.markModalShown();
       const score = session.getScore();
-      // NEW RECORD: only for a run that may save its high score (a normal
-      // run with no debug override at any point), against the best it
-      // started from.
-      const recordsHighScore = shouldPersistHighScore(runMode) && !session.isRunTainted();
+      // NEW RECORD and the distance to the best: only for a run that may save
+      // its high score (a NORMAL, non-`?seed=` run with no debug override at
+      // any point), against the best it started from.
+      const recordsHighScore = shouldPersistHighScore(runMode) && session.countsTowardHighScore();
       const reason = session.getGameOverReason() ?? 'life';
       // The result counts up from this frame: the close plays now, the rest
       // on the live ticks that follow (stepGameOverResult()).
@@ -2296,6 +2411,7 @@ function renderFrame(): void {
         stage: session.getStage(),
         bestAtStart: runBestAtStart,
         recordsHighScore,
+        easyPrompt: easySuggested,
         tally: gameOverTally.snapshot(),
         reducedMotion,
         timing: {
@@ -2315,6 +2431,10 @@ function renderFrame(): void {
         reason: session.getGameOverReason() ?? undefined,
         highlight: view.highlight,
         bestLine: view.bestLine,
+        // An EASY run is tagged, and not shared, as it is not ranked.
+        share: session.getDifficulty() === 'normal',
+        easy: session.getDifficulty() === 'easy',
+        easyPrompt: view.prompt,
       });
       sfx.playGameOver(reason);
       playGameOverCues(cues);
@@ -2325,22 +2445,18 @@ function renderFrame(): void {
       // frozen here, synchronously, on the single frame the run ends —
       // `session` (not `activeSession`) deliberately, to make it explicit
       // this is the *live* run's final state and never a replay's.
-      rankingUI.offerSubmission({
-        runId: runTracker.getRunId(),
-        seed: session.getSeed(),
-        rle: runTracker.recorder.encode(),
-        score,
-        stage: session.getStage(),
-        runMode,
-        tainted: session.isRunTainted(),
-        claims: runTracker.getClaims(),
-      });
+      rankingUI.offerSubmission(freezeRunSnapshot(session, runTracker, runMode));
     }
     // The hint says what the keys do: retry, or wait for the submission panel
     // to be closed.
     if (gameOverModalShown) {
-      gameOverModal.setSubmissionHold(currentRetryHold().formShown);
-      gameOverModal.renderResult(gameOverResult.view());
+      const { formShown } = currentRetryHold();
+      gameOverModal.setSubmissionHold(formShown);
+      const resultView = gameOverResult.view();
+      gameOverModal.renderResult(resultView);
+      // Seen only once it is on screen with no ranking submission form over
+      // the modal: drawn behind the form, it has not been seen yet.
+      if (resultView.promptShown && !formShown) easyPromptShown = true;
     }
   } else {
     gameOverConfirmGate.reset();

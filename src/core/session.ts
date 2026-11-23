@@ -15,8 +15,8 @@ import { EventQueue, GameEvent } from './events';
 import type { ClaimFeedback, MissFeedback } from './feedback';
 import { mulberry32, deriveStageSeed } from './rng';
 import { MarkerStart, drawMarkerStart, topCenterMarkerStart } from './markerStart';
+import { Difficulty, initialLivesFor, wispSpeedFor } from './difficulty';
 import {
-  INITIAL_LIVES,
   DEFAULT_SCORE_MULTIPLIER,
   SPLIT_MULTIPLIER_CAP,
   GRID_WIDTH,
@@ -109,6 +109,12 @@ export interface SessionOptions {
    * builds its own Game and so decides for itself whether to capture.
    */
   captureFeedback?: boolean;
+  /**
+   * The difficulty (core/difficulty.ts) of the session's first run, and of
+   * every later one until setNextDifficulty() picks another. Defaults to
+   * 'normal', which plays exactly as a session built without it.
+   */
+  difficulty?: Difficulty;
 }
 
 export class GameSession {
@@ -225,6 +231,14 @@ export class GameSession {
   // GAME OVER screen. Re-seeded at every gameover entry, never anywhere else
   // — Title/StageClear keep their instant any-key behavior.
   private gameoverReleaseSeen = false;
+  // The current run's difficulty, fixed when the run is built
+  // (resetToFreshRun()), and the one the next run will be built with
+  // (setNextDifficulty()). Changing the next one never touches a run in
+  // progress or one that has just ended on GAME OVER: it takes effect where a
+  // new run is built — GAME OVER -> Title (RETRY and TITLE alike), or the
+  // not-yet-started run on Title rebuilt by rebuildTitleRun().
+  private difficulty: Difficulty;
+  private nextDifficulty: Difficulty;
 
   /** "Hands off": no movement and no draw key engaged — the condition that arms the GameOver release gate. */
   private static isOperationNeutral(input: SessionInput): boolean {
@@ -242,6 +256,8 @@ export class GameSession {
     this.captureFeedback = options.captureFeedback ?? false;
     this.claimFeedback = this.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
     this.missFeedback = this.captureFeedback ? new EventQueue<MissFeedback>() : null;
+    this.nextDifficulty = options.difficulty ?? 'normal';
+    this.difficulty = this.nextDifficulty;
     this.resetToFreshRun();
   }
 
@@ -274,9 +290,25 @@ export class GameSession {
     return this.multiplier;
   }
 
-  /** The best of the seeded high score and the current run's score. */
+  /**
+   * The best of the seeded high score and the current run's score — the
+   * current run's only when it counts toward the high score
+   * (countsTowardHighScore()). An EASY run leaves the high score as it was,
+   * during the run and after it, so its score can never reach the stored
+   * high score later either. A run a debug override has touched keeps only
+   * what it had scored before the first override (see markTainted()).
+   */
   getHighScore(): number {
-    return Math.max(this.highScore, this.game.getScore());
+    return this.countsTowardHighScore() ? Math.max(this.highScore, this.game.getScore()) : this.highScore;
+  }
+
+  /**
+   * True when the current run's score may become the high score: a NORMAL
+   * run that no debug override has ever touched (isRunTainted() is sticky
+   * for the run, so a RESET mid-run does not clear it).
+   */
+  countsTowardHighScore(): boolean {
+    return this.difficulty === 'normal' && !this.tainted;
   }
 
   /**
@@ -297,6 +329,38 @@ export class GameSession {
    */
   setNextSeed(seed: number): void {
     this.nextSeed = seed;
+  }
+
+  /** The current run's difficulty — fixed for the whole run, through its GAME OVER. */
+  getDifficulty(): Difficulty {
+    return this.difficulty;
+  }
+
+  /** The difficulty the next run will be built with (see `nextDifficulty`). */
+  getNextDifficulty(): Difficulty {
+    return this.nextDifficulty;
+  }
+
+  /**
+   * Picks the difficulty of the next run built — and of every later one,
+   * until picked again. No effect on the current run, whether it is being
+   * played or has just ended on GAME OVER; on Title, rebuildTitleRun() applies
+   * it to the run waiting to start.
+   */
+  setNextDifficulty(difficulty: Difficulty): void {
+    this.nextDifficulty = difficulty;
+  }
+
+  /**
+   * On Title only (a no-op anywhere else): builds the run waiting to start
+   * again, on the same seed, with the next difficulty — its lives, its
+   * Wisps' speed and everything shown for it follow at once, and starting
+   * from Title then plays exactly what is shown. Debug overrides carry over
+   * as they do into any new run.
+   */
+  rebuildTitleRun(): void {
+    if (this.status !== 'title') return;
+    this.resetToFreshRun({ keepSeed: true });
   }
 
   /**
@@ -378,6 +442,17 @@ export class GameSession {
    */
   setDebugTimeLimitTicks(ticks: number): void {
     this.debugTimeLimitTicks = ticks;
+    this.markTainted();
+  }
+
+  /**
+   * Marks the run as debug-tuned. The score it reached before that, under
+   * the standard parameters, is a genuine high score — main.ts has already
+   * saved it — so it is kept in the high score first; only what the run
+   * scores from here on stays out.
+   */
+  private markTainted(): void {
+    if (this.countsTowardHighScore()) this.highScore = this.getHighScore();
     this.tainted = true;
   }
 
@@ -483,22 +558,29 @@ export class GameSession {
    * (so Title has something valid to preview/render) and on GameOver ->
    * Title (docs/plan.md §6 M4's "full reset" requirement).
    */
-  private resetToFreshRun(): void {
+  private resetToFreshRun(options: { keepSeed?: boolean } = {}): void {
     // Consume any queued seed
     // *before* buildStageGame() below reads `this.seed` to build stage 1.
     // This — not Title->Playing — is the boundary a queued seed takes
     // effect at, because stage 1's board is already fully built by the time
     // Title is ever shown (see this class's own module doc comment).
-    if (this.nextSeed !== undefined) {
+    // rebuildTitleRun() keeps the run's seed: it rebuilds the same board.
+    if (this.nextSeed !== undefined && !options.keepSeed) {
       this.seed = this.nextSeed;
       this.nextSeed = undefined;
     }
+    // The same boundary fixes the new run's difficulty.
+    this.difficulty = this.nextDifficulty;
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
     this.totalTicks = 0;
     this.gameOverReason = null;
-    this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
+    this.game = this.buildStageGame(this.stage, {
+      score: 0,
+      lives: initialLivesFor(this.difficulty),
+      multiplier: this.multiplier,
+    });
     // NOT an unconditional `false`: debug overrides (`debugOverrides` /
     // `debugTimeLimitTicks`) deliberately *persist* across a retry — they're
     // session-level tuning state, and buildStageGame() above has already
@@ -560,7 +642,7 @@ export class GameSession {
    */
   applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
     this.debugOverrides = { ...this.debugOverrides, ...overrides };
-    this.tainted = true;
+    this.markTainted();
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 
@@ -687,10 +769,12 @@ export class GameSession {
    * rng; every later stage draws one of the candidates (core/markerStart.ts)
    * from the stage's own rng, with exactly one call. buildDefaultStageGame()
    * calls this before anything else draws from that rng (the Wisps come
-   * after), and that order is part of what a replay reproduces.
+   * after), and that order is part of what a replay reproduces. An EASY run
+   * starts every stage like stage 1: at the middle of the top edge, drawing
+   * nothing.
    */
   private chooseMarkerStart(stage: number, field: Field): MarkerStart {
-    if (stage === 1) return topCenterMarkerStart(field.getWidth());
+    if (stage === 1 || this.difficulty === 'easy') return topCenterMarkerStart(field.getWidth());
     return drawMarkerStart(field.getWidth(), field.getHeight(), this.currentStageRng ?? Math.random);
   }
 
@@ -764,6 +848,11 @@ export class GameSession {
     cx = Math.min(width - 2, Math.max(1, cx));
     cy = Math.min(height - 2, Math.max(1, cy));
 
+    // The one place a run's difficulty touches the Wisps' speed: EASY scales
+    // the stage table's value (core/difficulty.ts). Game takes the built
+    // Wisps' speed as the stage's own, so the debug panel's RESET returns to
+    // this value.
+    const speed = wispSpeedFor(this.difficulty, config.wispSpeedMultiplier);
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
       // Spread multiple Wisps symmetrically around the cluster center so a
@@ -772,7 +861,7 @@ export class GameSession {
       // the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
-      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, config.wispSpeedMultiplier));
+      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, speed));
     }
     return wisps;
   }

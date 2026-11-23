@@ -39,6 +39,13 @@ export const messages = {
   // English on both pages.
   'sound.off': same('SOUND: OFF'),
   'sound.on': same('SOUND: ON'),
+  // The EASY tag on the HUD and the GAME OVER screen: a label, English on
+  // both pages.
+  'difficulty.easy': same('EASY'),
+  // The Title screen's difficulty toggle reads the current choice: a button,
+  // so English on both pages.
+  'difficulty.toggleNormal': same('MODE: NORMAL'),
+  'difficulty.toggleEasy': same('MODE: EASY'),
 
   // --- Pause -----------------------------------------------------------------
   'pause.title': same('PAUSED'),
@@ -83,6 +90,8 @@ export const messages = {
   'gameOver.highlight.bestClaim': same((percent: number) => `BEST CLAIM ${percent}%`),
   'gameOver.highlight.stage': same((stage: number) => `REACHED STAGE ${stage}`),
   'gameOver.toBest': same((points: number) => `${points} TO HI SCORE`),
+  // In the highlight's place, after a run of early GAME OVERs: a sentence.
+  'gameOver.easyPrompt': tr('TRY EASY MODE ON TITLE', 'タイトルで EASY を選べます'),
   'gameOver.retry': same('RETRY'),
   'gameOver.title': same('TITLE'),
   'gameOver.share': same('POST TO X'),

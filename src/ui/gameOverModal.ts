@@ -54,6 +54,16 @@ export interface GameOverScoreInfo {
    * place is kept from the start; it appears when renderResult() says so.
    */
   bestLine?: GameOverBestLine | null;
+  /** POST TO X is offered (the default); false hides it — an EASY run is not shared. */
+  share?: boolean;
+  /** The run was an EASY one: an EASY tag beside the GAME OVER heading. */
+  easy?: boolean;
+  /**
+   * Suggest EASY (src/playLog/summary.ts's suggestsEasy()) in the highlight's
+   * place, which is then not shown. Its place is kept from the start; it
+   * appears when renderResult() says so.
+   */
+  easyPrompt?: boolean;
 }
 
 /** How tightly the modal is packed (GameOverModal.setDensity()). */
@@ -98,11 +108,14 @@ function tweetIntentUrl(info: GameOverScoreInfo, id: string): string {
 export class GameOverModal {
   private readonly container: HTMLDivElement;
   private readonly heading: HTMLDivElement;
+  private readonly easyTag: HTMLSpanElement;
   private readonly reasonLine: HTMLDivElement;
   private readonly newRecordLine: HTMLDivElement;
   private readonly scoreLine: HTMLDivElement;
   private readonly scoreValue: HTMLSpanElement;
   private readonly highlightLine: HTMLDivElement;
+  private readonly promptLine: HTMLDivElement;
+  private readonly promptText: HTMLSpanElement;
   private readonly bestSlot: HTMLDivElement;
   private readonly toBestLine: HTMLDivElement;
   private readonly sparkLayer: HTMLDivElement;
@@ -120,6 +133,9 @@ export class GameOverModal {
   private readonly shareButton: HTMLButtonElement;
   private current: GameOverScoreInfo = { score: 0, stage: 1, hiScore: 0 };
   private sharing = false;
+  // Counts show() calls: a share answer that comes back after another run's
+  // GAME OVER has been shown leaves that run's button alone.
+  private shownCount = 0;
   private density: GameOverModalDensity | null = null;
 
   constructor(anchor: HTMLElement, actions: GameOverModalActions) {
@@ -153,6 +169,21 @@ export class GameOverModal {
     this.heading.textContent = t('gameOver.heading');
     this.heading.style.fontSize = '1.3em';
     this.heading.style.fontWeight = 'bold';
+    this.heading.style.whiteSpace = 'nowrap';
+    // The EASY tag: small and boxed after the heading, on its line — its
+    // line height 0 keeps the heading's line as tall as without it.
+    this.easyTag = document.createElement('span');
+    this.easyTag.id = 'gameover-easy';
+    this.easyTag.style.display = 'none';
+    this.easyTag.style.marginLeft = '0.8em';
+    this.easyTag.style.padding = '0 0.3em';
+    this.easyTag.style.fontSize = '0.6em';
+    this.easyTag.style.lineHeight = '0';
+    this.easyTag.style.verticalAlign = 'middle';
+    this.easyTag.style.color = HUD_ACCENT_COLOR;
+    this.easyTag.style.outline = `1px solid ${HUD_ACCENT_COLOR}`;
+    this.easyTag.style.outlineOffset = '1px';
+    this.heading.appendChild(this.easyTag);
     this.container.appendChild(this.heading);
 
     // TIME UP! (docs/plans/2026-08-13-time-limit-mode): hidden by default,
@@ -199,6 +230,24 @@ export class GameOverModal {
     this.highlightLine.style.color = HUD_ACCENT_COLOR;
     this.highlightLine.style.display = 'none';
     this.container.appendChild(this.highlightLine);
+
+    // The EASY suggestion, after a run of early GAME OVERs: shown instead of
+    // the highlight, in its place and at its size and timing, on one line.
+    // A sentence, so the Japanese page gives its text the Japanese font —
+    // in a span of line height 0, so that font never makes the line taller
+    // than the highlight's.
+    this.promptLine = document.createElement('div');
+    this.promptLine.id = 'gameover-easy-prompt';
+    this.promptLine.style.fontWeight = 'bold';
+    this.promptLine.style.color = HUD_ACCENT_COLOR;
+    this.promptLine.style.whiteSpace = 'nowrap';
+    this.promptLine.style.display = 'none';
+    this.promptText = document.createElement('span');
+    this.promptText.id = 'gameover-easy-prompt-text';
+    this.promptText.style.lineHeight = '0';
+    applySentenceFont(this.promptText);
+    this.promptLine.appendChild(this.promptText);
+    this.container.appendChild(this.promptLine);
 
     this.bestSlot = document.createElement('div');
     this.bestSlot.style.position = 'relative';
@@ -302,6 +351,7 @@ export class GameOverModal {
   /** Shows the modal populated with this run's final score info. Idempotent — safe to call again while already shown. */
   show(info: GameOverScoreInfo): void {
     this.current = info;
+    this.shownCount++;
     // The final score sizes the line; the shown one starts at the final value
     // until renderResult() says otherwise.
     const finalText = t('gameOver.score', info.score);
@@ -318,10 +368,14 @@ export class GameOverModal {
       this.reasonLine.style.display = 'none';
     }
     // The lines this run will show keep their place, hidden, from now on.
-    const highlight = info.highlight ?? null;
+    const prompt = info.easyPrompt === true;
+    const highlight = prompt ? null : (info.highlight ?? null);
     this.highlightLine.textContent = highlight ? gameOverHighlightText(highlight) : '';
     this.highlightLine.style.display = highlight ? 'block' : 'none';
     this.highlightLine.style.visibility = 'hidden';
+    this.promptText.textContent = prompt ? t('gameOver.easyPrompt') : '';
+    this.promptLine.style.display = prompt ? 'block' : 'none';
+    this.promptLine.style.visibility = 'hidden';
     const best = info.bestLine ?? null;
     this.bestSlot.style.display = best ? 'block' : 'none';
     this.newRecordLine.textContent = best?.kind === 'new-record' ? t('gameOver.newRecord', best.delta) : '';
@@ -341,6 +395,10 @@ export class GameOverModal {
     this.lastResultKey = '';
     this.setSubmissionHold(false);
     this.resetShareButton();
+    this.shareButton.style.display = info.share === false ? 'none' : '';
+    // Its text only while shown, so the modal's text reads as before otherwise.
+    this.easyTag.textContent = info.easy ? t('difficulty.easy') : '';
+    this.easyTag.style.display = info.easy ? 'inline' : 'none';
     this.container.style.display = 'flex';
   }
 
@@ -359,6 +417,7 @@ export class GameOverModal {
       view.score,
       view.popScale.toFixed(3),
       view.highlightShown,
+      view.promptShown,
       view.bestLineShown,
       view.recordPopScale.toFixed(3),
       view.sparkProgress === null ? '-' : view.sparkProgress.toFixed(3),
@@ -368,6 +427,7 @@ export class GameOverModal {
     this.scoreValue.textContent = t('gameOver.score', view.score);
     this.scoreValue.style.transform = view.popScale === 1 ? '' : `scale(${view.popScale})`;
     this.highlightLine.style.visibility = view.highlightShown ? 'visible' : 'hidden';
+    this.promptLine.style.visibility = view.promptShown ? 'visible' : 'hidden';
     const bestVisibility = view.bestLineShown ? 'visible' : 'hidden';
     this.newRecordLine.style.visibility = bestVisibility;
     this.toBestLine.style.visibility = bestVisibility;
@@ -472,6 +532,11 @@ export class GameOverModal {
     // Repeat-click guard (docs/plan-cloudflare-x-share.md Phase 1: "連打防
     // 止"): ignored entirely while a request is already in flight.
     if (this.sharing) return;
+    // The run shown at the press is the one shared — the request and the
+    // post text alike — even if the modal shows another run by the time the
+    // answer comes back (TITLE, a new run and its GAME OVER in between).
+    const run = { score: this.current.score, stage: this.current.stage, hiScore: this.current.hiScore };
+    const shownAtPress = this.shownCount;
     this.sharing = true;
     this.shareButton.disabled = true;
     this.shareButton.textContent = t('gameOver.sharing');
@@ -498,9 +563,12 @@ export class GameOverModal {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          score: this.current.score,
-          stage: this.current.stage,
-          hi: this.current.hiScore,
+          score: run.score,
+          stage: run.stage,
+          // /share takes a high score no lower than the score. The modal's
+          // high score leaves out a debug-tuned run's points, so such a run
+          // past it shares its own score as the high score.
+          hi: Math.max(run.hiScore, run.score),
         }),
       });
       if (!response.ok) {
@@ -511,7 +579,7 @@ export class GameOverModal {
         throw new Error('share response missing id');
       }
 
-      const intentUrl = tweetIntentUrl(this.current, data.id);
+      const intentUrl = tweetIntentUrl(run, data.id);
       if (popup) {
         popup.location.href = intentUrl;
       } else {
@@ -520,12 +588,15 @@ export class GameOverModal {
         // gesture window at this point, but there's nothing more we can do.
         window.open(intentUrl, '_blank', 'noopener');
       }
+      // The button now belongs to another run's GAME OVER (show() reset it).
+      if (this.shownCount !== shownAtPress) return;
       this.resetShareButton();
     } catch {
       // Network error or non-200 response (docs/plan-cloudflare-x-share.md
       // Phase 1): surface a retryable error on the button; never touches
       // game state/progression.
       popup?.close();
+      if (this.shownCount !== shownAtPress) return;
       this.sharing = false;
       this.shareButton.disabled = false;
       this.shareButton.textContent = t('gameOver.shareFailed');

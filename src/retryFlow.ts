@@ -14,6 +14,46 @@
 import type { SessionInput, SessionStatus } from './core/session';
 import { InputRecorder, type TickSource } from './core/inputRecorder';
 import type { GameEvent } from './core/events';
+import type { Difficulty } from './core/difficulty';
+import type { RunMode } from './runMode';
+import type { RunSubmissionSnapshot } from './ui/ranking';
+
+/** What the GAME OVER edge reads off the live session about the run that just ended. */
+export interface FinishedRunSession {
+  getSeed(): number | undefined;
+  getScore(): number;
+  getStage(): number;
+  isRunTainted(): boolean;
+  getDifficulty(): Difficulty;
+}
+
+/**
+ * Everything the ranking offer may ever read about the run that just ended,
+ * frozen on the frame it ends (see RunSubmissionSnapshot): later changes to
+ * the session — the next run's difficulty picked, a new run begun — never
+ * reach it.
+ */
+export function freezeRunSnapshot(session: FinishedRunSession, tracker: LiveRunTracker, runMode: RunMode): RunSubmissionSnapshot {
+  return {
+    runId: tracker.getRunId(),
+    seed: session.getSeed(),
+    rle: tracker.recorder.encode(),
+    score: session.getScore(),
+    stage: session.getStage(),
+    runMode,
+    tainted: session.isRunTainted(),
+    difficulty: session.getDifficulty(),
+    claims: tracker.getClaims(),
+  };
+}
+
+/**
+ * Whether the run that just ended is kept in the play log: a normal
+ * (non-`?seed=`) NORMAL-difficulty run that no debug override ever touched.
+ */
+export function keepsInPlayLog(session: Pick<FinishedRunSession, 'isRunTainted' | 'getDifficulty'>, runMode: RunMode): boolean {
+  return runMode === 'normal' && session.getDifficulty() === 'normal' && !session.isRunTainted();
+}
 
 /** The parts of GameSession a live step drives. */
 export interface LiveStepSession {

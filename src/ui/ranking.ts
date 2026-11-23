@@ -12,6 +12,7 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
+import type { Difficulty } from '../core/difficulty';
 import {
   HUD_FONT,
   HUD_TEXT_COLOR,
@@ -119,6 +120,8 @@ export interface RunSubmissionSnapshot {
   stage: number;
   runMode: RunMode;
   tainted: boolean;
+  /** The run's own difficulty, as it ended: only a NORMAL run is ranked. */
+  difficulty: Difficulty;
   /**
    * Successful area claims over the whole run. The server's audit refuses a
    * replay past MAX_VERIFIED_CLAIMS outright (functions/_lib/ranking/
@@ -176,7 +179,6 @@ export function rankInThresholdFrom(entries: RankingEntry[]): number {
   return entries[entries.length - 1].score;
 }
 
-/** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
 /**
  * The board's entry score (rankInThresholdFrom()) as of the newest
  * GET /api/ranking that succeeded. Several of those can be in flight at once
@@ -221,8 +223,13 @@ export function demoCandidateIdsFrom(entries: readonly Pick<RankingEntry, 'id' |
   return ids;
 }
 
+/**
+ * A run may be submitted only if it is a normal (non-`?seed=`) NORMAL-difficulty
+ * run, untainted by debug overrides, and actually seeded. Derived purely from
+ * the snapshot — never from live session state.
+ */
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
-  return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
+  return snapshot.runMode === 'normal' && snapshot.difficulty === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
 }
 
 /**
