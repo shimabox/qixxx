@@ -3,7 +3,6 @@
 // do), an EASY run's never do, and every stage starts again on level 0.
 import { describe, it, expect } from 'vitest';
 import { GameSession, SessionInput } from './session';
-import { getStageConfig } from './stage';
 import { clearFromStart, sessionAtStage } from './stageStartFixture';
 import { MarkerStartEdge } from './markerStart';
 import { Axis } from './marker';
@@ -108,11 +107,14 @@ function playTwoStrips(session: GameSession): { after: Array<{ occupancy: number
 }
 
 describe('GameSession — the Wisp surge', () => {
-  for (const stage of [1, 5]) {
+  // Stage 1: one Wisp at x1. Stage 5: three Wisps at x2.4.
+  for (const { stage, tableSpeeds } of [
+    { stage: 1, tableSpeeds: [1] },
+    { stage: 5, tableSpeeds: [2.4, 2.4, 2.4] },
+  ]) {
     it(`never speeds NORMAL stage ${stage}’s Wisps up, however close occupancy gets to the goal`, () => {
       const session = sessionAtStage(stage, { seed: 5, captureFeedback: true });
-      const table = getStageConfig(stage);
-      const tableSpeeds = Array(table.wispCount).fill(table.wispSpeedMultiplier);
+      expect(speeds(session)).toEqual(tableSpeeds);
       expect(session.getGame().isWispSurgeEnabled()).toBe(false);
       const { afterFirst, levelAfterFirst } = playTwoBoxes(session);
       expect(levelAfterFirst).toBe(0);
