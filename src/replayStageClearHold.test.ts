@@ -85,7 +85,7 @@ describe('ReplayStageClearHold', () => {
 // draw across the field, step along the border, claim a strip at a time.
 // StageClear is confirmed but NOT recorded, exactly as the replay protocol
 // re-supplies it on playback.
-const MULTI_STAGE_SEED = 35012;
+const MULTI_STAGE_SEED = 1981;
 const MULTI_STAGE_STRIP_WIDTH = 4;
 const MULTI_STAGE_FINAL_STAGE = 4;
 
@@ -228,9 +228,9 @@ describe('STAGE CLEAR hold leaves replay playback unchanged', () => {
     expect(held.holds).toBe(MULTI_STAGE_FINAL_STAGE - 1);
     expect(held.heldTicks).toBe(HOLD_TICKS * (MULTI_STAGE_FINAL_STAGE - 1));
     expect(plain.heldTicks).toBe(0);
-    // The later stages start on the top edge and on the bottom one, so the
+    // The later stages start on the bottom edge and on the top one, so the
     // replay reproduces random stage starts on more than one edge.
-    expect(stageStartEdges(MULTI_STAGE_SEED, samples)).toEqual(['top', 'top', 'bottom', 'bottom']);
+    expect(stageStartEdges(MULTI_STAGE_SEED, samples)).toEqual(['top', 'bottom', 'top', 'bottom']);
 
     // Every recorded sample is consumed, once, in both.
     expect(held.steps).toBe(samples.length);

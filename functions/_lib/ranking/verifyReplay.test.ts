@@ -4,6 +4,7 @@ import { Axis } from '../../../src/core/marker';
 import { encodeRle, InputSample } from '../../../src/core/rle';
 import { MAX_VERIFIED_CLAIMS, GRID_WIDTH, GRID_HEIGHT } from '../../../src/config';
 import { buildStageScript } from '../../../src/core/scriptedRun';
+import { lateSurgeRises, playSurgeRun } from '../../../src/core/surgeRunFixture';
 import { verifyReplay } from './verifyReplay';
 import { simulateReplayFromRle } from '../../../src/core/replayEngine';
 
@@ -57,9 +58,8 @@ describe('verifyReplay', () => {
   it('accepts a ruleset 2 run with a stage clear, close calls and big claims, with the same score and stage', () => {
     // The scripted comb (core/scriptedRun.ts) on the full-size field: it
     // clears two stages on this seed, and its lines pass close to the Wisps
-    // and take big areas, so the score holds every new kind of point. The
-    // Wisps speed up toward each stage's goal on the way (NORMAL's surge).
-    const seed = 4009;
+    // and take big areas, so the score holds every new kind of point.
+    const seed = 1677;
     const session = new GameSession({ seed, captureFeedback: true });
     session.update(CONFIRM);
     const script = buildStageScript(GRID_WIDTH, GRID_HEIGHT);
@@ -109,8 +109,7 @@ describe('verifyReplay', () => {
     // this field; this one splits on this seed where splits first can (stage
     // 3, the first with two Wisps) and again on stage 4, so the server has to
     // follow the split clears and the raised multiplier the next stages play at.
-    // Of seeds 1-40000, only this one and 25508 do both.
-    const seed = 24040;
+    const seed = 23903;
     const session = new GameSession({ seed, captureFeedback: true });
     session.update(CONFIRM);
     const samples: InputSample[] = [];
@@ -167,6 +166,31 @@ describe('verifyReplay', () => {
       stage: session.getStage(),
       durationTicks: session.getTotalTicks(),
       gameOverReason: session.getGameOverReason(),
+    });
+  });
+
+  it('accepts a run whose Wisps speed up on stage 6 (the surge to level 1 and then 2, with play going on), with the same score and stage', () => {
+    // core/surgeRunFixture.ts: a NORMAL run with no debug override, to GAME
+    // OVER, whose stage 6 claims raise the Wisp surge to level 1 and then to
+    // level 2, each leaving play going on, with more ticks played after both,
+    // so the server has to move the sped-up Wisps as the client did.
+    const run = playSurgeRun();
+    const { level1, level2 } = lateSurgeRises(run.rises);
+    expect(level1).toMatchObject({ stage: 6, level: 1, status: 'playing' });
+    expect(level2).toMatchObject({ stage: 6, level: 2, status: 'playing' });
+    expect(level1!.tick).toBeLessThan(level2!.tick);
+    expect(run.samples.length).toBe(run.session.getTotalTicks());
+    expect(run.samples.length).toBeGreaterThan(level2!.tick);
+    expect(run.session.getStatus()).toBe('gameover');
+    expect(run.session.isRunTainted()).toBe(false);
+
+    const result = verifyReplay(run.seed, encodeRle(run.samples));
+    expect(result).toMatchObject({
+      ok: true,
+      score: run.session.getScore(),
+      stage: run.session.getStage(),
+      durationTicks: run.session.getTotalTicks(),
+      gameOverReason: run.session.getGameOverReason(),
     });
   });
 

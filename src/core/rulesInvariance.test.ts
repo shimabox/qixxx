@@ -6,13 +6,14 @@
 // now — one Wisp on stages 1 and 2, so splits start on stage 3 — big claims,
 // close calls, the split reward by the smaller side, the shorter post-miss
 // wait, the marker start drawn from the middles of the four edges from stage
-// 2, the Ember branch chase and Blaze cycle of the table, and the Wisp surge
-// toward each stage's goal). Once a ruleset is published, its baseline must
-// not be edited to make a change pass: a change that alters these runs needs
-// a new ruleset.
+// 2, and the Ember branch chase and Blaze cycle of the table). Once a ruleset
+// is published, its baseline must not be edited to make a change pass: a
+// change that alters these runs needs a new ruleset.
 //
-// What each case covers (every one of them also reaches surge level 2 —
-// checked below — so the pinned runs depend on the surge):
+// What each case covers (every one of them, and every stage 1 run below,
+// ends by stage 5 and so never meets the Wisp surge, which NORMAL has from
+// WISP_SURGE_FIRST_STAGE on — checked below: the level is 0 on every tick;
+// the surge is pinned by its own run, core/surgeRunFixture.ts's, below):
 // - small field, seed 6471: occupancy clears (stages 1 and 2), a split clear
 //   (stage 3), a run past stage 3, gameover, close calls and big claims.
 // - small field, seed 704: occupancy clears (stages 1 and 2), a split clear
@@ -21,16 +22,17 @@
 //   close calls and big claims on the earlier stages too.
 // - small field, seed 3542: occupancy clears (stages 1 and 2), a run to stage
 //   3, gameover, close calls and big claims.
-// - full-size field, seed 3249: a run that ends on stage 1, with fast and
+// - full-size field, seed 3246: a run that ends on stage 1, with fast and
 //   slow claims and close calls, then gameover.
 // No seed tried (1-20000 on the small field) makes the script split two
-// stages in one run, so a single split is the baseline's. Of the twelve
-// seeds that split on the small field (all on stage 3), only 704, 7086,
-// 13061 and 14431 claim anything after the split (on stage 4), and 704 and
-// 7086 with a close call. Between them, the multi-stage cases start their
-// later stages on all four edges.
+// stages in one run, so a single split is the baseline's. Of the fifteen
+// seeds that split on the small field (all on stage 3), only 196, 704, 7058
+// and 18323 claim anything after the split (on stage 4), and 704 alone with
+// a close call. Between them, the multi-stage cases start their later stages
+// on all four edges.
 import { describe, it, expect } from 'vitest';
 import { runScriptedSession, ScriptedRunSummary } from './scriptedRun';
+import { playSurgeRun } from './surgeRunFixture';
 import { RULESET_VERSION } from '../config';
 
 const BASELINE_CASES: ReadonlyArray<{
@@ -64,25 +66,25 @@ const BASELINE_CASES: ReadonlyArray<{
   {
     // Stage 2 starts on the left edge, stage 3 on the top, stage 4 on the bottom.
     // Stage 4 plays at x2 and closes one fast line (56 cells) with a close call
-    // before its last miss: 3632 -> 4088 (see the check below).
+    // before its last miss: 3225 -> 3681 (see the check below).
     name: 'small field, seed 704: occupancy clears, a split clear on stage 3, then a claim at x2 on stage 4',
     options: { seed: 704, fieldWidth: 40, fieldHeight: 30 },
     expected: {
-      score: 4088,
+      score: 3681,
       stage: 4,
       lives: 0,
-      claims: 19,
+      claims: 17,
       misses: 3,
       splits: 1,
-      totalTicks: 1041,
+      totalTicks: 948,
       status: 'gameover',
       gameOverReason: 'life',
       fieldHash: 'ab59bfcd',
-      eventsHash: '4b9471d6',
+      eventsHash: '7eed81e6',
       stages: [
         { stage: 1, score: 1102, lives: 2, totalTicks: 388, fieldHash: '29bf98c5', split: false },
-        { stage: 2, score: 2697, lives: 2, totalTicks: 810, fieldHash: 'c539f47d', split: false },
-        { stage: 3, score: 3632, lives: 2, totalTicks: 856, fieldHash: 'd6009935', split: true },
+        { stage: 2, score: 2290, lives: 1, totalTicks: 810, fieldHash: '90a8649d', split: false },
+        { stage: 3, score: 3225, lives: 1, totalTicks: 856, fieldHash: 'd6009935', split: true },
       ],
     },
   },
@@ -91,7 +93,7 @@ const BASELINE_CASES: ReadonlyArray<{
     name: 'small field, seed 3542: two occupancy clears, then gameover on stage 3',
     options: { seed: 3542, fieldWidth: 40, fieldHeight: 30 },
     expected: {
-      score: 4900,
+      score: 6924,
       stage: 3,
       lives: 0,
       claims: 14,
@@ -101,28 +103,28 @@ const BASELINE_CASES: ReadonlyArray<{
       status: 'gameover',
       gameOverReason: 'life',
       fieldHash: '0a99a54d',
-      eventsHash: '4d395da7',
+      eventsHash: '597e8569',
       stages: [
         { stage: 1, score: 3449, lives: 2, totalTicks: 328, fieldHash: '6c770ecd', split: false },
-        { stage: 2, score: 4900, lives: 1, totalTicks: 749, fieldHash: '0c9c0415', split: false },
+        { stage: 2, score: 6924, lives: 1, totalTicks: 749, fieldHash: 'f4ca768d', split: false },
       ],
     },
   },
   {
-    name: 'full-size field, seed 3249: fast and slow claims on stage 1 until gameover',
-    options: { seed: 3249 },
+    name: 'full-size field, seed 3246: fast and slow claims on stage 1 until gameover',
+    options: { seed: 3246 },
     expected: {
-      score: 5474,
+      score: 6582,
       stage: 1,
       lives: 0,
-      claims: 31,
+      claims: 32,
       misses: 3,
       splits: 0,
-      totalTicks: 5868,
+      totalTicks: 5598,
       status: 'gameover',
       gameOverReason: 'life',
-      fieldHash: 'f9149475',
-      eventsHash: '2159d5f9',
+      fieldHash: '36e7f4ed',
+      eventsHash: 'bba561f9',
       stages: [],
     },
   },
@@ -137,19 +139,18 @@ const STAGE_1_RUNS: ReadonlyArray<{
   whole?: Pick<ScriptedRunSummary, 'score' | 'stage' | 'totalTicks' | 'fieldHash'>;
   stage1?: ScriptedRunSummary['stages'][number];
 }> = [
-  { name: 'full-size field, seed 1', options: { seed: 1 }, whole: { score: 3763, stage: 1, totalTicks: 3823, fieldHash: '2c763fa5' } },
+  { name: 'full-size field, seed 1', options: { seed: 1 }, whole: { score: 4117, stage: 1, totalTicks: 4127, fieldHash: 'b8b7e299' } },
   { name: 'full-size field, seed 42', options: { seed: 42 }, whole: { score: 2419, stage: 1, totalTicks: 2931, fieldHash: '291fe4ed' } },
-  { name: 'full-size field, seed 542', options: { seed: 542 }, whole: { score: 3953, stage: 1, totalTicks: 4190, fieldHash: '4b31ba79' } },
+  { name: 'full-size field, seed 542', options: { seed: 542 }, whole: { score: 3835, stage: 1, totalTicks: 4059, fieldHash: '32e42f91' } },
   {
-    // A run that goes on past stage 1.
-    name: 'small field, seed 1353',
-    options: { seed: 1353, fieldWidth: 40, fieldHeight: 30 },
-    stage1: { stage: 1, score: 2549, lives: 2, totalTicks: 138, fieldHash: 'ab896685', split: false },
+    name: 'small field, seed 1352',
+    options: { seed: 1352, fieldWidth: 40, fieldHeight: 30 },
+    stage1: { stage: 1, score: 1709, lives: 1, totalTicks: 453, fieldHash: '99963735', split: false },
   },
   {
     name: 'small field, seed 839',
     options: { seed: 839, fieldWidth: 40, fieldHeight: 30 },
-    whole: { score: 210, stage: 1, totalTicks: 407, fieldHash: '0c84e8d5' },
+    whole: { score: 210, stage: 1, totalTicks: 404, fieldHash: '0c84e8d5' },
   },
 ];
 
@@ -164,12 +165,52 @@ describe('rule invariance baseline', () => {
     });
   }
 
-  it('reaches Wisp surge level 2 in every case, so every pinned run goes through the surge', () => {
-    for (const { options } of BASELINE_CASES) {
+  it('stays on Wisp surge level 0 on every tick of every case and every stage 1 run, so no pinned run depends on the surge', () => {
+    for (const { options } of [...BASELINE_CASES, ...STAGE_1_RUNS]) {
+      let ticks = 0;
       let highest = 0;
-      runScriptedSession({ ...options, onTick: (session) => (highest = Math.max(highest, session.getGame().getWispSurgeLevel())) });
-      expect(highest, `seed ${options.seed}`).toBe(2);
+      runScriptedSession({
+        ...options,
+        onTick: (session) => {
+          ticks++;
+          highest = Math.max(highest, session.getGame().getWispSurgeLevel());
+        },
+      });
+      expect(ticks, `seed ${options.seed}`).toBeGreaterThan(0);
+      expect(highest, `seed ${options.seed}`).toBe(0);
     }
+  });
+
+  it('full-size field, the stage 6 surge run (core/surgeRunFixture.ts, seed 30): the surge to level 1 and 2 on stage 6, then gameover', () => {
+    // The pinned run that goes through the Wisp surge: occupancy clears
+    // (stages 1 and 2), split clears (stages 3 to 5), then stage 6's claims
+    // raise the level to 1 (tick 1635) and 2 (tick 1908) with play going on,
+    // and the Wisps move sped up until the last life is lost.
+    const run = playSurgeRun();
+    expect(run.rises).toEqual([
+      { stage: 6, tick: 1635, level: 1, status: 'playing' },
+      { stage: 6, tick: 1908, level: 2, status: 'playing' },
+    ]);
+    expect(run.summary).toEqual({
+      score: 115316,
+      stage: 6,
+      lives: 0,
+      claims: 8,
+      misses: 3,
+      splits: 3,
+      totalTicks: 3962,
+      status: 'gameover',
+      gameOverReason: 'life',
+      fieldHash: '52253a09',
+      eventsHash: '8aec297f',
+      stages: [
+        { stage: 1, score: 9893, lives: 3, totalTicks: 149, fieldHash: 'bd011965', split: false },
+        { stage: 2, score: 22018, lives: 3, totalTicks: 475, fieldHash: 'f2e67409', split: false },
+        { stage: 3, score: 26177, lives: 3, totalTicks: 765, fieldHash: 'a7487875', split: true },
+        { stage: 4, score: 42507, lives: 3, totalTicks: 1012, fieldHash: 'a1bec209', split: true },
+        { stage: 5, score: 81539, lives: 3, totalTicks: 1500, fieldHash: '3c6a1a25', split: true },
+      ],
+    });
   });
 
   it("seed 704's pinned stage 4 points are its claim's x1 points doubled", () => {
