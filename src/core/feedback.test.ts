@@ -18,7 +18,7 @@ const SCRIPTED_CASES = [
   { seed: 6471, fieldWidth: 40, fieldHeight: 30 },
   { seed: 704, fieldWidth: 40, fieldHeight: 30 },
   { seed: 3542, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 3246 },
+  { seed: 3249 },
 ];
 
 describe('captureFeedback does not change the run', () => {
@@ -33,7 +33,7 @@ describe('captureFeedback does not change the run', () => {
   it('produces nothing when capture is off: every drain is empty on every tick', () => {
     let ticks = 0;
     runScriptedSession({
-      seed: 1352,
+      seed: 1353,
       fieldWidth: 40,
       fieldHeight: 30,
       onTick: (session) => {

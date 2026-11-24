@@ -192,10 +192,10 @@ function playToGameOver(driver: PausableDriver, pauseAt: number[]): number[] {
 describe('a run paused along the way', () => {
   it('records the same inputs as the unpaused run, which the server verifier accepts with the same score and stage', async () => {
     const verifyReplay = await loadVerifyReplay();
-    // A seed whose scripted run clears stage 1 at tick 3591 and plays stage 2
-    // until tick 6165: one pause comes before the clear, two after stage 2
+    // A seed whose scripted run clears stage 1 at tick 2743 and plays stage 2
+    // until tick 6490: one pause comes before the clear, two after stage 2
     // has begun.
-    const seed = 8;
+    const seed = 421;
 
     const plain = new PausableDriver(new GameSession({ seed, captureFeedback: true }));
     expect(playToGameOver(plain, [])).toEqual([]);

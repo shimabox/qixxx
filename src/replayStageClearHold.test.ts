@@ -85,7 +85,7 @@ describe('ReplayStageClearHold', () => {
 // draw across the field, step along the border, claim a strip at a time.
 // StageClear is confirmed but NOT recorded, exactly as the replay protocol
 // re-supplies it on playback.
-const MULTI_STAGE_SEED = 1981;
+const MULTI_STAGE_SEED = 35012;
 const MULTI_STAGE_STRIP_WIDTH = 4;
 const MULTI_STAGE_FINAL_STAGE = 4;
 
@@ -121,6 +121,29 @@ function recordMultiStageSamples(seed: number): InputSample[] {
     goingDown = !goingDown;
   }
   return samples;
+}
+
+/** The edge every stage of the recording starts on (the marker as the stage begins), in order. */
+function stageStartEdges(seed: number, samples: readonly InputSample[]): string[] {
+  const session = new GameSession({ seed });
+  session.update(CONFIRM);
+  const field = session.getGame().getField();
+  const edge = (): string => {
+    const { x, y } = session.getGame().getMarker().getPosition();
+    if (y === 0) return 'top';
+    if (y === field.getHeight() - 1) return 'bottom';
+    if (x === 0) return 'left';
+    return x === field.getWidth() - 1 ? 'right' : 'inside';
+  };
+  const edges = [edge()];
+  for (const sample of samples) {
+    session.update({ ...sample, confirm: false });
+    if (session.getStatus() === 'stageclear') {
+      session.update(CONFIRM);
+      edges.push(edge());
+    }
+  }
+  return edges;
 }
 
 /** The leading samples of `samples` up to and including the one that clears stage 1 — a recording cut off on a StageClear. */
@@ -205,6 +228,9 @@ describe('STAGE CLEAR hold leaves replay playback unchanged', () => {
     expect(held.holds).toBe(MULTI_STAGE_FINAL_STAGE - 1);
     expect(held.heldTicks).toBe(HOLD_TICKS * (MULTI_STAGE_FINAL_STAGE - 1));
     expect(plain.heldTicks).toBe(0);
+    // The later stages start on the top edge and on the bottom one, so the
+    // replay reproduces random stage starts on more than one edge.
+    expect(stageStartEdges(MULTI_STAGE_SEED, samples)).toEqual(['top', 'top', 'bottom', 'bottom']);
 
     // Every recorded sample is consumed, once, in both.
     expect(held.steps).toBe(samples.length);
