@@ -136,6 +136,31 @@ describe('EXPORT', () => {
     expect(exportOf(second).EMBER_FIRST_SPAWN_SEC).toBe(8);
   });
 
+  it('exports the Wisps’ own speed multiplier while the surge has them moving faster, and says the surge applies on top on NORMAL', () => {
+    const session = new GameSession({ seed: 5 });
+    session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+    // A small box from the middle of the top edge, then a goal low enough to
+    // put that occupancy within the final margin.
+    for (const [dx, dy] of [[0, 1], [0, 1], [1, 0], [1, 0], [0, -1], [0, -1]] as const) {
+      session.update({ dx, dy, drawHeld: true, confirm: false });
+    }
+    session.applyDebugOverrides({ requiredOccupancy: session.getGame().getOccupancy() * 1.5, wispSpeedMultiplier: 2 });
+    expect(session.getGame().getWispSurgeLevel()).toBe(2);
+    expect(session.getGame().getWisps().map((w) => w.getSpeedMultiplier())).toEqual([2.6]);
+    const payload = buildExportPayload(
+      session.getEffectiveDebugParams(),
+      session.getTimeLimitTicks(),
+      undefined,
+      undefined,
+      session.getDebugOverrides(),
+      session.getStage()
+    ) as Record<string, unknown> & { _notes: Record<string, string> };
+    expect(payload.WISP_SPEED_MULTIPLIER).toBe(2);
+    const note = payload._notes.WISP_SPEED_MULTIPLIER;
+    expect(note).toContain('NORMAL');
+    expect(note).toContain('WISP_SURGE_MULTIPLIERS');
+  });
+
   it('exported on stage 18, has 10 Wisps and says how the count past the table is made', () => {
     const session = sessionAtStage(18, { seed: 1 });
     // Back to the stage's own values: the walk on lowered every goal.
