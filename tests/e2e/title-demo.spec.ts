@@ -19,6 +19,8 @@ interface DemoProbe {
   ticks: number | null;
   marker: { x: number; y: number } | null;
   veil: number;
+  status: string | null;
+  surgeLevel: number | null;
 }
 
 interface LiveProbe {
@@ -220,7 +222,7 @@ async function recordSounds(page: Page): Promise<void> {
     const sounds: string[] = [];
     window.__demoSounds__ = sounds;
     const sfx = (window as unknown as { __game__: { sfx: Record<string, (...args: unknown[]) => unknown> } }).__game__.sfx;
-    for (const name of ['handleEvents', 'playClaim', 'playSplitImpact', 'playTimeWarning']) {
+    for (const name of ['handleEvents', 'playClaim', 'playSplitImpact', 'playTimeWarning', 'playWispSurge']) {
       const original = sfx[name].bind(sfx);
       sfx[name] = (...args: unknown[]) => {
         const events = args[0];
@@ -290,7 +292,29 @@ test.describe('title demo', () => {
     expect(text).not.toContain(SECRET_NAME);
     expect(text).not.toContain(SECRET_HANDLE);
     expect(text).not.toContain('#1');
-    // And not a sound.
+
+    // The demo run's claims raise the Wisp surge level with its stage still
+    // playing (a new stage starts on level 0, and a run that ended would not
+    // read 'playing'): level 1, then level 2. Its Wisp heads take the level's
+    // color, and no surge ring is drawn.
+    const surgeLevelWhilePlaying = async (level: number) => {
+      const now = await demo(page);
+      return now.shown && now.status === 'playing' && now.surgeLevel === level;
+    };
+    const surgeDraw = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __game__: { getWispSurgeDraw: () => { rings: unknown[]; headColors: string[] } } }).__game__.getWispSurgeDraw()
+      );
+    await advanceUntil(page, () => surgeLevelWhilePlaying(1), 10_000);
+    await page.clock.runFor(FRAME_MS * 2);
+    expect(await surgeLevelWhilePlaying(1)).toBe(true);
+    expect(await surgeDraw()).toEqual({ rings: [], headColors: ['#ff6ad5'] });
+    await advanceUntil(page, () => surgeLevelWhilePlaying(2), 10_000);
+    await page.clock.runFor(FRAME_MS * 2);
+    expect(await surgeDraw()).toEqual({ rings: [], headColors: ['#ff3d81'] });
+
+    // And not a sound, the surge's included.
     expect(await page.evaluate(() => window.__demoSounds__)).toEqual([]);
   });
 
