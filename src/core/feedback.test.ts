@@ -13,10 +13,12 @@ import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MI
 
 const SCRIPTED_CASES = [
   // The rule invariance cases (core/rulesInvariance.test.ts): each has close
-  // calls and big claims.
-  { seed: 3627, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 5481, fieldWidth: 40, fieldHeight: 30 },
-  { seed: 120 },
+  // calls, the small-field ones big claims too, 6471 and 704 a split clear,
+  // and 704 a claim at the multiplier that split carried into the next stage.
+  { seed: 6471, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 704, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 3542, fieldWidth: 40, fieldHeight: 30 },
+  { seed: 3246 },
 ];
 
 describe('captureFeedback does not change the run', () => {
@@ -46,16 +48,21 @@ describe('captureFeedback does not change the run', () => {
     expect(ticks).toBeGreaterThan(100);
   });
 
-  it('forwards one claim notice per area-claimed and one miss notice per miss when capture is on', () => {
+  it('forwards one claim notice per area-claimed and one miss notice per miss when capture is on, a split clear included', () => {
+    // 6471 clears stage 3 with a split (the first stage with two Wisps), so
+    // the split's claim is among those counted.
     let claims = 0;
     let misses = 0;
+    let splitClearNotices = 0;
     const summary = runScriptedSession({
-      seed: 839,
+      seed: 6471,
       fieldWidth: 40,
       fieldHeight: 30,
       captureFeedback: true,
       onTick: (session) => {
-        claims += session.drainClaimFeedback().length;
+        const notices = session.drainClaimFeedback();
+        claims += notices.length;
+        splitClearNotices += notices.filter((n) => n.split && n.stageCleared).length;
         misses += session.drainMissFeedback().length;
       },
     });
@@ -63,6 +70,35 @@ describe('captureFeedback does not change the run', () => {
     expect(misses).toBe(summary.misses);
     expect(claims).toBeGreaterThan(0);
     expect(misses).toBeGreaterThan(0);
+    expect(summary.splits).toBeGreaterThan(0);
+    expect(splitClearNotices).toBe(summary.splits);
+    expect(summary.stages.find((s) => s.split)?.stage).toBe(3);
+  });
+
+  it("reports a claim on the stage after a split clear at the carried multiplier: seed 704's one stage 4 claim is x2", () => {
+    // 704 clears stage 3 with a split and then, on stage 4 at x2, closes one
+    // 56-cell fast line with a close call before its GAME OVER. At x1 that is
+    // 56 x 0.5 = 28 area points and a 200 close-call bonus; the notice must
+    // carry both doubled, not the x1 values.
+    const stage4: ClaimFeedback[] = [];
+    const summary = runScriptedSession({
+      seed: 704,
+      fieldWidth: 40,
+      fieldHeight: 30,
+      captureFeedback: true,
+      onTick: (session) => {
+        const notices = session.drainClaimFeedback();
+        if (session.getStage() === 4) stage4.push(...notices);
+        session.drainMissFeedback();
+      },
+    });
+    expect(summary.stage).toBe(4);
+    expect(summary.stages.map((s) => s.split)).toEqual([false, false, true]);
+    expect(stage4).toHaveLength(1);
+    expect(stage4[0]).toMatchObject({ claimedCells: 56, lineSpeed: 'fast', bigClaim: false, areaScore: 56, nearMissBonus: 400, stageClearBonus: 0 });
+    // The run's points on stage 4 are exactly that one notice.
+    expect(summary.score - summary.stages[2].score).toBe(stage4[0].areaScore + stage4[0].nearMissBonus);
+    expect(summary.score - summary.stages[2].score).toBe(456);
   });
 
   it('accounts for every point: per tick, the score rises by the notices areaScore and close-call bonus plus the excess-occupancy bonus', () => {

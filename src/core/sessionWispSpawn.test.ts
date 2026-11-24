@@ -18,28 +18,28 @@ import {
 
 const positions = (session: GameSession): Point[] => session.getGame().getWisps().map((w) => w.getPosition());
 
-describe('GameSession — stage 1 Wisps are where they were before the start was randomized', () => {
-  // Captured from the build before stage starts were randomized. Stage 1
-  // still starts at the top middle, so not one of these may move — on the
-  // default field, and on a 49-wide one where the push away from the start
-  // column (24 +/- 15) leaves the spawn area (x in [9.8, 39.2]) on the left.
-  const BEFORE: ReadonlyArray<{ seed: number; width?: number; height?: number; wisps: Point[] }> = [
-    { seed: 1, wisps: [{ x: 121, y: 50 }, { x: 124, y: 50 }] },
-    { seed: 3, wisps: [{ x: 52, y: 64 }, { x: 55, y: 64 }] },
-    { seed: 42, wisps: [{ x: 118, y: 39 }, { x: 121, y: 39 }] },
-    { seed: 542, wisps: [{ x: 40, y: 60 }, { x: 43, y: 60 }] },
-    { seed: 9999, wisps: [{ x: 104, y: 52 }, { x: 107, y: 52 }] },
+describe("GameSession — stage 1's Wisp is where the seed puts it", () => {
+  // Stage 1 always starts at the top middle and has one Wisp, so a seed puts
+  // that Wisp in one fixed place, pinned here — on the default field, and on
+  // a 49-wide one where the push away from the start column (24 +/- 15)
+  // leaves the spawn area (x in [9.8, 39.2]) on the left.
+  const STAGE_1: ReadonlyArray<{ seed: number; width?: number; height?: number; wisps: Point[] }> = [
+    { seed: 1, wisps: [{ x: 122, y: 50 }] },
+    { seed: 3, wisps: [{ x: 53, y: 64 }] },
+    { seed: 42, wisps: [{ x: 119, y: 39 }] },
+    { seed: 542, wisps: [{ x: 41, y: 60 }] },
+    { seed: 9999, wisps: [{ x: 105, y: 52 }] },
     // These two draw a center near the start column, so it is pushed away (left, then right).
-    { seed: 10, wisps: [{ x: 64, y: 87 }, { x: 67, y: 87 }] },
-    { seed: 12, wisps: [{ x: 94, y: 65 }, { x: 97, y: 65 }] },
-    { seed: 1, width: 49, height: 30, wisps: [{ x: 38, y: 13 }, { x: 41, y: 13 }] },
-    { seed: 3, width: 49, height: 30, wisps: [{ x: 8, y: 16 }, { x: 11, y: 16 }] },
-    { seed: 42, width: 49, height: 30, wisps: [{ x: 38, y: 10 }, { x: 41, y: 10 }] },
-    { seed: 120, width: 49, height: 30, wisps: [{ x: 8, y: 15 }, { x: 11, y: 15 }] },
-    { seed: 1352, width: 49, height: 30, wisps: [{ x: 38, y: 9 }, { x: 41, y: 9 }] },
+    { seed: 10, wisps: [{ x: 65, y: 87 }] },
+    { seed: 12, wisps: [{ x: 95, y: 65 }] },
+    { seed: 1, width: 49, height: 30, wisps: [{ x: 39, y: 13 }] },
+    { seed: 3, width: 49, height: 30, wisps: [{ x: 9, y: 16 }] },
+    { seed: 42, width: 49, height: 30, wisps: [{ x: 39, y: 10 }] },
+    { seed: 120, width: 49, height: 30, wisps: [{ x: 9, y: 15 }] },
+    { seed: 1352, width: 49, height: 30, wisps: [{ x: 39, y: 9 }] },
   ];
 
-  for (const { seed, width, height, wisps } of BEFORE) {
+  for (const { seed, width, height, wisps } of STAGE_1) {
     it(`seed ${seed} on ${width ?? GRID_WIDTH}x${height ?? GRID_HEIGHT}`, () => {
       const session = new GameSession({ seed, fieldWidth: width, fieldHeight: height });
       expect(session.getMarkerStart()!.point).toEqual({ x: Math.floor((width ?? GRID_WIDTH) / 2), y: 0 });

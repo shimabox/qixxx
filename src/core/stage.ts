@@ -9,6 +9,7 @@ import {
   EMBER_BRANCH_CHASE_PROBABILITY,
   EMBER_BRANCH_CHASE_PROBABILITY_MAX,
   EMBER_BRANCH_CHASE_MAX_STAGE,
+  LATE_STAGE_WISP_COUNT_MAX,
 } from '../config';
 
 export interface StageConfig {
@@ -26,7 +27,7 @@ export interface StageConfig {
   firstEmberSpawnTicks: number;
   /** Ticks per BORDER-cell step for every Ember (smaller is faster). */
   emberMoveTicks: number;
-  /** Branch-chase probability [0,1] for every Ember (0.7 at stage 1 -> 1.0 by stage 10). */
+  /** Branch-chase probability [0,1] for every Ember (0.7 at stage 1 -> 1.0 by stage 4). */
   emberBranchChaseProbability: number;
   /** Max Embers allowed alive at once before spawning is skipped. */
   maxConcurrentEmbers: number;
@@ -34,14 +35,15 @@ export interface StageConfig {
   requiredOccupancy: number;
 }
 
-/** The STAGE_TABLE row a stage plays: `stage` normalized to >= 1 and integral, past the last row the last row. */
+/** A stage number normalized to >= 1 and integral. */
 export function normalizeStage(stage: number): number {
   return Math.max(1, Math.floor(stage));
 }
 
 /**
  * Difficulty parameters for a given stage number: the stage's STAGE_TABLE
- * row (every stage past the table plays its last row). The branch-chase
+ * row. Every stage past the table plays its last row, with one more Wisp per
+ * stage past it, up to LATE_STAGE_WISP_COUNT_MAX. The branch-chase
  * probability alone is interpolated, linearly from stage 1 to
  * EMBER_BRANCH_CHASE_MAX_STAGE and held there after it.
  *
@@ -52,11 +54,14 @@ export function getStageConfig(stage: number): StageConfig {
   const s = normalizeStage(stage);
   const row = STAGE_TABLE[Math.min(s, STAGE_TABLE.length) - 1];
   const chaseProgress = (Math.min(s, EMBER_BRANCH_CHASE_MAX_STAGE) - 1) / (EMBER_BRANCH_CHASE_MAX_STAGE - 1);
+  const stagesPastTable = Math.max(0, s - STAGE_TABLE.length);
+  const wispCount =
+    stagesPastTable > 0 ? Math.min(row.wispCount + stagesPastTable, LATE_STAGE_WISP_COUNT_MAX) : row.wispCount;
 
   return {
     stage: s,
     titleId: row.titleId,
-    wispCount: row.wispCount,
+    wispCount,
     wispSpeedMultiplier: row.wispSpeedMultiplier,
     emberSpawnIntervalTicks: secondsToTicks(row.emberSpawnIntervalSec),
     firstEmberSpawnTicks: secondsToTicks(row.firstEmberSec),

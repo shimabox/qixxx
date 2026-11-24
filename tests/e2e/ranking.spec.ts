@@ -230,14 +230,14 @@ function recordShortReplay(seed: number, timeLimitTicks: number): string {
 //
 // Produced by a serpentine that repeatedly draws across the field and steps
 // along the border, claiming a strip at a time until the stage's required
-// occupancy is met. Seed 7956 was chosen by scanning seeds headlessly for one
+// occupancy is met. Seed 1981 was chosen by scanning seeds headlessly for one
 // whose well-formed replay reaches FOUR stages under ruleset 2 with a long
-// way between them: stage 2 begins at tick 857 and the last at tick 2294 of
-// a 2647-tick run, so a skip — from the start or from the first STAGE CLEAR
-// — takes several chunks of real work. Stages 2 and 3 start on the bottom
-// edge and stage 4 on the left, so the replay also reproduces random stage
+// way between them: stage 2 begins at tick 857 and the last at tick 2155 of
+// a 2383-tick run, so a skip — from the start or from the first STAGE CLEAR
+// — takes several chunks of real work. Stages 2 and 4 start on the bottom
+// edge and stage 3 on the top, so the replay also reproduces random stage
 // starts.
-const MULTI_STAGE_SEED = 7956;
+const MULTI_STAGE_SEED = 1981;
 const MULTI_STAGE_STRIP_WIDTH = 4;
 const MULTI_STAGE_FINAL_STAGE = 4;
 
@@ -1303,7 +1303,7 @@ test.describe('replay viewing', () => {
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
 
     // The replay starts on stage 1; the skip must actually carry it to the
-    // replay's final stage (boundary tick ~1191), which is only observable
+    // replay's final stage (boundary tick ~2155), which is only observable
     // because this fixture spans several stages. The HUD reflects whichever
     // session is being rendered, so during replay it shows the replay's.
     await expect(page.locator('#hud')).toContainText('STAGE 1');
@@ -1387,7 +1387,7 @@ test.describe('replay viewing', () => {
     await page.getByRole('button', { name: 'REPLAY' }).click();
     await expect(page.getByRole('button', { name: 'EXIT' })).toBeVisible();
 
-    // Skip to the final stage so the remaining ~100 ticks of playback reach
+    // Skip to the final stage so the remaining ~230 ticks of playback reach
     // the end of the run within the test's patience.
     await page.getByRole('button', { name: 'SKIP TO FINAL STAGE' }).click();
     await expect(page.getByRole('button', { name: 'SKIPPING...' })).toBeHidden({ timeout: 20_000 });
@@ -1700,7 +1700,7 @@ test.describe('replay viewing', () => {
     // Both clicks in ONE evaluate, deliberately: the skip runs its first
     // chunk synchronously and then awaits a macrotask, so an EXIT dispatched
     // in the same task lands strictly *between* chunks. Two separate
-    // Playwright clicks are milliseconds apart, by which time this ~2294-tick
+    // Playwright clicks are milliseconds apart, by which time this ~2155-tick
     // skip has already finished — i.e. the abort path would never be reached
     // and the test would pass without testing anything.
     await page.evaluate(() => {

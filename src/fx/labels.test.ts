@@ -35,8 +35,8 @@ describe('the stage title', () => {
     expect(FX_STAGE_TITLE_TICKS).toBe(60);
     const fx = new FxDirector(createDefaultFxParams());
     expect(fx.getFrame().stageTitle).toBeNull();
-    fx.onStageStart('STAGE 3', 'TRIO');
-    expect(fx.getFrame().stageTitle).toMatchObject({ heading: 'STAGE 3', title: 'TRIO', age: 0 });
+    fx.onStageStart('STAGE 3', 'FAST PAIR');
+    expect(fx.getFrame().stageTitle).toMatchObject({ heading: 'STAGE 3', title: 'FAST PAIR', age: 0 });
     for (let i = 1; i < FX_STAGE_TITLE_TICKS; i++) {
       fx.tick();
       expect(fx.getFrame().stageTitle?.age, `tick ${i}`).toBe(i);
@@ -65,7 +65,7 @@ describe('the stage title', () => {
 
   it('stays through the board change of the stage it opens, and goes with a reset', () => {
     const fx = new FxDirector(createDefaultFxParams());
-    fx.onStageStart('STAGE 2', 'FAST PAIR');
+    fx.onStageStart('STAGE 2', 'SPRINTER');
     fx.resetBoard();
     expect(fx.getFrame().stageTitle).not.toBeNull();
     fx.reset();

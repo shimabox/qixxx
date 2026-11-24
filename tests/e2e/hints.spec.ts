@@ -341,7 +341,7 @@ test.describe('RESET HINTS (?debug)', () => {
 });
 
 // A board on which the script below claims twice and meets the Igniter with
-// stage 1's two Wisps clear of its lines.
+// stage 1's Wisp clear of its lines.
 const SCRIPT_SEED = 2;
 
 test.describe('the hints do not change the run', () => {

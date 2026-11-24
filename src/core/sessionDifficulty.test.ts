@@ -46,7 +46,7 @@ function loseOneLife(session: GameSession): void {
 }
 
 describe('GameSession — an EASY run', () => {
-  it('moves every stage’s Wisps, 1 to 16, at the table speed times EASY_WISP_SPEED_FACTOR (16 on the table’s last row)', () => {
+  it('moves every stage’s Wisps, 1 to 16, at the table speed times EASY_WISP_SPEED_FACTOR, as many as NORMAL’s (16 past the table’s last row)', () => {
     const easy = sessionAtStage(1, { seed: 5, difficulty: 'easy' });
     const normal = sessionAtStage(1, { seed: 5 });
     for (let stage = 1; stage <= 16; stage++) {
@@ -63,7 +63,11 @@ describe('GameSession — an EASY run', () => {
         }
       }
     }
-    expect({ ...getStageConfig(16), stage: 0 }).toEqual({ ...getStageConfig(99), stage: 0 });
+    // Past the table only the Wisp count still rises (8 on stage 16, held at
+    // 10 from stage 18); every other value is the same on 16 and 99.
+    expect(getStageConfig(16).wispCount).toBe(8);
+    expect(getStageConfig(99).wispCount).toBe(10);
+    expect({ ...getStageConfig(16), stage: 0, wispCount: 0 }).toEqual({ ...getStageConfig(99), stage: 0, wispCount: 0 });
   });
 
   it('starts every stage, 1 to 16, at the middle of the top edge and never draws the start from the rng', () => {

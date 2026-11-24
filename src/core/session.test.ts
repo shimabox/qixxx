@@ -350,26 +350,28 @@ describe('GameSession — real stage progression difficulty (M4/M12, docs/plan.m
   }
 
   it("spawns each stage's wispCount from the stage table, via the real (non-test-hook) per-stage builder", () => {
-    // Stages 1 and 2 have 2 Wisps, stage 3 has 3. Every Wisp heads left
+    // Stages 1 and 2 have 1 Wisp, stage 3 has 2. Every Wisp heads left
     // (rng 0.5), the first of them leading, so walling off the first one with
     // a 25-cell margin walls off them all.
     const session = new GameSession({ fieldWidth: FIELD_WIDTH, fieldHeight: FIELD_HEIGHT, rng: () => 0.5 });
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 1, playing
     expect(session.getStage()).toBe(1);
     expect(session.getGame().getWisps().length).toBe(getStageConfig(1).wispCount);
-    expect(session.getGame().getWisps().length).toBe(2);
+    expect(session.getGame().getWisps().length).toBe(1);
 
     clearByWallingOffTheWisp(session);
     expect(session.getStatus()).toBe('stageclear');
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 2
     expect(session.getStage()).toBe(2);
-    expect(session.getGame().getWisps().length).toBe(2);
+    expect(session.getGame().getWisps().length).toBe(getStageConfig(2).wispCount);
+    expect(session.getGame().getWisps().length).toBe(1);
 
     clearByWallingOffTheWisp(session);
     expect(session.getStatus()).toBe('stageclear');
     session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true }); // -> stage 3
     expect(session.getStage()).toBe(3);
-    expect(session.getGame().getWisps().length).toBe(3);
+    expect(session.getGame().getWisps().length).toBe(getStageConfig(3).wispCount);
+    expect(session.getGame().getWisps().length).toBe(2);
   });
 });
 

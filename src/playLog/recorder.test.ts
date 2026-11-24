@@ -169,7 +169,7 @@ function runRecorded(options: { seed: number; timeLimitTicks?: number }) {
 
 describe('PlayLogRecorder on a real GameSession', () => {
   it('a run lost on lives: the record matches the session', () => {
-    const { session, record, claimNotices, livesLost, clearedStages } = runRecorded({ seed: 1352 });
+    const { session, record, claimNotices, livesLost, clearedStages } = runRecorded({ seed: 6471 });
     expect(session.getGameOverReason()).toBe('life');
     expect(record.end).toBe('life');
     expect(record.stage).toBe(session.getStage());
@@ -182,14 +182,15 @@ describe('PlayLogRecorder on a real GameSession', () => {
     expect(misses).toBe(livesLost);
     expect(record.stages.filter((s) => s.cleared).length).toBe(clearedStages);
     expect(record.stages[record.stages.length - 1].cleared).toBe(false);
-    // This seed clears stage 1 by a split.
+    // This seed clears stages 1 and 2 by occupancy and stage 3 by a split.
     expect(record.stages.reduce((n, s) => n + s.splits, 0)).toBeGreaterThan(0);
+    expect(record.stages.find((s) => s.stage === 3)?.splits).toBeGreaterThan(0);
     // Every playing tick plus each STAGE CLEAR's confirm tick.
     expect(record.ticks).toBe(session.getTotalTicks() + clearedStages);
   });
 
   it('a run that runs out of time: the record matches the session', () => {
-    const { session, record, claimNotices, livesLost } = runRecorded({ seed: 1352, timeLimitTicks: 500 });
+    const { session, record, claimNotices, livesLost } = runRecorded({ seed: 6471, timeLimitTicks: 500 });
     expect(session.getGameOverReason()).toBe('time');
     expect(record.end).toBe('time');
     expect(record.stage).toBe(session.getStage());

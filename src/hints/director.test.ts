@@ -3,6 +3,7 @@ import { HintDirector, type HintStep, type HintView, type HintId } from './direc
 import { HintSeenStore, type StorageLike } from '../storage/hints';
 import type { GameEvent } from '../core/events';
 import type { LineSpeed } from '../core/claim';
+import { getStageConfig } from '../core/stage';
 import {
   HINT_TIMED_TICKS,
   HINT_SPLIT_TICKS,
@@ -240,25 +241,43 @@ describe('HintDirector: split', () => {
     expect(h.step({ stageStart: 'run', wispCount: 1 })).toBeNull();
   });
 
-  it("is not shown at the start of a run's first stage, even with two Wisps", () => {
+  it("is not shown at the start of a run's first stage, even one with two Wisps", () => {
     const h = new Harness(['draw']);
     expect(h.step({ stageStart: 'run', wispCount: 2 })).toBeNull();
     expect(h.run(HINT_SPLIT_TICKS + HINT_QUEUE_MAX_WAIT_TICKS)).toBeNull();
     expect(h.store.has('split')).toBe(false);
-    // The next stage's start brings it.
+    // A later stage's start with two Wisps brings it.
     expect(h.step({ stageStart: 'stage', wispCount: 2 })?.id).toBe('split');
   });
 
-  it('lets a first run start with how to draw, and shows split at the next stage', () => {
+  it('lets a first run start with how to draw, and shows split at the first later stage with two Wisps', () => {
     const h = new Harness();
-    expect(h.startRun(2)?.id).toBe('draw');
+    expect(h.startRun(1)?.id).toBe('draw');
     h.run(30);
     expect(h.view?.id).toBe('draw');
     h.claim();
     expect(h.view?.id).toBe('claimSide');
     h.run(HINT_TIMED_TICKS);
     h.step({ playing: false }); // STAGE CLEAR
+    // Stage 2 (one Wisp): no split hint.
+    expect(h.step({ stageStart: 'stage', wispCount: 1 })?.id).not.toBe('split');
+    expect(h.store.has('split')).toBe(false);
+    h.step({ playing: false }); // STAGE CLEAR
+    // Stage 3 (two Wisps) brings it.
     expect(h.step({ stageStart: 'stage', wispCount: 2 })?.id).toBe('split');
+  });
+
+  it("first comes at stage 3's start with the stage table's Wisp counts", () => {
+    const h = new Harness(['draw', 'claimSide', 'slow', 'ember', 'blaze', 'igniter']);
+    expect(getStageConfig(1).wispCount).toBe(1);
+    expect(getStageConfig(2).wispCount).toBe(1);
+    expect(getStageConfig(3).wispCount).toBe(2);
+    expect(h.startRun(getStageConfig(1).wispCount)).toBeNull();
+    h.step({ playing: false }); // STAGE CLEAR
+    expect(h.step({ stageStart: 'stage', wispCount: getStageConfig(2).wispCount })).toBeNull();
+    expect(h.store.has('split')).toBe(false);
+    h.step({ playing: false }); // STAGE CLEAR
+    expect(h.step({ stageStart: 'stage', wispCount: getStageConfig(3).wispCount })?.id).toBe('split');
   });
 });
 

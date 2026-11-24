@@ -58,7 +58,7 @@ describe('verifyReplay', () => {
     // The scripted comb (core/scriptedRun.ts) on the full-size field: it
     // clears two stages on this seed, and its lines pass close to the Wisps
     // and take big areas, so the score holds every new kind of point.
-    const seed = 542;
+    const seed = 1677;
     const session = new GameSession({ seed, captureFeedback: true });
     session.update(CONFIRM);
     const script = buildStageScript(GRID_WIDTH, GRID_HEIGHT);
@@ -88,7 +88,73 @@ describe('verifyReplay', () => {
       session.drainMissFeedback();
     }
     expect(session.getStatus()).toBe('gameover');
-    expect(session.getStage()).toBeGreaterThanOrEqual(2);
+    expect(session.getStage()).toBeGreaterThanOrEqual(3);
+    expect(closeCalls).toBeGreaterThan(0);
+    expect(bigClaims).toBeGreaterThan(0);
+
+    const result = verifyReplay(seed, encodeRle(samples));
+    expect(result).toMatchObject({
+      ok: true,
+      score: session.getScore(),
+      stage: session.getStage(),
+      durationTicks: session.getTotalTicks(),
+      gameOverReason: session.getGameOverReason(),
+    });
+  });
+
+  it('accepts a run that clears stages 3 and 4 with splits and carries the multiplier on, with the same score and stage', () => {
+    // A serpentine on the full-size field: lines straight across from edge to
+    // edge, then four cells along the border. The comb above never splits on
+    // this field; this one splits on this seed where splits first can (stage
+    // 3, the first with two Wisps) and again on stage 4, so the server has to
+    // follow the split clears and the raised multiplier the next stages play at.
+    const seed = 23903;
+    const session = new GameSession({ seed, captureFeedback: true });
+    session.update(CONFIRM);
+    const samples: InputSample[] = [];
+    const splitClearStages: number[] = [];
+    const multiplierAtStageStart: Record<number, number> = { 1: session.getMultiplier() };
+    let claimsAfterSplit = 0;
+    let closeCalls = 0;
+    let bigClaims = 0;
+    const step = (dx: Axis, dy: Axis, drawHeld: boolean): void => {
+      const input: InputSample = { dx, dy, drawHeld, slow: false };
+      session.update({ ...input, confirm: false });
+      samples.push(input);
+      for (const notice of session.drainClaimFeedback()) {
+        if (notice.split && notice.stageCleared) splitClearStages.push(session.getStage());
+        if (notice.multiplier > 1) claimsAfterSplit++;
+        if (notice.nearMissBonus > 0) closeCalls++;
+        if (notice.bigClaim) bigClaims++;
+      }
+      session.drainMissFeedback();
+    };
+    const height = session.getGame().getField().getHeight();
+    let goingDown = true;
+    let guard = 0;
+    while (session.getStatus() !== 'gameover' && guard++ < 12_000) {
+      if (session.getStatus() === 'stageclear') {
+        session.update(CONFIRM);
+        multiplierAtStageStart[session.getStage()] = session.getMultiplier();
+        continue;
+      }
+      const targetY = goingDown ? height - 1 : 0;
+      let crossing = 0;
+      while (session.getStatus() === 'playing' && session.getGame().getMarker().getPosition().y !== targetY && crossing++ < height + 5) {
+        step(0, goingDown ? 1 : -1, true);
+      }
+      for (let i = 0; i < 4 && session.getStatus() === 'playing'; i++) step(1, 0, false);
+      goingDown = !goingDown;
+    }
+    expect(session.getStatus()).toBe('gameover');
+    expect(splitClearStages).toEqual([3, 4]);
+    expect(session.getStage()).toBe(5);
+    // Stages 1 to 3 start at x1; each split raises the next stage's multiplier.
+    expect(multiplierAtStageStart[3]).toBe(1);
+    expect(multiplierAtStageStart[4]).toBeGreaterThan(multiplierAtStageStart[3]);
+    expect(multiplierAtStageStart[5]).toBeGreaterThan(multiplierAtStageStart[4]);
+    // Points were scored at the raised multiplier, so the score depends on it.
+    expect(claimsAfterSplit).toBeGreaterThan(0);
     expect(closeCalls).toBeGreaterThan(0);
     expect(bigClaims).toBeGreaterThan(0);
 
