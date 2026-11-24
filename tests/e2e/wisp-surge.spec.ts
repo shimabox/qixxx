@@ -28,10 +28,12 @@
 // debug panel's RESET HINTS) as it confirms stage 5's clear, so stage 6, the
 // next with two Wisps, starts with the split hint: its line on the hint bar
 // and its ring around every Wisp. The same boxes, from the stage's start,
-// then raise the level while that ring shows: the two rings' radii and line
-// widths, as drawn, never meet, with full and with reduced motion. The hint
-// line shows with them and may lie over a part of the ring: it stays whole
-// and on top, and most of the ring stays in sight around it.
+// then raise the level while that ring and the stage title show: the two
+// rings' radii and line widths, as drawn, never meet, with full and with
+// reduced motion, and the surge ring keeps clear of the title. The hint line
+// shows with them and, on each screen's own seed, lies over a part of the
+// ring on some frames: it stays whole and on top, and most of the ring stays
+// in sight around it.
 import { test, expect, type Page } from '@playwright/test';
 import { advanceUntil } from './support/fakeClock';
 import { installFakeAudio } from './support/fakeAudio';
@@ -116,8 +118,8 @@ const CANVAS_H = GRID_HEIGHT * RENDER_SCALE;
 // The stage the surge is checked on: the first NORMAL stage it applies on.
 const SURGE_STAGE = 6;
 // The cue does not depend on the seed. On this one, stage 6's two Wisps keep
-// to the middle of the field while it shows, with either box timing below,
-// and well apart (over 35 cells): each ring is drawn on the field clear of
+// to the middle of the field while it shows, with the box timing below, and
+// well apart (over 35 cells): each ring is drawn on the field clear of
 // the hint line (which keeps away from the marker, not from the Wisps, and
 // on the smallest screens covers a quarter of the field's height), and
 // neither Wisp's head or rings come near the other's.
@@ -127,10 +129,25 @@ const FIRST_BOX_AT = FX_STAGE_TITLE_TICKS + 10;
 const BOX_TICKS = { firstBoxAt: FIRST_BOX_AT, goalAt: FIRST_BOX_AT + 8, secondBoxAt: FIRST_BOX_AT + 10 };
 const SECOND_BOX_AT = BOX_TICKS.secondBoxAt;
 const SURGE_CLAIM_STAGE_TICK = SECOND_BOX_AT + 6;
-// With the split hint: the boxes start early enough for the whole cue (the
-// claim at stage tick 52, then WISP_SURGE_CUE_TICKS) to show while the
+// With the split hint, each screen's seed and first box: the hint line lies
+// over the field on all four (at its top, 6% down, while the marker is in
+// the field's lower part, else at its bottom), so on each one a Wisp's surge
+// ring must pass under it. These seeds start stage 6 on a side or the top
+// edge, so the line is at the bottom, and a Wisp nears it as the ring shows,
+// clear of the stage title and over 20 cells from the other Wisp. The line's
+// height differs from screen to screen (one row at 1280x800, more where the
+// field is small), so the screens need their own runs for a ring that dips
+// under it and still shows for the most part. The boxes start early enough
+// for the cue (the claim 16 ticks after the first box starts) to start while
+// the stage title shows, and to show whole (WISP_SURGE_CUE_TICKS) while the
 // hint's ring does (its first HINT_RING_TICKS).
-const HINT_BOX_TICKS = { firstBoxAt: 36, goalAt: 44, secondBoxAt: 46 };
+const HINT_RUNS: Record<string, { seed: number; firstBoxAt: number }> = {
+  '1280x800': { seed: 161, firstBoxAt: 24 },
+  '390x844': { seed: 188, firstBoxAt: 24 },
+  '844x390': { seed: 188, firstBoxAt: 24 },
+  '667x375': { seed: 902, firstBoxAt: 18 },
+};
+const hintBoxTicks = (firstBoxAt: number) => ({ firstBoxAt, goalAt: firstBoxAt + 8, secondBoxAt: firstBoxAt + 10 });
 
 const hook = (): Hook => (window as unknown as { __game__: Hook }).__game__;
 
@@ -138,12 +155,13 @@ const hook = (): Hook => (window as unknown as { __game__: Hook }).__game__;
  * Loads the page on a paused fake clock, counts fx ticks and surge cues, and
  * feeds the session its script (see the file comment): every stage before
  * `stage` (SURGE_STAGE by default) cleared at once, then the two boxes on
- * `stage` at `ticks` (BOX_TICKS by default). With `splitHint`, the seen hints
- * are forgotten as the clear of the stage before `stage` is confirmed.
+ * `stage` at `ticks` (BOX_TICKS by default), on `seed` (SEED by default).
+ * With `splitHint`, the seen hints are forgotten as the clear of the stage
+ * before `stage` is confirmed.
  */
 async function open(
   page: Page,
-  options: { easy?: boolean; stage?: number; splitHint?: boolean; ticks?: typeof BOX_TICKS } = {}
+  options: { easy?: boolean; stage?: number; splitHint?: boolean; ticks?: typeof BOX_TICKS; seed?: number } = {}
 ): Promise<void> {
   await installFakeAudio(page);
   await page.addInitScript((easy: boolean) => {
@@ -151,7 +169,7 @@ async function open(
     if (easy) localStorage.setItem('qixxx.difficulty', 'easy');
   }, options.easy ?? false);
   await page.clock.install({ time: CLOCK_START });
-  await page.goto(`${APP_URL}?seed=${SEED}`);
+  await page.goto(`${APP_URL}?seed=${options.seed ?? SEED}`);
   await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
   await page.clock.runFor(100);
   await page.evaluate(
@@ -354,10 +372,10 @@ const RING_PIXEL_MIN_SHARE = 0.5;
 const NO_RING_PIXEL_MAX_SHARE = 0.1;
 // Of the points evenly spread around a ring, the share on the field and
 // under none of the page's boxes (the hint line, the HUD, PAUSE, the touch
-// controls): measured 0.77 at the least, at 667x375 where the ring passes
-// under the hint line, and 0.94 or more on the other screens (a part off the
-// field's edge). Half leaves room for the line wrapping to one more row, and
-// still fails a ring the line or the HUD covers for the most part.
+// controls), with the hint line over a part of the ring: measured 0.69 at the
+// least (844x390 and 667x375), 0.73 at 390x844 and 0.81 at 1280x800. Half
+// leaves room for the line wrapping to one more row, and still fails a ring
+// the line or the HUD covers for the most part.
 const RING_SHOWN_MIN_SHARE = 0.5;
 
 /** The share of `points` whose pixels are within COLOR_NEAR of `color`. */
@@ -651,8 +669,9 @@ for (const vp of VIEWPORTS) {
     test.describe(`the surge ring with the split hint at ${vp.width}x${vp.height}${vp.touch ? ' (touch)' : ''}, ${motion}`, () => {
       test.use({ viewport: { width: vp.width, height: vp.height }, hasTouch: vp.touch, isMobile: vp.touch, reducedMotion });
 
-      test('stays clear of the hint ring on the same Wisp, in its own color, on the field, for as long as it shows', async ({ page }) => {
-        await open(page, { splitHint: true, ticks: HINT_BOX_TICKS });
+      test('stays clear of the hint ring on the same Wisp and of the stage title, in its own color, on the field, and shows for the most part where the hint line lies over it', async ({ page }) => {
+        const run = HINT_RUNS[`${vp.width}x${vp.height}`];
+        await open(page, { splitHint: true, ticks: hintBoxTicks(run.firstBoxAt), seed: run.seed });
         await page.keyboard.press('Space');
         await advanceUntil(page, async () => (await view(page)).status === 'playing', 2_000, FRAME_MS);
         await advanceUntil(page, async () => (await probe(page)).cues.length > 0, 10_000, FRAME_MS);
@@ -666,6 +685,8 @@ for (const vp of VIEWPORTS) {
         expect(first.level).toBe(cues[0].level);
         let framesWithBoth = 0;
         let framesWithLineOpaque = 0;
+        let framesWithTitle = 0;
+        let framesWithRingUnderLine = 0;
         for (let guard = 0; guard < 200; guard++) {
           if ((await probe(page)).ticks >= cues[0].tick + WISP_SURGE_CUE_TICKS) break;
           const v = await view(page);
@@ -714,6 +735,15 @@ for (const vp of VIEWPORTS) {
           expect(bar!.stack, `what is stacked over the hint line at frame ${framesWithBoth}`).toEqual(
             bar!.stack.map(() => ({ lineOnTop: true, overCanvas: true }))
           );
+          // Clear of the stage title (shown as the cue starts) and the claim tags.
+          const texts = await page.evaluate(() => (window as unknown as { __game__: Hook }).__game__.getFxTextBoxes());
+          if (texts.stageTitle !== null) framesWithTitle++;
+          for (const ring of v.rings) {
+            for (const b of [texts.stageTitle, ...texts.claimTags].filter((b): b is TextBox => b !== null)) {
+              expect(overlaps(ringBox(ring), textBox(b)), `field text at frame ${framesWithBoth}`).toBe(false);
+            }
+          }
+          let ringUnderLine = false;
           for (const ring of v.rings) {
             const box = toPage(canvas, ringBox(ring));
             expect(box.right).toBeGreaterThan(box.left);
@@ -729,11 +759,18 @@ for (const vp of VIEWPORTS) {
             const shown = points.filter((p) => onField(p) && !others.some(({ rect }) => inside(pointToPage(canvas, p), rect)));
             const share = shown.length / points.length;
             expect(share, `ring ${ring.x},${ring.y} r ${ring.radius} shown at frame ${framesWithBoth}`).toBeGreaterThanOrEqual(RING_SHOWN_MIN_SHARE);
+            if (points.some((p) => onField(p) && inside(pointToPage(canvas, p), bar!.rect))) ringUnderLine = true;
           }
+          // That the line stays whole and on top, with most of each ring shown
+          // around it, is checked above on every frame; this counts the
+          // frames where it really covers a part of a ring's line.
+          if (ringUnderLine) framesWithRingUnderLine++;
           await page.clock.runFor(FRAME_MS * 3);
         }
         expect(framesWithBoth).toBeGreaterThan(3);
         expect(framesWithLineOpaque).toBeGreaterThan(0);
+        expect(framesWithTitle, 'frames with the stage title').toBeGreaterThan(0);
+        expect(framesWithRingUnderLine, 'frames where the hint line lies over a part of a surge ring').toBeGreaterThan(0);
       });
     });
   }
