@@ -17,6 +17,9 @@ import { HitStop } from './hitStop';
 import { createDefaultFxParams } from './params';
 import { applyImpactNotices } from './liveTick';
 import { wispHeadColor } from '../render/wispShape';
+import { boardFxFrame, boardWispDraws, renderedFxFrame, stepReplayView } from '../replayView';
+import { ReplayStageClearHold } from '../replayStageClearHold';
+import { TitleDemo } from '../titleDemo';
 import { surgeCueLineWidth, surgeCueRings } from '../render/surgeCueLayer';
 import { hintMarkShapes, HINT_RING_OUTLINE_WIDTH_PX } from '../render/hintLayer';
 import { COLOR_WISP_HEAD, COLOR_WISP_HEAD_SURGE_1, COLOR_WISP_HEAD_SURGE_2, FX_START_CUE_MIN_LINE_DISPLAY_PX, RENDER_SCALE } from '../config';
@@ -290,18 +293,39 @@ describe('the Wisp head color', () => {
 
 describe('the Wisp surge in a replay and the Title demo (a ReplayEngine session)', () => {
   /**
-   * A NORMAL run on seed 1981, recorded as a live run would be: strips down
-   * and up the field from the stage's start, two cells apart, until the
-   * claim that raises stage 1's level to 1 (with play going on), then a few
-   * idle ticks.
+   * A NORMAL run on seed 1981, played live (every tick through
+   * applyImpactNotices(), as main.ts's does) and recorded: strips down and up
+   * the field from the stage's start, two cells apart, until the claim that
+   * raises stage 1's level to 1 (with play going on), then a few idle ticks.
    */
-  function recordRunToLevelOne(seed: number): { rle: Uint8Array; levelTick: number } {
-    const session = new GameSession({ seed });
+  function recordRunToLevelOne(seed: number): { rle: Uint8Array; levelTick: number; liveCues: number[]; liveSounds: number[]; liveRings: number } {
+    const session = new GameSession({ seed, captureFeedback: true });
+    const fx = new FxDirector(createDefaultFxParams());
+    const hitStop = new HitStop();
+    const liveCues: number[] = [];
+    const liveSounds: number[] = [];
+    let liveRings = 0;
     session.update(CONFIRM);
     const samples: InputSample[] = [];
     const step = (dx: -1 | 0 | 1, dy: -1 | 0 | 1, drawHeld: boolean): void => {
       samples.push({ dx, dy, drawHeld, slow: false });
+      fx.tick();
       session.update({ dx, dy, drawHeld, slow: false, confirm: false });
+      session.drainEvents();
+      session.drainDespawnedEmberPositions();
+      applyImpactNotices(
+        session,
+        {
+          onClaim: fx.onClaim.bind(fx),
+          onMiss: fx.onMiss.bind(fx),
+          onWispSurge: (notice) => {
+            liveCues.push(notice.level);
+            fx.onWispSurge(notice);
+          },
+        },
+        hitStop,
+        { playClaim: () => {}, playSplitImpact: () => {}, playWispSurge: (level) => liveSounds.push(level) }
+      );
     };
     const height = session.getGame().getField().getHeight();
     let down = true;
@@ -311,6 +335,7 @@ describe('the Wisp surge in a replay and the Title demo (a ReplayEngine session)
         step(0, down ? 1 : -1, true);
         if (session.getGame().getWispSurgeLevel() > 0) {
           levelTick = session.getTotalTicks();
+          liveRings = boardFxFrame('live', fx)!.surgeRings.length;
           break;
         }
       }
@@ -319,25 +344,165 @@ describe('the Wisp surge in a replay and the Title demo (a ReplayEngine session)
       down = !down;
     }
     for (let i = 0; i < 10; i++) step(0, 0, false);
-    return { rle: encodeRle(samples), levelTick };
+    return { rle: encodeRle(samples), levelTick, liveCues, liveSounds, liveRings };
   }
 
-  it('colors the heads by the level, which rises as in the live run, and queues no notice for a cue', async () => {
-    const { rle, levelTick } = recordRunToLevelOne(1981);
-    expect(levelTick).toBeGreaterThan(0);
-    const engine = await ReplayEngine.create(1981, rle);
+  it('draws the heads in the level color through the replay view, which rises as in the live run, with no ring and no sound', async () => {
+    const recorded = recordRunToLevelOne(1981);
+    expect(recorded.levelTick).toBeGreaterThan(0);
+    // Live, the same claim played the cue: a ring on every Wisp and the sound.
+    expect(recorded.liveCues).toEqual([1]);
+    expect(recorded.liveSounds).toEqual([1]);
+    expect(recorded.liveRings).toBeGreaterThan(0);
+
+    // The replay view's tick and frame (src/replayView.ts, as main.ts runs
+    // them). The tick is given neither the impact effects nor the sounds;
+    // even the replay session's notices, handed to them as a live tick's
+    // are, start no ring and play no sound.
+    const engine = await ReplayEngine.create(1981, recorded.rle);
     const session = engine.getSession();
+    const hold = new ReplayStageClearHold(30);
+    const fx = new FxDirector(createDefaultFxParams());
+    const hitStop = new HitStop();
+    const ringCalls: WispSurgeFeedback[] = [];
+    const sounds: number[] = [];
+    const fxSinks = {
+      onClaim: fx.onClaim.bind(fx),
+      onMiss: fx.onMiss.bind(fx),
+      onWispSurge: (notice: WispSurgeFeedback) => {
+        ringCalls.push(notice);
+        fx.onWispSurge(notice);
+      },
+    };
+    const soundSinks = { playClaim: () => {}, playSplitImpact: () => {}, playWispSurge: (level: 1 | 2) => sounds.push(level) };
+    const colorsDrawn = (): string[] => boardWispDraws(session.getGame()).map((draw) => wispHeadColor(draw.surgeLevel ?? 0));
+
+    expect(colorsDrawn().every((color) => color === COLOR_WISP_HEAD)).toBe(true);
+    let checkedLevelTick = false;
     let seenLevel = 0;
-    while (engine.stepTick()) {
+    while (stepReplayView(engine, hold)) {
+      fx.tick();
+      expect(applyImpactNotices(session, fxSinks, hitStop, soundSinks)).toEqual({ claims: [], misses: [] });
       const level = session.getGame().getWispSurgeLevel();
-      if (session.getTotalTicks() === levelTick) {
+      const colors = colorsDrawn();
+      expect(colors.length).toBeGreaterThan(0);
+      expect(colors.every((color) => color === (level === 0 ? COLOR_WISP_HEAD : COLOR_WISP_HEAD_SURGE_1))).toBe(true);
+      // No frame of impact effects is drawn over a replay, so no ring.
+      expect(boardFxFrame('replay', fx)).toBeNull();
+      if (session.getTotalTicks() === recorded.levelTick && !checkedLevelTick) {
+        checkedLevelTick = true;
         expect(level).toBe(1);
         expect(session.getStatus()).toBe('playing');
+        expect(colors.every((color) => color === COLOR_WISP_HEAD_SURGE_1)).toBe(true);
       }
       seenLevel = Math.max(seenLevel, level);
-      expect(session.drainWispSurgeFeedback()).toEqual([]);
     }
+    expect(checkedLevelTick).toBe(true);
     expect(seenLevel).toBe(1);
-    expect(wispHeadColor(session.getGame().getWispSurgeLevel())).toBe(COLOR_WISP_HEAD_SURGE_1);
+    expect(ringCalls).toEqual([]);
+    expect(fx.getFrame().surgeRings).toEqual([]);
+    expect(sounds).toEqual([]);
+  });
+
+  it('draws the heads in the level color through the Title demo, which plays on past the claim that raises it, with no ring and no sound', async () => {
+    const recorded = recordRunToLevelOne(1981);
+    expect(recorded.levelTick).toBeGreaterThan(0);
+    expect(recorded.liveCues).toEqual([1]);
+
+    // The Title demo as main.ts builds it (src/titleDemo.ts, stepped once per
+    // tick by step(), which plays the run through its own stepEngine()), over
+    // the recorded run's replay and a real ReplayEngine.
+    const demo = new TitleDemo<ReplayEngine>({
+      fetchReplay: async () => ({ seed: 1981, rleBase64: 'recorded' }),
+      isPlayable: (payload): payload is { seed: number; rleBase64: string } => payload !== null,
+      decode: () => recorded.rle,
+      createEngine: (record, signal) => ReplayEngine.create(record.seed, record.rle, { signal }),
+      startDelayTicks: 1,
+      endHoldTicks: 1,
+      stageClearHoldTicks: 30,
+    });
+    const onTitle = { onTitle: true, allowed: true, candidates: ['best'] };
+    // The live run behind it, on its Title screen, and its tick's back half
+    // (main.ts's update(): the live tick, then the demo's), with every ring
+    // and sound started counted.
+    const live = new GameSession({ seed: 5, captureFeedback: true });
+    const fx = new FxDirector(createDefaultFxParams());
+    const hitStop = new HitStop();
+    const ringCalls: WispSurgeFeedback[] = [];
+    const sounds: number[] = [];
+    const fxSinks = {
+      onClaim: fx.onClaim.bind(fx),
+      onMiss: fx.onMiss.bind(fx),
+      onWispSurge: (notice: WispSurgeFeedback) => {
+        ringCalls.push(notice);
+        fx.onWispSurge(notice);
+      },
+    };
+    const soundSinks = { playClaim: () => {}, playSplitImpact: () => {}, playWispSurge: (level: 1 | 2) => sounds.push(level) };
+    const idle: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, confirm: false };
+    const tick = (): void => {
+      fx.tick();
+      live.update(idle);
+      live.drainEvents();
+      live.drainDespawnedEmberPositions();
+      applyImpactNotices(live, fxSinks, hitStop, soundSinks);
+      demo.step(onTitle);
+    };
+
+    for (let i = 0; i < 200 && demo.getState() !== 'playing'; i++) {
+      tick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(demo.getState()).toBe('playing');
+    expect(live.getStatus()).toBe('title');
+
+    let checkedLevelTick = false;
+    let seenLevel = 0;
+    let frames = 0;
+    while (demo.getState() === 'playing') {
+      tick();
+      const engine = demo.getShownEngine();
+      expect(engine).not.toBeNull();
+      const session = engine!.getSession();
+      // Even the demo session's notices, handed to the effects and the sounds
+      // as a live tick's are, start no ring and play no sound.
+      expect(applyImpactNotices(session, fxSinks, hitStop, soundSinks)).toEqual({ claims: [], misses: [] });
+      const level = session.getGame().getWispSurgeLevel();
+      const colors = boardWispDraws(session.getGame()).map((draw) => wispHeadColor(draw.surgeLevel ?? 0));
+      expect(colors.length).toBeGreaterThan(0);
+      expect(colors.every((color) => color === (level === 0 ? COLOR_WISP_HEAD : COLOR_WISP_HEAD_SURGE_1))).toBe(true);
+      // The frame drawn over the demo's board (main.ts's renderFrame()): no
+      // impact effects at all, so no ring.
+      expect(renderedFxFrame(boardFxFrame('live', fx), true)).toBeUndefined();
+      if (session.getTotalTicks() === recorded.levelTick && !checkedLevelTick) {
+        checkedLevelTick = true;
+        expect(level).toBe(1);
+        // The run plays on past that claim (not a stage clear, not the end).
+        expect(session.getStatus()).toBe('playing');
+        expect(demo.getState()).toBe('playing');
+        expect(colors.every((color) => color === COLOR_WISP_HEAD_SURGE_1)).toBe(true);
+      }
+      seenLevel = Math.max(seenLevel, level);
+      frames++;
+    }
+    expect(demo.getState()).toBe('ended');
+    expect(frames).toBeGreaterThan(recorded.levelTick);
+    expect(checkedLevelTick).toBe(true);
+    expect(seenLevel).toBe(1);
+    expect(ringCalls).toEqual([]);
+    expect(fx.getFrame().surgeRings).toEqual([]);
+    expect(sounds).toEqual([]);
+  });
+});
+
+describe('renderedFxFrame', () => {
+  it('hands the live frame of impact effects to the renderer, and none over the Title demo board', () => {
+    const fx = new FxDirector(createDefaultFxParams());
+    fx.onWispSurge({ level: 2, positions: [{ x: 4, y: 5 }] });
+    const frame = boardFxFrame('live', fx);
+    expect(renderedFxFrame(frame, false)).toBe(frame);
+    expect(renderedFxFrame(frame, false)!.surgeRings).toHaveLength(1);
+    expect(renderedFxFrame(frame, true)).toBeUndefined();
+    expect(renderedFxFrame(boardFxFrame('replay', fx), false)).toBeUndefined();
   });
 });
