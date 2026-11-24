@@ -3,6 +3,7 @@ import { ReplayEngine } from './core/replayEngine';
 import { Renderer } from './render/renderer';
 import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
 import type { StartCueRing } from './render/startCueLayer';
+import type { SurgeCueRing } from './render/surgeCueLayer';
 import { getStageConfig } from './core/stage';
 import { KeyboardInput } from './input/keyboard';
 import {
@@ -147,7 +148,15 @@ declare global {
         marker: { x: number; y: number } | null;
         /** The veil's opacity on the last frame drawn (0 for none). */
         veil: number;
+        /** The demo session's status and its stage's Wisp surge level, while it is shown. */
+        status: string | null;
+        surgeLevel: number | null;
       };
+      /**
+       * What the last frame drew of the Wisp surge (logical canvas px): the
+       * cue's rings, and the head color of every Wisp drawn.
+       */
+      getWispSurgeDraw: () => { rings: SurgeCueRing[]; headColors: string[] };
       /** The live run is paused (src/pause.ts). */
       isPaused: () => boolean;
       /** How many live ticks have passed the core a confirm, from the page load. */
@@ -1197,8 +1206,11 @@ function init(): void {
         ticks: demoSession?.getTotalTicks() ?? null,
         marker: marker ? { x: marker.x, y: marker.y } : null,
         veil: renderer.getLastVeilAlpha(),
+        status: demoSession?.getStatus() ?? null,
+        surgeLevel: demoSession?.getGame().getWispSurgeLevel() ?? null,
       };
     },
+    getWispSurgeDraw: () => ({ rings: renderer.getLastSurgeRings(), headColors: renderer.getLastWispHeadColors() }),
     isPaused: () => pauseControl.isPaused(),
     getConfirmCount: () => liveConfirmCount,
     getPlayLog: () => playLog.list(),
@@ -2377,8 +2389,13 @@ function renderFrame(): void {
   renderer.render(
     boardGame.getField(),
     boardGame.getMarker().getPosition(),
-    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
-    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
+    // Each Wisp's own speed sets its trail's color, and the stage's surge
+    // level its head's, on whichever board is drawn.
+    boardGame.getWisps().map((wisp) => ({
+      trail: wisp.getTrailRef(),
+      speedMultiplier: wisp.getSpeedMultiplier(),
+      surgeLevel: boardGame.getWispSurgeLevel(),
+    })),
     boardGame.getEmbers(),
     boardGame.getIgniterPosition(),
     markerVisible,

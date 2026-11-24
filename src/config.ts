@@ -331,6 +331,10 @@ export const COLOR_GRID_LINE = 'rgba(255, 255, 255, 0.1)'; // Subtle grid
 export const COLOR_LINE = '#ffe066'; // Neon yellow - in-progress line
 export const COLOR_MARKER = '#ffffff'; // Marker (player) - bright white
 export const COLOR_WISP_HEAD = '#b967ff'; // Neon purple - Wisp head
+// The Wisp head at surge levels 1 and 2 (WISP_SURGE_*): pinks, apart from
+// the Embers' orange and dark red.
+export const COLOR_WISP_HEAD_SURGE_1 = '#ff6ad5';
+export const COLOR_WISP_HEAD_SURGE_2 = '#ff3d81';
 export const COLOR_EMBER = '#ff8c1a'; // Neon orange - Ember (border patrol)
 export const COLOR_IGNITER = '#ff3b3b'; // Neon red - Igniter (line chaser)
 // Deep crimson - Blaze (docs/plan.md §14 M6-1: the line-entering, enhanced
@@ -375,6 +379,13 @@ export const SFX_TIME_WARNING_ALARM_DURATION = 0.4;
 export const SFX_TIME_WARNING_BEEP_FREQ = 880;
 export const SFX_TIME_WARNING_BEEP_HIGH_FREQ = 1320; // 1.5x the plain beep
 export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
+// The Wisp surge sound (audio/sfx.ts's playWispSurge()): one short rising
+// sawtooth as a claim raises the surge level, level 2 a fifth above level 1.
+// Its own sound, not the time warning's beeps or alarm.
+export const SFX_WISP_SURGE_1_FREQ = 330;
+export const SFX_WISP_SURGE_2_FREQ = 495;
+export const SFX_WISP_SURGE_RISE = 1.5; // ends at this many times its start
+export const SFX_WISP_SURGE_DURATION = 0.2; // seconds, within 0.25
 // The HUD switches from its single nowrap+ellipsis line to its
 // stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
 // STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
@@ -777,6 +788,22 @@ export const FX_START_CUE_CORE_WIDTH_RATIO = 1 / 3;
 export const FX_START_CUE_MIN_LINE_DISPLAY_PX = 2;
 export const FX_START_CUE_GLOW_BLUR = 10; // logical canvas px
 export const COLOR_FX_START_CUE = COLOR_FX_NEON_CYAN;
+// The Wisp surge cue: when a claim raises the surge level (WISP_SURGE_*) and
+// play goes on, a ring spreads out from every Wisp head for
+// WISP_SURGE_CUE_TICKS, from FROM_RADIUS to TO_RADIUS cells while it fades,
+// in the new level's head color (COLOR_WISP_HEAD_SURGE_*). Each ring follows
+// its Wisp's head and is clipped to the field. No text. With reduced motion: one
+// ring of REDUCED_RADIUS cells that stays its size and fades out.
+// Every radius stays outside the hint's ring around the Wisps
+// (HINT_RING_RADIUS_CELLS, with its dark outline, src/render/hintLayer.ts),
+// line width included, so the claimed-side hint shown with the first claim
+// never covers the surge ring drawn under it.
+export const WISP_SURGE_CUE_TICKS = 30;
+export const WISP_SURGE_CUE_FROM_RADIUS_CELLS = 7.5;
+export const WISP_SURGE_CUE_TO_RADIUS_CELLS = 12;
+export const WISP_SURGE_CUE_REDUCED_RADIUS_CELLS = 8;
+export const WISP_SURGE_CUE_LINE_WIDTH_PX = 2; // logical canvas px
+export const WISP_SURGE_CUE_GLOW_BLUR = 10; // logical canvas px
 
 // In-play hints (src/hints/): a short line over the field, plus a mark on the
 // field or a glowing touch button, the first time a situation comes up.

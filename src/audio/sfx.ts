@@ -53,6 +53,10 @@ import {
   SFX_TIME_WARNING_BEEP_FREQ,
   SFX_TIME_WARNING_BEEP_HIGH_FREQ,
   SFX_TIME_WARNING_BEEP_DURATION,
+  SFX_WISP_SURGE_1_FREQ,
+  SFX_WISP_SURGE_2_FREQ,
+  SFX_WISP_SURGE_RISE,
+  SFX_WISP_SURGE_DURATION,
   SFX_GAMEOVER_HIT_FREQ,
   SFX_GAMEOVER_HIT_DURATION,
   SFX_GAMEOVER_LIFE_NOTES,
@@ -109,6 +113,8 @@ export const SFX_LOG_NAMES = [
   'alarm',
   'beep',
   'beep-high',
+  'wisp-surge-1',
+  'wisp-surge-2',
   'igniter-spawn',
   'igniter-approach',
   'ember-spawn',
@@ -362,6 +368,18 @@ export class SfxEngine {
         this.playTone(SFX_TIME_WARNING_BEEP_HIGH_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', sfxPeak('time-beep'));
         break;
     }
+  }
+
+  /**
+   * The Wisp surge: one short rising sawtooth as a claim raises the surge
+   * level to `level`, higher for level 2. Not a GameEvent: main.ts plays it
+   * from the live session's surge notice, so a replay's session and the
+   * Title demo never trigger it.
+   */
+  playWispSurge(level: 1 | 2): void {
+    if (!this.record(`wisp-surge-${level}`)) return;
+    const freq = level === 2 ? SFX_WISP_SURGE_2_FREQ : SFX_WISP_SURGE_1_FREQ;
+    this.playTone(freq, SFX_WISP_SURGE_DURATION, 'sawtooth', sfxPeak('wisp-surge'), freq * SFX_WISP_SURGE_RISE);
   }
 
   dispose(): void {

@@ -16,12 +16,19 @@ import {
 } from './fxLayer';
 import { drawHintMarks, type HintMarkShapes } from './hintLayer';
 import { drawStartCue, startCueLineWidth, startCueRing, type StartCueRing } from './startCueLayer';
-import { wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
+import { wispHeadColor, wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
+import { drawSurgeRings, surgeCueLineWidth, surgeCueRings, type SurgeCueRing } from './surgeCueLayer';
+import type { WispSurgeLevel } from '../core/wispSurge';
 
-/** One Wisp to draw: its trail (Wisp.getTrailRef()) and speed multiplier (Wisp.getSpeedMultiplier()). */
+/**
+ * One Wisp to draw: its trail (Wisp.getTrailRef()), speed multiplier
+ * (Wisp.getSpeedMultiplier()) and the stage's surge level
+ * (Game.getWispSurgeLevel(); 0 when omitted), which colors the head.
+ */
 export interface WispDraw {
   trail: ReadonlyArray<Readonly<Point>>;
   speedMultiplier: number;
+  surgeLevel?: WispSurgeLevel;
 }
 import {
   CANVAS_WIDTH,
@@ -34,7 +41,6 @@ import {
   COLOR_GRID_LINE,
   COLOR_LINE,
   COLOR_MARKER,
-  COLOR_WISP_HEAD,
   COLOR_EMBER,
   COLOR_EMBER_BLAZE,
   COLOR_IGNITER,
@@ -132,6 +138,8 @@ export class Renderer {
   private lastFxTextBoxes: { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } = { stageTitle: null, claimTags: [] };
   private lastStartCue: StartCueRing | null = null;
   private startCueMinLineWidthPx = 0;
+  private lastSurgeRings: SurgeCueRing[] = [];
+  private lastHeadColors: string[] = [];
   private hintMarks: HintMarkShapes | null = null;
   private veilAlpha = 0;
   private lastVeilAlpha = 0;
@@ -270,10 +278,11 @@ export class Renderer {
       // gets its own afterimage trail + head, drawn independently.
       for (const wisp of wisps) {
         if (wisp.trail.length > 0) {
-          this.drawWisp(wisp.trail, wisp.speedMultiplier);
+          this.drawWisp(wisp.trail, wisp.speedMultiplier, wisp.surgeLevel ?? 0);
         }
       }
     }
+    this.lastHeadColors = wisps ? wisps.filter((w) => w.trail.length > 0).map((w) => wispHeadColor(w.surgeLevel ?? 0)) : [];
     if (embers && embers.length > 0) {
       this.drawEmbers(embers);
     }
@@ -286,6 +295,14 @@ export class Renderer {
       drawShards(this.ctx, fx.shards);
       drawSparks(this.ctx, fx.sparks);
     }
+    // The Wisp surge cue: on the board (it shakes with it), under the marker
+    // and every text. The hint's ring drawn later around the same Wisps is
+    // smaller (WISP_SURGE_CUE_*_RADIUS_CELLS), so it never covers this one.
+    this.lastSurgeRings = surgeCueRings(
+      fx?.surgeRings ?? [],
+      (wisps ?? []).map((w) => w.trail[0])
+    );
+    if (this.lastSurgeRings.length > 0) drawSurgeRings(this.ctx, this.lastSurgeRings, this.startCueMinLineWidthPx);
     // Post-miss grace feedback (docs/plan.md §6 M5): the caller blinks the
     // marker by toggling `markerVisible` off every few ticks; omitting the
     // draw call entirely (rather than e.g. changing color) makes it a true
@@ -380,6 +397,17 @@ export class Renderer {
   /** The start cue's ring the last frame drew (logical canvas px, with its line width), or null, for tests. */
   getLastStartCue(): (StartCueRing & { lineWidth: number }) | null {
     return this.lastStartCue ? { ...this.lastStartCue, lineWidth: startCueLineWidth(this.startCueMinLineWidthPx) } : null;
+  }
+
+  /** The Wisp surge cue's rings the last frame drew (logical canvas px, with their line width), for tests. */
+  getLastSurgeRings(): Array<SurgeCueRing & { lineWidth: number }> {
+    const lineWidth = surgeCueLineWidth(this.startCueMinLineWidthPx);
+    return this.lastSurgeRings.map((ring) => ({ ...ring, lineWidth }));
+  }
+
+  /** The head color of every Wisp the last frame drew, in order, for tests. */
+  getLastWispHeadColors(): string[] {
+    return [...this.lastHeadColors];
   }
 
   /** Where the last frame drew the stage title and the claim tags (logical canvas px), for tests. */
@@ -599,7 +627,7 @@ export class Renderer {
   // every cell it can hit (src/render/wispShape.ts) — the cells between two
   // trail points too, which a fast Wisp leaves — in a color that follows the
   // Wisp's speed, over a fainter glow that makes it read thicker than a line.
-  private drawWisp(trail: ReadonlyArray<Readonly<Point>>, speedMultiplier: number): void {
+  private drawWisp(trail: ReadonlyArray<Readonly<Point>>, speedMultiplier: number, surgeLevel: WispSurgeLevel): void {
     const cells = wispTrailFillCells(trail);
     const count = trail.length;
     this.ctx.save();
@@ -642,21 +670,22 @@ export class Renderer {
 
     // Head enlarged to a halo + bright core (docs/plan.md §6 M9 / §12.3),
     // centered on the head's grid cell so the visible footprint grows
-    // without moving the collision-relevant position. Its color stays
-    // COLOR_WISP_HEAD whatever the speed.
+    // without moving the collision-relevant position. Its color follows the
+    // stage's surge level (wispHeadColor()), not the speed.
     const head = trail[0];
     const cx = (head.x + 0.5) * RENDER_SCALE;
     const cy = (head.y + 0.5) * RENDER_SCALE;
+    const headColor = wispHeadColor(surgeLevel);
     this.ctx.save();
-    this.ctx.shadowColor = COLOR_WISP_HEAD;
+    this.ctx.shadowColor = headColor;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    this.ctx.fillStyle = headColor;
     this.ctx.globalAlpha = WISP_HEAD_HALO_ALPHA;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_HALO_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();
     this.ctx.globalAlpha = 1;
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    this.ctx.fillStyle = headColor;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();

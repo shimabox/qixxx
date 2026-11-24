@@ -327,6 +327,38 @@ describe('SfxEngine — TIME countdown warning cues', () => {
   });
 });
 
+describe('SfxEngine — the Wisp surge sound', () => {
+  it('plays one short rising sawtooth, within 0.25s, higher on level 2 than on level 1', () => {
+    const { oscillators, gains } = installRecordingAudioContext();
+    const sfx = new SfxEngine();
+    sfx.playWispSurge(1);
+    sfx.playWispSurge(2);
+
+    expect(oscillators).toHaveLength(2);
+    const [one, two] = oscillators;
+    for (const osc of oscillators) expect(osc.type).toBe('sawtooth');
+    expect(one.frequency.setValueAtTime).toHaveBeenCalledWith(330, 0);
+    expect(one.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(expect.closeTo(495, 9), 0.2);
+    expect(two.frequency.setValueAtTime).toHaveBeenCalledWith(495, 0);
+    expect(two.frequency.exponentialRampToValueAtTime).toHaveBeenCalledWith(expect.closeTo(742.5, 9), 0.2);
+    // gains[0] is the master gain; then each note's own envelope, ending by 0.2s.
+    for (const env of [gains[1], gains[2]]) {
+      expect(env.gain.linearRampToValueAtTime).toHaveBeenCalledWith(expect.closeTo(0.16, 12), 0.01);
+      expect(env.gain.exponentialRampToValueAtTime).toHaveBeenCalledWith(0.0001, 0.2);
+    }
+    expect(sfx.getLog()).toEqual(['wisp-surge-1', 'wisp-surge-2']);
+  });
+
+  it('plays nothing while muted (SOUND: OFF)', () => {
+    const { oscillators } = installRecordingAudioContext();
+    const sfx = new SfxEngine(true);
+    sfx.playWispSurge(1);
+    sfx.playWispSurge(2);
+    expect(oscillators).toHaveLength(0);
+    expect(sfx.getLog()).toEqual([]);
+  });
+});
+
 describe('SfxEngine — pitch glide of the existing one-shots', () => {
   it('plays the miss falling from 90 Hz to 36 Hz, peaking within 5ms and ending within 0.35s', () => {
     const { oscillators, gains } = installRecordingAudioContext();
@@ -728,6 +760,8 @@ const PLAY_BY_NAME: Record<SfxLogName, (s: SfxEngine) => void> = {
   alarm: (s) => s.playTimeWarning('alarm'),
   beep: (s) => s.playTimeWarning('beep'),
   'beep-high': (s) => s.playTimeWarning('beep-high'),
+  'wisp-surge-1': (s) => s.playWispSurge(1),
+  'wisp-surge-2': (s) => s.playWispSurge(2),
   'igniter-spawn': (s) => s.handleEvents(['igniter-spawned']),
   'igniter-approach': (s) => s.handleEvents(['igniter-approaching']),
   'ember-spawn': (s) => s.handleEvents(['ember-spawned']),
