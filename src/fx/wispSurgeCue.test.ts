@@ -135,16 +135,32 @@ describe('the Wisp surge cue in live play', () => {
     expect(run.sounds).toEqual([1, 2]);
   });
 
-  it('plays the cue on a seeded NORMAL run too (the seed changes nothing about it)', () => {
+  it('plays the cue on a seeded NORMAL run too (the seed changes nothing about it), from stage 6', () => {
     const run = new LiveRun({ seed: 5 });
+    const inward = { top: [0, 1], bottom: [0, -1], left: [1, 0], right: [-1, 0] } as const;
+    /** From where the marker stands on the stage's start edge: two cells in, two along the edge and back out. */
     const box = (): void => {
-      for (const [dx, dy] of [[0, 1], [0, 1], [1, 0], [1, 0], [0, -1], [0, -1]] as const) {
-        run.tick({ dx, dy, drawHeld: true, slow: false, confirm: false });
+      const [ix, iy] = inward[run.session.getMarkerStart()!.edge];
+      const [ax, ay] = ix === 0 ? [1, 0] : [0, 1];
+      for (const [dx, dy] of [[ix, iy], [ix, iy], [ax, ay], [ax, ay], [-ix, -iy], [-ix, -iy]]) {
+        run.tick({ dx: dx as -1 | 0 | 1, dy: dy as -1 | 0 | 1, drawHeld: true, slow: false, confirm: false });
       }
     };
+    // Stages 1 to 5, each cleared by a box on a goal lowered to almost nothing.
+    for (let stage = 1; stage <= 5; stage++) {
+      expect(run.session.getStage()).toBe(stage);
+      run.session.applyDebugOverrides({ requiredOccupancy: 0.00001 });
+      box();
+      expect(run.session.getStatus()).toBe('stageclear');
+      run.tick(CONFIRM);
+    }
+    expect(run.session.getStage()).toBe(6);
+    expect(run.cues).toEqual([]);
+    // A goal out of reach for the first box; then a goal of four times its
+    // occupancy, under half of which it is; the second box, sharing its
+    // side, brings it to three times.
+    run.session.applyDebugOverrides({ requiredOccupancy: 0.99 });
     box();
-    // The first box's occupancy is under half of a goal of four times it;
-    // the second box, sharing its side, brings it to three times.
     run.session.applyDebugOverrides({ requiredOccupancy: run.session.getGame().getOccupancy() * 4 });
     expect(run.cues).toEqual([]);
     box();

@@ -180,8 +180,8 @@ export const WISP_TURN_JITTER = 0.2; // max random heading change per tick, radi
 // spans this many *distinct* cells (8-12 per docs/plan.md §4.3).
 export const WISP_HISTORY_LENGTH = 10;
 
-// Wisp surge (src/core/wispSurge.ts, NORMAL only): the closer a stage's
-// occupancy gets to its goal, the faster its Wisps. Past
+// Wisp surge (src/core/wispSurge.ts, NORMAL from WISP_SURGE_FIRST_STAGE on):
+// the closer a stage's occupancy gets to its goal, the faster its Wisps. Past
 // WISP_SURGE_FIRST_RATIO of the goal (exactly that share is still level 0)
 // the Wisps reach level 1; within WISP_SURGE_FINAL_MARGIN of the goal
 // (exactly that margin included), level 2. Each level multiplies the Wisps'
@@ -189,6 +189,11 @@ export const WISP_HISTORY_LENGTH = 10;
 // entry in WISP_SURGE_MULTIPLIERS. The level never falls within a stage: it
 // follows occupancy, which only grows. WISP_SURGE_EPSILON absorbs floating
 // point error at both edges (0.8 - 0.1 reads 0.7000000000000001).
+// WISP_SURGE_FIRST_STAGE: the first stage the surge applies on; every NORMAL
+// stage from it on (past the table's last row too) has it, the earlier NORMAL
+// stages and every EASY stage never do. Stage 6 is the breather (two Wisps
+// at x1.6), so a run meets the surge first where it is easiest to read.
+export const WISP_SURGE_FIRST_STAGE = 6;
 export const WISP_SURGE_FIRST_RATIO = 0.5;
 export const WISP_SURGE_FINAL_MARGIN = 0.1;
 export const WISP_SURGE_MULTIPLIERS: readonly [number, number, number] = [1, 1.15, 1.3];

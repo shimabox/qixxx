@@ -1,5 +1,6 @@
 // Wisp surge: the closer a stage's occupancy gets to its goal, the faster
-// its Wisps (NORMAL only — see Game's `wispSurge` option). Pure logic, no
+// its Wisps (NORMAL from WISP_SURGE_FIRST_STAGE on — GameSession sets Game's
+// `wispSurge` option). Pure logic, no
 // DOM dependencies; Game decides the level on every claim and on every debug
 // override change, the render layer colors the Wisp heads by it.
 import {

@@ -26,6 +26,7 @@ import {
   WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN,
   WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW,
   TIME_LIMIT_TICKS,
+  WISP_SURGE_FIRST_STAGE,
 } from '../config';
 
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
@@ -817,8 +818,10 @@ export class GameSession {
       lives: carry.lives,
       multiplier: carry.multiplier,
       captureFeedback: this.captureFeedback,
-      // The Wisps speed up toward the goal on NORMAL only (core/wispSurge.ts).
-      wispSurge: this.difficulty === 'normal',
+      // The Wisps speed up toward the goal on NORMAL from
+      // WISP_SURGE_FIRST_STAGE on (core/wispSurge.ts); the earlier NORMAL
+      // stages and every EASY stage play without it.
+      wispSurge: this.difficulty === 'normal' && stage >= WISP_SURGE_FIRST_STAGE,
     });
   }
 
