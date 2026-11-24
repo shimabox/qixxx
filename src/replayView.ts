@@ -9,6 +9,7 @@
 // for live play and the Title demo.
 import type { ReplayEngine } from './core/replayEngine';
 import type { Game } from './core/game';
+import type { GameSession } from './core/session';
 import type { FxFrame } from './fx/director';
 import type { WispDraw } from './render/renderer';
 import type { ReplayStageClearHold } from './replayStageClearHold';
@@ -33,6 +34,39 @@ export function stepReplayView(engine: ReplayEngine, hold: ReplayStageClearHold)
   replaySession.drainEvents();
   replaySession.drainDespawnedEmberPositions();
   return advanced;
+}
+
+/**
+ * What decides the board on screen (main.ts's state): whether a ranking
+ * replay is being viewed, the live run, the ranking replay's engine (null
+ * when none is open) and the Title demo.
+ */
+export interface BoardSources {
+  viewMode: 'live' | 'replay';
+  live: GameSession;
+  replay: ReplayEngine | null;
+  titleDemo: { getShownEngine(): ReplayEngine | null };
+}
+
+/** The GameSession the HUD reads: the ranking replay's while one is viewed, otherwise the live run's. */
+export function activeBoardSession(sources: BoardSources): GameSession {
+  return sources.viewMode === 'replay' && sources.replay ? sources.replay.getSession() : sources.live;
+}
+
+/**
+ * The Title demo's engine whose board is on screen now, or null. Only ever
+ * on the live Title screen: the tick that starts a run, or a ranking replay
+ * opening between ticks, already shows the board it switches to.
+ */
+export function shownTitleDemoEngine(sources: BoardSources): ReplayEngine | null {
+  if (sources.viewMode !== 'live' || sources.replay !== null || sources.live.getStatus() !== 'title') return null;
+  return sources.titleDemo.getShownEngine();
+}
+
+/** The Game whose board is drawn: the Title demo's while it shows, otherwise the active session's (activeBoardSession()). */
+export function drawnBoardGame(sources: BoardSources): Game {
+  const demoEngine = shownTitleDemoEngine(sources);
+  return demoEngine ? demoEngine.getSession().getGame() : activeBoardSession(sources).getGame();
 }
 
 /**

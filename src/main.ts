@@ -1,6 +1,15 @@
 import { GameSession, SessionInput } from './core/session';
 import { ReplayEngine } from './core/replayEngine';
-import { boardFxFrame, boardWispDraws, renderedFxFrame, stepReplayView } from './replayView';
+import {
+  activeBoardSession,
+  boardFxFrame,
+  boardWispDraws,
+  BoardSources,
+  drawnBoardGame,
+  renderedFxFrame,
+  shownTitleDemoEngine as shownTitleDemoEngineOf,
+  stepReplayView,
+} from './replayView';
 import { Renderer } from './render/renderer';
 import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
 import type { StartCueRing } from './render/startCueLayer';
@@ -1510,9 +1519,14 @@ function currentRetryHold(): RetryHold {
   };
 }
 
+/** What decides the board on screen now (src/replayView.ts's BoardSources). */
+function boardSources(): BoardSources {
+  return { viewMode, live: session, replay: replayEngine, titleDemo };
+}
+
 /** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
 function currentSession(): GameSession {
-  return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
+  return activeBoardSession(boardSources());
 }
 
 // REPLAY VIEWING mode switches (see `viewMode`'s module doc comment).
@@ -1949,12 +1963,10 @@ function update(): void {
   stepTitleDemo();
 }
 
-// The Title demo's engine whose board is on screen now, or null. Only ever
-// on the live Title screen: the tick that starts a run, or a ranking replay
-// opening between ticks, already shows the board it switches to.
+// The Title demo's engine whose board is on screen now, or null
+// (src/replayView.ts's shownTitleDemoEngine()).
 function shownTitleDemoEngine(): ReplayEngine | null {
-  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return null;
-  return titleDemo.getShownEngine();
+  return shownTitleDemoEngineOf(boardSources());
 }
 
 // One Title demo tick (see `titleDemo`), after the live tick: it plays only
@@ -2330,7 +2342,7 @@ function renderFrame(): void {
   // session's. Everything else below (HUD, overlay, sounds, hints) keeps
   // reading `activeSession` / `game`.
   const demoEngine = shownTitleDemoEngine();
-  const boardGame = demoEngine ? demoEngine.getSession().getGame() : game;
+  const boardGame = drawnBoardGame(boardSources());
   // The pause screen covers the field while paused; the touch PAUSE button
   // shows wherever the run can be paused, and while it is.
   const paused = pauseControl.isPaused();
