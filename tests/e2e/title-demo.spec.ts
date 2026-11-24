@@ -4,7 +4,7 @@
 // the page runs on a faked, paused clock, so every wait is game time.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { GameSession } from '../../src/core/session';
-import { encodeRle, type InputSample } from '../../src/core/rle';
+import { decodeRleToSamples, encodeRle, type InputSample } from '../../src/core/rle';
 import { RULESET_VERSION, REPLAY_FORMAT_VERSION } from '../../src/config';
 import { advanceUntil, loseAllLivesToIgniter } from './support/fakeClock';
 import { installFakeAudio } from './support/fakeAudio';
@@ -117,6 +117,37 @@ const DEMO_SEED = 377;
 // Long enough to watch it play, short enough to reach its end in a test.
 const DEMO_RLE = recordDemoReplay(DEMO_SEED, 600);
 const DEMO_PAYLOAD = JSON.stringify({ seed: DEMO_SEED, rleBase64: DEMO_RLE, rulesetVersion: RULESET_VERSION, replayFormatVersion: REPLAY_FORMAT_VERSION });
+
+/**
+ * The fixed demo run replayed headlessly: the ticks of its first claim that
+ * takes occupancy past half of the goal and of its first within 0.10 of it,
+ * each with its stage still playing — the claims that raise the Wisp surge to
+ * level 1 and 2 on a stage it applies on (NORMAL from stage 6) — and the
+ * last stage it plays.
+ */
+function demoSurgeClaims(): { pastHalf: number; withinMargin: number; lastStage: number } {
+  const session = new GameSession({ seed: DEMO_SEED });
+  const confirm = { dx: 0 as const, dy: 0 as const, drawHeld: false, slow: false, confirm: true };
+  session.update(confirm);
+  let pastHalf = -1;
+  let withinMargin = -1;
+  let lastStage = 1;
+  for (const sample of decodeRleToSamples(Buffer.from(DEMO_RLE, 'base64'))) {
+    const before = session.getGame().getOccupancy();
+    session.update({ ...sample, confirm: false });
+    const game = session.getGame();
+    const claimed = game.getOccupancy() > before;
+    const goal = game.getRequiredOccupancy();
+    if (claimed && session.getStatus() === 'playing') {
+      if (pastHalf < 0 && game.getOccupancy() > goal / 2) pastHalf = session.getTotalTicks();
+      if (withinMargin < 0 && goal - game.getOccupancy() <= 0.1) withinMargin = session.getTotalTicks();
+    }
+    lastStage = Math.max(lastStage, session.getStage());
+    if (session.getStatus() === 'stageclear') session.update(confirm);
+  }
+  return { pastHalf, withinMargin, lastStage };
+}
+const DEMO_SURGE_CLAIMS = demoSurgeClaims();
 
 const SECRET_NAME = 'DEMOSECRETNAME';
 const SECRET_HANDLE = 'demo_secret_handle';
@@ -293,26 +324,35 @@ test.describe('title demo', () => {
     expect(text).not.toContain(SECRET_HANDLE);
     expect(text).not.toContain('#1');
 
-    // The demo run's claims raise the Wisp surge level with its stage still
-    // playing (a new stage starts on level 0, and a run that ended would not
-    // read 'playing'): level 1, then level 2. Its Wisp heads take the level's
-    // color, and no surge ring is drawn.
-    const surgeLevelWhilePlaying = async (level: number) => {
-      const now = await demo(page);
-      return now.shown && now.status === 'playing' && now.surgeLevel === level;
-    };
+    // The fixed demo run ends on stage 1, where NORMAL has no Wisp surge.
+    // Its claims take occupancy past half of the goal and then within 0.10
+    // of it (on stage 6 those would raise the level to 1 and to 2) with its
+    // stage still playing: through both, its level stays 0, its Wisp head
+    // keeps COLOR_WISP_HEAD, and no surge ring is drawn.
+    expect(DEMO_SURGE_CLAIMS.lastStage).toBe(1);
+    expect(DEMO_SURGE_CLAIMS.pastHalf).toBeGreaterThan(0);
+    expect(DEMO_SURGE_CLAIMS.withinMargin).toBeGreaterThan(DEMO_SURGE_CLAIMS.pastHalf);
     const surgeDraw = () =>
       page.evaluate(
         () =>
           (window as unknown as { __game__: { getWispSurgeDraw: () => { rings: unknown[]; headColors: string[] } } }).__game__.getWispSurgeDraw()
       );
-    await advanceUntil(page, () => surgeLevelWhilePlaying(1), 10_000);
-    await page.clock.runFor(FRAME_MS * 2);
-    expect(await surgeLevelWhilePlaying(1)).toBe(true);
-    expect(await surgeDraw()).toEqual({ rings: [], headColors: ['#ff6ad5'] });
-    await advanceUntil(page, () => surgeLevelWhilePlaying(2), 10_000);
-    await page.clock.runFor(FRAME_MS * 2);
-    expect(await surgeDraw()).toEqual({ rings: [], headColors: ['#ff3d81'] });
+    for (const claimTick of [DEMO_SURGE_CLAIMS.pastHalf, DEMO_SURGE_CLAIMS.withinMargin]) {
+      await advanceUntil(
+        page,
+        async () => {
+          const now = await demo(page);
+          return now.shown && now.ticks !== null && now.ticks >= claimTick;
+        },
+        10_000
+      );
+      await page.clock.runFor(FRAME_MS * 2);
+      const now = await demo(page);
+      expect(now.shown).toBe(true);
+      expect(now.status).toBe('playing');
+      expect(now.surgeLevel).toBe(0);
+      expect(await surgeDraw()).toEqual({ rings: [], headColors: ['#b967ff'] });
+    }
 
     // And not a sound, the surge's included.
     expect(await page.evaluate(() => window.__demoSounds__)).toEqual([]);

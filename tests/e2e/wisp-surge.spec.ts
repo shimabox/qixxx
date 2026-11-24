@@ -1,16 +1,20 @@
-// The Wisp surge (src/core/wispSurge.ts): on NORMAL, a claim that brings a
-// stage's occupancy near its goal speeds every Wisp up, turns their heads the
-// level's color, spreads a ring from every head for a moment and plays the
-// surge sound; on EASY nothing changes. On a faked, paused page clock
-// (tests/e2e/support/fakeClock.ts), so every wait is game time.
+// The Wisp surge (src/core/wispSurge.ts): on NORMAL from stage 6 on, a claim
+// that brings a stage's occupancy near its goal speeds every Wisp up, turns
+// their heads the level's color, spreads a ring from every head for a moment
+// and plays the surge sound; on NORMAL's stages 1 to 5 and on EASY nothing
+// changes. On a faked, paused page clock (tests/e2e/support/fakeClock.ts), so
+// every wait is game time.
 //
-// The run is a `?seed=` one (the cue does not depend on it). Stage 1's
-// inputs are fed to the session: after the stage title has gone, a small box
-// straight down from the top-middle start, along the edge and back up; then
-// the goal is lowered to four times that box's occupancy (a debug override —
-// short of half of it, so still level 0); then a second box sharing the
-// first one's side brings occupancy to three times the first: past half of
-// the goal and within 0.10 of it, so that claim raises the level to 2.
+// The run is a `?seed=` one (the cue does not depend on it). The inputs are
+// fed to the session. Each stage before the one checked is cleared at once:
+// the goal lowered to almost nothing (a debug override) and a small box
+// straight in from the stage's start, along the edge and back out, its
+// STAGE CLEAR confirmed on the next tick. On the stage checked, after the
+// stage title has gone, a goal out of reach and the same small box; then the
+// goal is lowered to four times that box's occupancy (short of half of it,
+// so still level 0); then a second box sharing the first one's side brings
+// occupancy to three times the first: past half of the goal and within 0.10
+// of it, so on stage 6 that claim raises the level to 2.
 //
 // Where the ring was drawn comes from the renderer itself
 // (window.__game__.getWispSurgeDraw(), logical canvas px) and is mapped onto
@@ -20,12 +24,14 @@
 // font. That the ring and the heads are really drawn in the level color is
 // read from the canvas's own pixels (colorDistances()).
 //
-// A second script, one fast line from the top-middle start to the bottom
-// edge, raises the level on the run's first claim, which also shows the
-// claimed-side hint with its ring around the same Wisp: the two rings' radii
-// and line widths, as drawn, never meet, with full and with reduced motion.
-// The hint line shows with them and may lie over a part of the ring: it
-// stays whole and on top, and most of the ring stays in sight around it.
+// A second script forgets the seen hints (the hook's resetHints(), the
+// debug panel's RESET HINTS) as it confirms stage 5's clear, so stage 6, the
+// next with two Wisps, starts with the split hint: its line on the hint bar
+// and its ring around every Wisp. The same boxes, from the stage's start,
+// then raise the level while that ring shows: the two rings' radii and line
+// widths, as drawn, never meet, with full and with reduced motion. The hint
+// line shows with them and may lie over a part of the ring: it stays whole
+// and on top, and most of the ring stays in sight around it.
 import { test, expect, type Page } from '@playwright/test';
 import { advanceUntil } from './support/fakeClock';
 import { installFakeAudio } from './support/fakeAudio';
@@ -85,6 +91,7 @@ type Hook = {
     getStage: () => number;
     getStageTicks: () => number;
     getEffectiveDebugParams: () => { wispSpeedMultiplier: number };
+    getMarkerStart: () => { edge: 'top' | 'bottom' | 'left' | 'right' } | null;
     applyDebugOverrides: (o: { requiredOccupancy?: number }) => void;
     update: (input: { dx: number; dy: number; drawHeld: boolean; slow?: boolean; confirm: boolean }) => void;
     getGame: () => {
@@ -98,6 +105,7 @@ type Hook = {
   getWispSurgeDraw: () => { rings: Ring[]; headColors: string[] };
   getFxTextBoxes: () => { stageTitle: TextBox | null; claimTags: TextBox[] };
   getSfxLog: () => string[];
+  resetHints: () => void;
 };
 
 const APP_URL = 'http://localhost:4173/';
@@ -105,32 +113,49 @@ const CLOCK_START = new Date('2026-01-01T00:00:00Z');
 const FRAME_MS = 16;
 const CANVAS_W = GRID_WIDTH * RENDER_SCALE;
 const CANVAS_H = GRID_HEIGHT * RENDER_SCALE;
+// The stage the surge is checked on: the first NORMAL stage it applies on.
+const SURGE_STAGE = 6;
+// The cue does not depend on the seed. On this one, stage 6's two Wisps keep
+// to the middle of the field while it shows, with either box timing below,
+// and well apart (over 35 cells): each ring is drawn on the field clear of
+// the hint line (which keeps away from the marker, not from the Wisps, and
+// on the smallest screens covers a quarter of the field's height), and
+// neither Wisp's head or rings come near the other's.
+const SEED = 420;
 // The boxes start once the stage title has gone, so the ring never meets it.
 const FIRST_BOX_AT = FX_STAGE_TITLE_TICKS + 10;
-const GOAL_AT = FIRST_BOX_AT + 8;
-const SECOND_BOX_AT = FIRST_BOX_AT + 10;
+const BOX_TICKS = { firstBoxAt: FIRST_BOX_AT, goalAt: FIRST_BOX_AT + 8, secondBoxAt: FIRST_BOX_AT + 10 };
+const SECOND_BOX_AT = BOX_TICKS.secondBoxAt;
 const SURGE_CLAIM_STAGE_TICK = SECOND_BOX_AT + 6;
+// With the split hint: the boxes start early enough for the whole cue (the
+// claim at stage tick 52, then WISP_SURGE_CUE_TICKS) to show while the
+// hint's ring does (its first HINT_RING_TICKS).
+const HINT_BOX_TICKS = { firstBoxAt: 36, goalAt: 44, secondBoxAt: 46 };
 
 const hook = (): Hook => (window as unknown as { __game__: Hook }).__game__;
 
 /**
  * Loads the page on a paused fake clock, counts fx ticks and surge cues, and
- * feeds stage 1's script to the session: the two boxes, or (`line`) one fast
- * line straight down from the top-middle start to the bottom edge, whose
- * claim takes past half of the goal at once.
+ * feeds the session its script (see the file comment): every stage before
+ * `stage` (SURGE_STAGE by default) cleared at once, then the two boxes on
+ * `stage` at `ticks` (BOX_TICKS by default). With `splitHint`, the seen hints
+ * are forgotten as the clear of the stage before `stage` is confirmed.
  */
-async function open(page: Page, options: { easy?: boolean; line?: boolean } = {}): Promise<void> {
+async function open(
+  page: Page,
+  options: { easy?: boolean; stage?: number; splitHint?: boolean; ticks?: typeof BOX_TICKS } = {}
+): Promise<void> {
   await installFakeAudio(page);
   await page.addInitScript((easy: boolean) => {
     localStorage.setItem('qixxx.muted', 'false');
     if (easy) localStorage.setItem('qixxx.difficulty', 'easy');
   }, options.easy ?? false);
   await page.clock.install({ time: CLOCK_START });
-  await page.goto(`${APP_URL}?seed=5`);
+  await page.goto(`${APP_URL}?seed=${SEED}`);
   await page.clock.pauseAt(new Date(CLOCK_START.getTime() + 60_000));
   await page.clock.runFor(100);
   await page.evaluate(
-    ({ firstBoxAt, goalAt, secondBoxAt, line }) => {
+    ({ ticks: { firstBoxAt, goalAt, secondBoxAt }, stage: surgeStage, splitHint }) => {
       const g = (window as unknown as { __game__: Hook }).__game__;
       const probe: Probe = { ticks: 0, cues: [] };
       window.__surgeProbe__ = probe;
@@ -144,29 +169,44 @@ async function open(page: Page, options: { easy?: boolean; line?: boolean } = {}
         probe.cues.push({ tick: probe.ticks, level: notice.level });
         onWispSurge(notice);
       };
-      const box = [
-        { dx: 0, dy: 1 },
-        { dx: 0, dy: 1 },
-        { dx: 1, dy: 0 },
-        { dx: 1, dy: 0 },
-        { dx: 0, dy: -1 },
-        { dx: 0, dy: -1 },
-      ];
       const session = g.session;
+      const inward = { top: [0, 1], bottom: [0, -1], left: [1, 0], right: [-1, 0] } as const;
+      /** Two cells straight in from the stage's start, two along the edge and back out. */
+      const box = () => {
+        const [ix, iy] = inward[session.getMarkerStart()!.edge];
+        const [ax, ay] = ix === 0 ? [1, 0] : [0, 1];
+        return [
+          { dx: ix, dy: iy },
+          { dx: ix, dy: iy },
+          { dx: ax, dy: ay },
+          { dx: ax, dy: ay },
+          { dx: -ix, dy: -iy },
+          { dx: -ix, dy: -iy },
+        ];
+      };
+      const idle = { dx: 0, dy: 0 };
       const update = session.update.bind(session);
       session.update = (input) => {
-        if (session.getStage() !== 1 || session.getStatus() !== 'playing') return update(input);
-        const t = session.getStageTicks();
-        if (line) {
-          const down = t >= firstBoxAt && session.getGame().getOccupancy() === 0;
-          return update({ dx: 0, dy: down ? 1 : 0, drawHeld: down, slow: false, confirm: false });
+        const stage = session.getStage();
+        if (session.getStatus() === 'stageclear' && stage < surgeStage) {
+          if (splitHint && stage === surgeStage - 1) g.resetHints();
+          return update({ dx: 0, dy: 0, drawHeld: false, slow: false, confirm: true });
         }
+        if (session.getStatus() !== 'playing' || stage > surgeStage) return update(input);
+        const t = session.getStageTicks();
+        if (stage < surgeStage) {
+          if (t === 0) session.applyDebugOverrides({ requiredOccupancy: 0.00001 });
+          return update({ ...(box()[t] ?? idle), drawHeld: true, slow: false, confirm: false });
+        }
+        // Past stage 1, the goal lowered for the earlier stages still holds:
+        // one out of reach, so the first box does not clear the stage.
+        if (t === 0 && stage > 1) session.applyDebugOverrides({ requiredOccupancy: 0.99 });
         if (t === goalAt) session.applyDebugOverrides({ requiredOccupancy: session.getGame().getOccupancy() * 4 });
-        const step = box[t - firstBoxAt] ?? box[t - secondBoxAt] ?? { dx: 0, dy: 0 };
+        const step = box()[t - firstBoxAt] ?? box()[t - secondBoxAt] ?? idle;
         return update({ ...step, drawHeld: true, slow: false, confirm: false });
       };
     },
-    { firstBoxAt: FIRST_BOX_AT, goalAt: GOAL_AT, secondBoxAt: SECOND_BOX_AT, line: options.line ?? false }
+    { ticks: options.ticks ?? BOX_TICKS, stage: options.stage ?? SURGE_STAGE, splitHint: options.splitHint ?? false }
   );
 }
 
@@ -193,11 +233,19 @@ const view = (page: Page): Promise<View> =>
 
 const probe = (page: Page) => page.evaluate(() => window.__surgeProbe__!);
 
-/** Starts the run with a key press and plays on until the stage's tick `stageTick` has run, then lets a frame draw it. */
-async function playTo(page: Page, stageTick: number): Promise<void> {
+/** Starts the run with a key press and plays on until tick `stageTick` of stage `stage` has run, then lets a frame draw it. */
+async function playTo(page: Page, stageTick: number, stage = SURGE_STAGE): Promise<void> {
   await page.keyboard.press('Space');
   await advanceUntil(page, async () => (await view(page)).status === 'playing', 2_000, FRAME_MS);
-  await advanceUntil(page, async () => (await view(page)).stageTicks >= stageTick, 10_000, FRAME_MS);
+  await advanceUntil(
+    page,
+    async () => {
+      const v = await view(page);
+      return v.stage === stage && v.stageTicks >= stageTick;
+    },
+    10_000,
+    FRAME_MS
+  );
   await page.clock.runFor(FRAME_MS * 2);
 }
 
@@ -325,20 +373,24 @@ async function headsInColor(page: Page, heads: Point[], color: string): Promise<
   return (await colorDistances(page, centers, color, HEAD_REACH)).map((d) => d <= COLOR_NEAR);
 }
 
+/** The center of each Wisp head (logical canvas px). */
+const headCenters = (heads: Point[]): Point[] => heads.map((h) => ({ x: (h.x + 0.5) * RENDER_SCALE, y: (h.y + 0.5) * RENDER_SCALE }));
+
 test.describe('the Wisp surge on NORMAL', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('the claim that crosses raises the level: every Wisp x1.3, the heads and a ring in the level color, the surge sound once; the panel keeps x1', async ({ page }) => {
+  test('on stage 6 the claim that crosses raises the level: every Wisp x1.3, the heads and a ring in the level color, the surge sound once; the panel keeps x1.6', async ({ page }) => {
     await open(page);
     await playTo(page, SECOND_BOX_AT);
     const before = await view(page);
-    expect(before.stage).toBe(1);
+    expect(before.stage).toBe(6);
     expect(before.level).toBe(0);
     expect(before.occupancy).toBeGreaterThan(0);
     expect(before.required).toBeCloseTo(before.occupancy * 4, 12);
-    expect(before.speeds).toEqual([1]);
-    expect(before.headColors).toEqual(['#b967ff']);
-    expect(await headsInColor(page, before.heads, '#b967ff')).toEqual([true]);
+    // Stage 6: two Wisps at x1.6.
+    expect(before.speeds).toEqual([1.6, 1.6]);
+    expect(before.headColors).toEqual(['#b967ff', '#b967ff']);
+    expect(await headsInColor(page, before.heads, '#b967ff')).toEqual([true, true]);
     expect(before.rings).toEqual([]);
     expect(before.sounds).toEqual([]);
     expect((await probe(page)).cues).toEqual([]);
@@ -347,18 +399,21 @@ test.describe('the Wisp surge on NORMAL', () => {
     await page.clock.runFor(FRAME_MS * 2);
     const after = await view(page);
     expect(after.status).toBe('playing');
+    expect(after.stage).toBe(6);
     expect(after.occupancy).toBeCloseTo(before.occupancy * 3, 12);
     expect(after.level).toBe(2);
-    expect(after.speeds).toEqual([1.3]);
-    expect(after.panelSpeed).toBe(1);
-    expect(after.headColors).toEqual(['#ff3d81']);
-    expect(after.rings).toHaveLength(1);
-    expect(after.rings[0].color).toBe('#ff3d81');
-    // As drawn on the canvas: the head and the ring's line in the level color.
-    expect(await headsInColor(page, after.heads, '#ff3d81')).toEqual([true]);
-    expect(after.rings[0].alpha).toBeGreaterThanOrEqual(RING_PIXEL_MIN_ALPHA);
-    const ringPoints = circlePoints(after.rings[0], after.rings[0].radius, RING_SAMPLES).filter(onField);
-    expect(await shareInColor(page, ringPoints, '#ff3d81', RING_REACH)).toBeGreaterThanOrEqual(RING_PIXEL_MIN_SHARE);
+    expect(after.speeds).toEqual([1.6 * 1.3, 1.6 * 1.3]);
+    expect(after.panelSpeed).toBe(1.6);
+    expect(after.headColors).toEqual(['#ff3d81', '#ff3d81']);
+    expect(after.rings).toHaveLength(2);
+    // As drawn on the canvas: the heads and every ring's line in the level color.
+    expect(await headsInColor(page, after.heads, '#ff3d81')).toEqual([true, true]);
+    for (const ring of after.rings) {
+      expect(ring.color).toBe('#ff3d81');
+      expect(ring.alpha).toBeGreaterThanOrEqual(RING_PIXEL_MIN_ALPHA);
+      const ringPoints = circlePoints(ring, ring.radius, RING_SAMPLES).filter(onField);
+      expect(await shareInColor(page, ringPoints, '#ff3d81', RING_REACH)).toBeGreaterThanOrEqual(RING_PIXEL_MIN_SHARE);
+    }
     expect(after.sounds).toEqual(['wisp-surge-2']);
     const cues = (await probe(page)).cues;
     expect(cues.map((c) => c.level)).toEqual([2]);
@@ -369,31 +424,74 @@ test.describe('the Wisp surge on NORMAL', () => {
     const later = await view(page);
     expect(later.status).toBe('playing');
     expect(later.rings).toEqual([]);
-    expect(later.headColors).toEqual(['#ff3d81']);
-    expect(await headsInColor(page, later.heads, '#ff3d81')).toEqual([true]);
-    // Around the head, where the ring was, no line in the level color now.
-    const center = { x: (later.heads[0].x + 0.5) * RENDER_SCALE, y: (later.heads[0].y + 0.5) * RENDER_SCALE };
-    const noRing = circlePoints(center, after.rings[0].radius, RING_SAMPLES).filter(onField);
-    expect(await shareInColor(page, noRing, '#ff3d81', RING_REACH)).toBeLessThanOrEqual(NO_RING_PIXEL_MAX_SHARE);
+    expect(later.headColors).toEqual(['#ff3d81', '#ff3d81']);
+    expect(await headsInColor(page, later.heads, '#ff3d81')).toEqual([true, true]);
+    // Around each head, where its ring was, no line in the level color now.
+    for (const [i, center] of headCenters(later.heads).entries()) {
+      const noRing = circlePoints(center, after.rings[i].radius, RING_SAMPLES).filter(onField);
+      expect(await shareInColor(page, noRing, '#ff3d81', RING_REACH)).toBeLessThanOrEqual(NO_RING_PIXEL_MAX_SHARE);
+    }
     expect(later.sounds).toEqual(['wisp-surge-2']);
     expect((await probe(page)).cues).toHaveLength(1);
+  });
+
+  test('on stage 1 the same claims change no Wisp speed, color, ring or sound', async ({ page }) => {
+    await open(page, { stage: 1 });
+    await playTo(page, SECOND_BOX_AT, 1);
+    const before = await view(page);
+    expect(before.stage).toBe(1);
+    expect(before.required).toBeCloseTo(before.occupancy * 4, 12);
+    expect(before.speeds).toEqual([1]);
+
+    await advanceUntil(page, async () => (await view(page)).stageTicks >= SURGE_CLAIM_STAGE_TICK, 2_000, FRAME_MS);
+    await page.clock.runFor(FRAME_MS * 2);
+    const after = await view(page);
+    expect(after.status).toBe('playing');
+    expect(after.stage).toBe(1);
+    // Past half of the goal and within 0.10 of it: level 2 from stage 6 on.
+    expect(after.occupancy).toBeCloseTo(before.occupancy * 3, 12);
+    expect(after.occupancy).toBeGreaterThan(after.required / 2);
+    expect(after.required - after.occupancy).toBeLessThanOrEqual(0.1);
+    expect(after.level).toBe(0);
+    expect(after.speeds).toEqual([1]);
+    expect(after.panelSpeed).toBe(1);
+    expect(after.headColors).toEqual(['#b967ff']);
+    expect(await headsInColor(page, after.heads, '#b967ff')).toEqual([true]);
+    expect(after.rings).toEqual([]);
+    expect(after.sounds).toEqual([]);
+    expect((await probe(page)).cues).toEqual([]);
+
+    // And for as long as a cue would have shown: still nothing.
+    await page.clock.runFor(FRAME_MS * (WISP_SURGE_CUE_TICKS + 2));
+    const later = await view(page);
+    expect(later.status).toBe('playing');
+    expect(later.level).toBe(0);
+    expect(later.speeds).toEqual([1]);
+    expect(later.headColors).toEqual(['#b967ff']);
+    expect(await headsInColor(page, later.heads, '#b967ff')).toEqual([true]);
+    expect(later.rings).toEqual([]);
+    expect(later.sounds).toEqual([]);
+    expect((await probe(page)).cues).toEqual([]);
   });
 });
 
 test.describe('the Wisp surge on EASY', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('the same claims change no Wisp speed, color, ring or sound', async ({ page }) => {
+  test('the same claims on stage 6 change no Wisp speed, color, ring or sound', async ({ page }) => {
     await open(page, { easy: true });
     await expect(page.locator('#difficulty-button')).toContainText('EASY');
     await playTo(page, SURGE_CLAIM_STAGE_TICK + 10);
     const v = await view(page);
     expect(v.status).toBe('playing');
+    expect(v.stage).toBe(6);
     expect(v.occupancy).toBeGreaterThan(0);
     expect(v.occupancy).toBeGreaterThan(v.required / 2);
+    expect(v.required - v.occupancy).toBeLessThanOrEqual(0.1);
     expect(v.level).toBe(0);
-    expect(v.speeds).toEqual([0.7]);
-    expect(v.headColors).toEqual(['#b967ff']);
+    // Stage 6 on EASY: two Wisps at x1.6 times 0.7.
+    expect(v.speeds).toEqual([1.6 * 0.7, 1.6 * 0.7]);
+    expect(v.headColors).toEqual(['#b967ff', '#b967ff']);
     expect(v.rings).toEqual([]);
     expect(v.sounds).toEqual([]);
     expect((await probe(page)).cues).toEqual([]);
@@ -423,43 +521,51 @@ for (const vp of VIEWPORTS) {
         const v = await view(page);
         if ((await probe(page)).ticks >= cues[0].tick + WISP_SURGE_CUE_TICKS) break;
         expect(v.status).toBe('playing');
-        expect(v.rings).toHaveLength(1);
-        // On the Wisp's head as it is now (the frame drawn shows the last tick played).
-        expect({ x: v.rings[0].x, y: v.rings[0].y }).toEqual({ x: (v.heads[0].x + 0.5) * RENDER_SCALE, y: (v.heads[0].y + 0.5) * RENDER_SCALE });
-        // As drawn on the canvas: the head in the level color, and the ring's
-        // line in it too while it is still strong.
-        expect(await headsInColor(page, v.heads, '#ff3d81'), `head pixel at frame ${framesWithRing}`).toEqual([true]);
+        expect(v.stage).toBe(6);
+        // One ring on every Wisp (stage 6 has two).
+        expect(v.heads).toHaveLength(2);
+        expect(v.rings).toHaveLength(v.heads.length);
+        // Each on its Wisp's head as it is now (the frame drawn shows the last tick played).
+        expect(v.rings.map((r) => ({ x: r.x, y: r.y }))).toEqual(headCenters(v.heads));
+        // As drawn on the canvas: the heads in the level color, and every
+        // ring's line in it too while it is still strong.
+        expect(await headsInColor(page, v.heads, '#ff3d81'), `head pixels at frame ${framesWithRing}`).toEqual([true, true]);
         if (v.rings[0].alpha >= RING_PIXEL_MIN_ALPHA) {
-          const points = circlePoints(v.rings[0], v.rings[0].radius, RING_SAMPLES).filter(onField);
-          expect(await shareInColor(page, points, '#ff3d81', RING_REACH), `ring pixels at frame ${framesWithRing}`).toBeGreaterThanOrEqual(RING_PIXEL_MIN_SHARE);
+          for (const ring of v.rings) {
+            const points = circlePoints(ring, ring.radius, RING_SAMPLES).filter(onField);
+            expect(await shareInColor(page, points, '#ff3d81', RING_REACH), `ring pixels at frame ${framesWithRing}`).toBeGreaterThanOrEqual(RING_PIXEL_MIN_SHARE);
+          }
           framesWithRingPixels++;
           ringRadius = v.rings[0].radius;
         }
         framesWithRing++;
         const { canvas, others } = await obstacles(page);
-        const ring = toPage(canvas, ringBox(v.rings[0]));
-        // Clipped to the field, a part of it is always inside it.
-        expect(ring.right).toBeGreaterThan(ring.left);
-        expect(ring.bottom).toBeGreaterThan(ring.top);
-        for (const { name, rect } of others) expect(overlaps(ring, rect), `${name} at frame ${framesWithRing}`).toBe(false);
         const texts = await page.evaluate(() => (window as unknown as { __game__: Hook }).__game__.getFxTextBoxes());
-        for (const b of [texts.stageTitle, ...texts.claimTags].filter((b): b is TextBox => b !== null)) {
-          expect(overlaps(ringBox(v.rings[0]), textBox(b)), `field text at frame ${framesWithRing}`).toBe(false);
+        for (const drawn of v.rings) {
+          const ring = toPage(canvas, ringBox(drawn));
+          // Clipped to the field, a part of it is always inside it.
+          expect(ring.right).toBeGreaterThan(ring.left);
+          expect(ring.bottom).toBeGreaterThan(ring.top);
+          for (const { name, rect } of others) expect(overlaps(ring, rect), `${name} at frame ${framesWithRing}`).toBe(false);
+          for (const b of [texts.stageTitle, ...texts.claimTags].filter((b): b is TextBox => b !== null)) {
+            expect(overlaps(ringBox(drawn), textBox(b)), `field text at frame ${framesWithRing}`).toBe(false);
+          }
         }
         await page.clock.runFor(FRAME_MS * 3);
       }
       expect(framesWithRing).toBeGreaterThan(3);
       expect(framesWithRingPixels).toBeGreaterThan(0);
-      // The first frame without the ring: the head keeps the level color, and
-      // around it no line in that color.
+      // The first frame without the rings: the heads keep the level color, and
+      // around them no line in that color.
       await page.clock.runFor(FRAME_MS * 2);
       const gone = await view(page);
       expect(gone.status).toBe('playing');
       expect(gone.rings).toEqual([]);
-      expect(await headsInColor(page, gone.heads, '#ff3d81')).toEqual([true]);
-      const center = { x: (gone.heads[0].x + 0.5) * RENDER_SCALE, y: (gone.heads[0].y + 0.5) * RENDER_SCALE };
-      const points = circlePoints(center, ringRadius, RING_SAMPLES).filter(onField);
-      expect(await shareInColor(page, points, '#ff3d81', RING_REACH)).toBeLessThanOrEqual(NO_RING_PIXEL_MAX_SHARE);
+      expect(await headsInColor(page, gone.heads, '#ff3d81')).toEqual([true, true]);
+      for (const center of headCenters(gone.heads)) {
+        const points = circlePoints(center, ringRadius, RING_SAMPLES).filter(onField);
+        expect(await shareInColor(page, points, '#ff3d81', RING_REACH)).toBeLessThanOrEqual(NO_RING_PIXEL_MAX_SHARE);
+      }
     });
   });
 }
@@ -534,27 +640,28 @@ function strokesMeet(a: { x: number; y: number; radius: number; width: number },
   return true;
 }
 
-// The first claim of a run shows the claimed-side hint, with its white ring
-// around every Wisp, on the same tick; a first claim past half of the goal
-// raises the surge level then too. Both rings sit on the same Wisp, so the
-// surge ring (drawn under the hint's) must never share the hint ring's
-// radius: checked from the radii and line widths the renderer drew with.
+// A hint that rings the Wisps (here the split hint, shown as stage 6 starts
+// once the seen hints are forgotten) can be up while a claim raises the surge
+// level. Both rings sit on the same Wisp, so the surge ring (drawn under the
+// hint's) must never share the hint ring's radius: checked from the radii
+// and line widths the renderer drew with.
 for (const vp of VIEWPORTS) {
   for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     const motion = reducedMotion === 'reduce' ? 'reduced motion' : 'full motion';
-    test.describe(`the surge ring with the claimed-side hint at ${vp.width}x${vp.height}${vp.touch ? ' (touch)' : ''}, ${motion}`, () => {
+    test.describe(`the surge ring with the split hint at ${vp.width}x${vp.height}${vp.touch ? ' (touch)' : ''}, ${motion}`, () => {
       test.use({ viewport: { width: vp.width, height: vp.height }, hasTouch: vp.touch, isMobile: vp.touch, reducedMotion });
 
       test('stays clear of the hint ring on the same Wisp, in its own color, on the field, for as long as it shows', async ({ page }) => {
-        await open(page, { line: true });
+        await open(page, { splitHint: true, ticks: HINT_BOX_TICKS });
         await page.keyboard.press('Space');
         await advanceUntil(page, async () => (await view(page)).status === 'playing', 2_000, FRAME_MS);
-        await advanceUntil(page, async () => (await view(page)).occupancy > 0, 10_000, FRAME_MS);
+        await advanceUntil(page, async () => (await probe(page)).cues.length > 0, 10_000, FRAME_MS);
         await page.clock.runFor(FRAME_MS * 2);
         const cues = (await probe(page)).cues;
         expect(cues).toHaveLength(1);
         const first = await view(page);
         expect(first.status).toBe('playing');
+        expect(first.stage).toBe(6);
         expect(first.occupancy).toBeGreaterThan(first.required / 2);
         expect(first.level).toBe(cues[0].level);
         let framesWithBoth = 0;
@@ -568,7 +675,7 @@ for (const vp of VIEWPORTS) {
             return { hint: g.getHint(), marks: g.getHintMarks() };
           });
           expect(v.status).toBe('playing');
-          expect(hint?.id).toBe('claimSide');
+          expect(hint?.id).toBe('split');
           expect(v.rings).toHaveLength(v.heads.length);
           expect(marks?.rings ?? []).toHaveLength(v.heads.length);
           v.rings.forEach((ring, i) => {
