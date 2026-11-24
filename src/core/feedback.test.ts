@@ -8,6 +8,7 @@ import { Wisp } from './enemy';
 import { Ember } from './patrol';
 import { scoreAreaClaim, scoreStageClearBonus } from './scoring';
 import { runScriptedSession } from './scriptedRun';
+import { lateSurgeRises, playSurgeRun, replaySurgeRun } from './surgeRunFixture';
 import { ClaimFeedback, MissFeedback } from './feedback';
 import { BIG_CLAIM_MULTIPLIER, IGNITER_SPAWN_STILL_TICKS, INITIAL_LIVES, NEAR_MISS_BONUS } from '../config';
 
@@ -29,6 +30,22 @@ describe('captureFeedback does not change the run', () => {
       expect(withCapture).toEqual(without);
     });
   }
+
+  it('the stage 6 surge run (core/surgeRunFixture.ts): identical summary (score, stage, lives, board, event order) with and without capture, through both surge rises', () => {
+    // The same seed and the same recorded input, replayed on a session with
+    // capture off and on one with it on.
+    const { seed, samples } = playSurgeRun();
+    const without = replaySurgeRun(seed, samples, false);
+    const withCapture = replaySurgeRun(seed, samples, true);
+    expect(withCapture.summary).toEqual(without.summary);
+    expect(withCapture.rises).toEqual(without.rises);
+    // The run does go through the surge: level 1 and level 2 on stage 6, play going on.
+    const { level1, level2 } = lateSurgeRises(without.rises);
+    expect(level1).toMatchObject({ stage: 6, level: 1, status: 'playing' });
+    expect(level2).toMatchObject({ stage: 6, level: 2, status: 'playing' });
+    expect(without.summary.stage).toBe(6);
+    expect(without.summary.status).toBe('gameover');
+  });
 
   it('produces nothing when capture is off: every drain is empty on every tick', () => {
     let ticks = 0;

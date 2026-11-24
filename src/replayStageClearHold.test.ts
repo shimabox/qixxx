@@ -123,6 +123,29 @@ function recordMultiStageSamples(seed: number): InputSample[] {
   return samples;
 }
 
+/** The edge every stage of the recording starts on (the marker as the stage begins), in order. */
+function stageStartEdges(seed: number, samples: readonly InputSample[]): string[] {
+  const session = new GameSession({ seed });
+  session.update(CONFIRM);
+  const field = session.getGame().getField();
+  const edge = (): string => {
+    const { x, y } = session.getGame().getMarker().getPosition();
+    if (y === 0) return 'top';
+    if (y === field.getHeight() - 1) return 'bottom';
+    if (x === 0) return 'left';
+    return x === field.getWidth() - 1 ? 'right' : 'inside';
+  };
+  const edges = [edge()];
+  for (const sample of samples) {
+    session.update({ ...sample, confirm: false });
+    if (session.getStatus() === 'stageclear') {
+      session.update(CONFIRM);
+      edges.push(edge());
+    }
+  }
+  return edges;
+}
+
 /** The leading samples of `samples` up to and including the one that clears stage 1 — a recording cut off on a StageClear. */
 function truncateAtFirstStageClear(seed: number, samples: readonly InputSample[]): InputSample[] {
   const session = new GameSession({ seed });
@@ -205,6 +228,9 @@ describe('STAGE CLEAR hold leaves replay playback unchanged', () => {
     expect(held.holds).toBe(MULTI_STAGE_FINAL_STAGE - 1);
     expect(held.heldTicks).toBe(HOLD_TICKS * (MULTI_STAGE_FINAL_STAGE - 1));
     expect(plain.heldTicks).toBe(0);
+    // The later stages start on the bottom edge and on the top one, so the
+    // replay reproduces random stage starts on more than one edge.
+    expect(stageStartEdges(MULTI_STAGE_SEED, samples)).toEqual(['top', 'bottom', 'top', 'bottom']);
 
     // Every recorded sample is consumed, once, in both.
     expect(held.steps).toBe(samples.length);

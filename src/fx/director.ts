@@ -14,7 +14,7 @@
 // once per fixed tick, including the ticks a hit stop freezes — so what is
 // on screen depends only on the sequence of calls, never on the frame rate.
 // The renderer reads the result through getFrame().
-import type { ClaimFeedback, MissFeedback } from '../core/feedback';
+import type { ClaimFeedback, MissFeedback, WispSurgeFeedback } from '../core/feedback';
 import type { Point } from '../core/field';
 import { FxParams, FxShakeSpec, ClaimPraise, classifyClaimShare, praiseForClaimShare } from './params';
 import { BannerGlitch, bannerGlitch, popupBounceScale, popupChannelOffset } from './textGlitch';
@@ -26,6 +26,10 @@ import {
   FX_START_CUE_TO_RADIUS_CELLS,
   FX_START_CUE_REDUCED_RADIUS_CELLS,
   FX_START_CUE_MIN_ALPHA,
+  WISP_SURGE_CUE_TICKS,
+  WISP_SURGE_CUE_FROM_RADIUS_CELLS,
+  WISP_SURGE_CUE_TO_RADIUS_CELLS,
+  WISP_SURGE_CUE_REDUCED_RADIUS_CELLS,
 } from '../config';
 
 export interface FxLineGlow {
@@ -183,6 +187,23 @@ export interface FxFrame {
   stageTitle: FxStageTitle | null;
   /** The ring around the marker as a stage starts, while shown (reduced motion too, without shrinking). */
   startCue: FxStartCue | null;
+  /** The rings spreading from the Wisp heads as the surge level rises, while shown (reduced motion too, without spreading). */
+  surgeRings: FxSurgeRing[];
+}
+
+/**
+ * One ring of the Wisp surge cue for one frame, one per Wisp in order. The
+ * renderer centres it on that Wisp's head as it draws, so it stays on the
+ * Wisp as it moves (src/render/surgeCueLayer.ts).
+ */
+export interface FxSurgeRing {
+  /** The head's cell as the level rose: the centre when its Wisp is no longer drawn. */
+  center: Point;
+  /** Radius in cells. */
+  radiusCells: number;
+  alpha: number;
+  /** The level the claim raised the surge to: the ring takes that level's head color. */
+  level: 1 | 2;
 }
 
 /**
@@ -277,6 +298,25 @@ interface StageTitleEffect extends Timed {
   title: string;
 }
 
+interface SurgeCueEffect extends Timed {
+  level: 1 | 2;
+  positions: Point[];
+}
+
+/**
+ * The Wisp surge cue's rings at `cue.age`: each spreads from
+ * WISP_SURGE_CUE_FROM_RADIUS_CELLS to WISP_SURGE_CUE_TO_RADIUS_CELLS while it
+ * fades; with reduced motion each stays WISP_SURGE_CUE_REDUCED_RADIUS_CELLS
+ * and only fades.
+ */
+export function surgeRingsFrame(cue: SurgeCueEffect, reduced: boolean): FxSurgeRing[] {
+  const u = Math.min(1, cue.age / cue.duration);
+  const radiusCells = reduced
+    ? WISP_SURGE_CUE_REDUCED_RADIUS_CELLS
+    : WISP_SURGE_CUE_FROM_RADIUS_CELLS + (WISP_SURGE_CUE_TO_RADIUS_CELLS - WISP_SURGE_CUE_FROM_RADIUS_CELLS) * u;
+  return cue.positions.map((p) => ({ center: { x: p.x, y: p.y }, radiusCells, alpha: 1 - u, level: cue.level }));
+}
+
 // The stage title and the claim tags pop in from this size over POP_TICKS,
 // and fade out over their last FADE_TICKS (neither with reduced motion).
 const LABEL_POP_SCALE = 1.25;
@@ -338,6 +378,7 @@ export class FxDirector {
   private claimTags: ClaimTagsEffect[] = [];
   private stageTitle: StageTitleEffect | null = null;
   private startCue: Timed | null = null;
+  private surgeCue: SurgeCueEffect | null = null;
   private splitLockTicks = 0;
   private gameOverHoldTicks = 0;
   // Claims in a row: the director's own tick count (every tick(), stopped
@@ -494,9 +535,26 @@ export class FxDirector {
     this.startCue = p.stageTitleTicks > 0 ? { age: 0, duration: p.stageTitleTicks } : null;
   }
 
+  /**
+   * Starts the Wisp surge cue for one claim that raised the surge level with
+   * play going on (src/fx/liveTick.ts decides that): a ring spreading from
+   * every Wisp head for WISP_SURGE_CUE_TICKS, replacing any still shown.
+   * Display only, with no text. Live play only: a replay and the Title demo
+   * never call this.
+   */
+  onWispSurge(feedback: WispSurgeFeedback): void {
+    this.surgeCue = {
+      age: 0,
+      duration: WISP_SURGE_CUE_TICKS,
+      level: feedback.level,
+      positions: feedback.positions.map((p) => ({ x: p.x, y: p.y })),
+    };
+  }
+
   /** Ages every effect by one fixed tick. */
   tick(): void {
     this.ticks++;
+    if (this.surgeCue && !age(this.surgeCue)) this.surgeCue = null;
     this.claimTags = this.claimTags.filter(age);
     if (this.stageTitle && !age(this.stageTitle)) this.stageTitle = null;
     if (this.startCue && !age(this.startCue)) this.startCue = null;
@@ -532,6 +590,7 @@ export class FxDirector {
    * multiplier keep running over the new board for the rest of their time.
    */
   resetBoard(): void {
+    this.surgeCue = null;
     this.missReason = null;
     this.claimTags = [];
     this.glows = [];
@@ -647,6 +706,7 @@ export class FxDirector {
           }
         : null,
       startCue: this.startCue ? startCueFrame(this.startCue, reduced) : null,
+      surgeRings: this.surgeCue ? surgeRingsFrame(this.surgeCue, reduced) : [],
     };
   }
 

@@ -58,3 +58,15 @@ export interface MissFeedback {
   /** The in-progress line's cells right before it vanished (a copy; empty when no line was being drawn). */
   line: Point[];
 }
+
+/**
+ * A claim raised the Wisp surge level (core/wispSurge.ts). Only a claim
+ * that leaves the stage still playing queues one; a debug override changing
+ * the level never does.
+ */
+export interface WispSurgeFeedback {
+  /** The new level (1 or 2). */
+  level: 1 | 2;
+  /** Every Wisp's head as the level rose (copies). */
+  positions: Point[];
+}

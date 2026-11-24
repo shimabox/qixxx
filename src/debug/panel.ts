@@ -21,6 +21,7 @@ import {
   SPLIT_MULTIPLIER_CAP,
   EMBER_FIRST_SPAWN_SEC,
   LATE_STAGE_WISP_COUNT_MAX,
+  WISP_SURGE_FIRST_STAGE,
   BIG_CLAIM_SHARE,
   PLAY_LOG_MAX_RUNS,
   PLAY_LOG_STREAK_STAGE,
@@ -312,8 +313,7 @@ export function buildExportPayload(
       EMBER_FIRST_SPAWN_SEC:
         "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
       WISP_COUNT: `Number of Wisps this stage. config.ts has no single constant for this — through stage 15 it is the current stage's wispCount in STAGE_TABLE. From stage 16 on it is not in the table: it is the last row's wispCount plus one for each stage past 15, held at LATE_STAGE_WISP_COUNT_MAX (${LATE_STAGE_WISP_COUNT_MAX}).`,
-      WISP_SPEED_MULTIPLIER:
-        "Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE.",
+      WISP_SPEED_MULTIPLIER: `Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE. On NORMAL from stage ${WISP_SURGE_FIRST_STAGE} (WISP_SURGE_FIRST_STAGE) on, the Wisps actually move at this times WISP_SURGE_MULTIPLIERS' entry for the stage's surge level (past WISP_SURGE_FIRST_RATIO of the goal, then within WISP_SURGE_FINAL_MARGIN of it); this value is before that.`,
       EMBER_COUNT:
         "Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the current stage's maxConcurrentEmbers in STAGE_TABLE rather than a fixed config constant.",
       DEFAULT_REQUIRED_OCCUPANCY:

@@ -1,8 +1,19 @@
 import { GameSession, SessionInput } from './core/session';
 import { ReplayEngine } from './core/replayEngine';
+import {
+  activeBoardSession,
+  boardFxFrame,
+  boardWispDraws,
+  BoardSources,
+  drawnBoardGame,
+  renderedFxFrame,
+  shownTitleDemoEngine as shownTitleDemoEngineOf,
+  stepReplayView,
+} from './replayView';
 import { Renderer } from './render/renderer';
 import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
 import type { StartCueRing } from './render/startCueLayer';
+import type { SurgeCueRing } from './render/surgeCueLayer';
 import { getStageConfig } from './core/stage';
 import { KeyboardInput } from './input/keyboard';
 import {
@@ -147,7 +158,15 @@ declare global {
         marker: { x: number; y: number } | null;
         /** The veil's opacity on the last frame drawn (0 for none). */
         veil: number;
+        /** The demo session's status and its stage's Wisp surge level, while it is shown. */
+        status: string | null;
+        surgeLevel: number | null;
       };
+      /**
+       * What the last frame drew of the Wisp surge (logical canvas px): the
+       * cue's rings, and the head color of every Wisp drawn.
+       */
+      getWispSurgeDraw: () => { rings: SurgeCueRing[]; headColors: string[] };
       /** The live run is paused (src/pause.ts). */
       isPaused: () => boolean;
       /** How many live ticks have passed the core a confirm, from the page load. */
@@ -1197,8 +1216,11 @@ function init(): void {
         ticks: demoSession?.getTotalTicks() ?? null,
         marker: marker ? { x: marker.x, y: marker.y } : null,
         veil: renderer.getLastVeilAlpha(),
+        status: demoSession?.getStatus() ?? null,
+        surgeLevel: demoSession?.getGame().getWispSurgeLevel() ?? null,
       };
     },
+    getWispSurgeDraw: () => ({ rings: renderer.getLastSurgeRings(), headColors: renderer.getLastWispHeadColors() }),
     isPaused: () => pauseControl.isPaused(),
     getConfirmCount: () => liveConfirmCount,
     getPlayLog: () => playLog.list(),
@@ -1497,9 +1519,14 @@ function currentRetryHold(): RetryHold {
   };
 }
 
+/** What decides the board on screen now (src/replayView.ts's BoardSources). */
+function boardSources(): BoardSources {
+  return { viewMode, live: session, replay: replayEngine, titleDemo };
+}
+
 /** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
 function currentSession(): GameSession {
-  return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
+  return activeBoardSession(boardSources());
 }
 
 // REPLAY VIEWING mode switches (see `viewMode`'s module doc comment).
@@ -1936,12 +1963,10 @@ function update(): void {
   stepTitleDemo();
 }
 
-// The Title demo's engine whose board is on screen now, or null. Only ever
-// on the live Title screen: the tick that starts a run, or a ranking replay
-// opening between ticks, already shows the board it switches to.
+// The Title demo's engine whose board is on screen now, or null
+// (src/replayView.ts's shownTitleDemoEngine()).
 function shownTitleDemoEngine(): ReplayEngine | null {
-  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return null;
-  return titleDemo.getShownEngine();
+  return shownTitleDemoEngineOf(boardSources());
 }
 
 // One Title demo tick (see `titleDemo`), after the live tick: it plays only
@@ -1976,7 +2001,6 @@ function updateReplay(): void {
   // InputRecorder never observes, highscore is never persisted, sfx never
   // plays.
   if (replayEngine && replayAutoAdvance) {
-    const replaySession = replayEngine.getSession();
     // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
     // the next stage's first tick in one call, so calling it every tick
     // replaces a cleared stage before a single frame can show it. While the
@@ -1986,19 +2010,8 @@ function updateReplay(): void {
     // and the tick that ends the hold makes the very same stepTick() call
     // an unheld playback would have made. Never reached while a skip is in
     // charge of the engine (replayAutoAdvance is false then), so the hold
-    // can't count down behind a skip either.
-    const holding = replayStageClearHold.shouldHold({
-      status: replaySession.getStatus(),
-      finished: replayEngine.isFinished(),
-    });
-    if (holding) return;
-    const advanced = replayEngine.stepTick();
-    // Drain (not forward anywhere) every tick, same as a live run —
-    // GameSession's own doc comments warn these queues grow unbounded
-    // otherwise.
-    replaySession.drainEvents();
-    replaySession.drainDespawnedEmberPositions();
-    if (!advanced) replayAutoAdvance = false;
+    // can't count down behind a skip either. (src/replayView.ts)
+    if (!stepReplayView(replayEngine, replayStageClearHold)) replayAutoAdvance = false;
   }
 }
 
@@ -2329,7 +2342,7 @@ function renderFrame(): void {
   // session's. Everything else below (HUD, overlay, sounds, hints) keeps
   // reading `activeSession` / `game`.
   const demoEngine = shownTitleDemoEngine();
-  const boardGame = demoEngine ? demoEngine.getSession().getGame() : game;
+  const boardGame = drawnBoardGame(boardSources());
   // The pause screen covers the field while paused; the touch PAUSE button
   // shows wherever the run can be paused, and while it is.
   const paused = pauseControl.isPaused();
@@ -2341,7 +2354,7 @@ function renderFrame(): void {
   // period lasts; otherwise always visible.
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
   // Impact feedback is live play only: a replay is drawn exactly as before.
-  const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
+  const fxFrame = boardFxFrame(viewMode, fx);
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
   renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
@@ -2377,12 +2390,13 @@ function renderFrame(): void {
   renderer.render(
     boardGame.getField(),
     boardGame.getMarker().getPosition(),
-    // Each Wisp's own speed sets its trail's color, on whichever board is drawn.
-    boardGame.getWisps().map((wisp) => ({ trail: wisp.getTrailRef(), speedMultiplier: wisp.getSpeedMultiplier() })),
+    // Each Wisp's own speed sets its trail's color, and the stage's surge
+    // level its head's, on whichever board is drawn.
+    boardWispDraws(boardGame),
     boardGame.getEmbers(),
     boardGame.getIgniterPosition(),
     markerVisible,
-    demoEngine ? undefined : fxFrame ?? undefined
+    renderedFxFrame(fxFrame, demoEngine !== null)
   );
   // The travelling multiplier crosses the field outside #canvas-wrap, so the
   // pause screen does not cover it: it is not drawn while paused.

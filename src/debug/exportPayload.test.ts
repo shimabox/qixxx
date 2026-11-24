@@ -136,6 +136,37 @@ describe('EXPORT', () => {
     expect(exportOf(second).EMBER_FIRST_SPAWN_SEC).toBe(8);
   });
 
+  it('exports the Wisps’ own speed multiplier while the surge has them moving faster, and says the surge applies on top on NORMAL from stage 6', () => {
+    // Stage 6 (two Wisps); on seed 5 it starts on the left edge.
+    const session = sessionAtStage(6, { seed: 5 });
+    expect(session.getMarkerStart()!.edge).toBe('left');
+    // A goal out of reach, then a small box straight in from the start, along
+    // the edge and back out, then a goal low enough to put that occupancy
+    // within the final margin.
+    session.applyDebugOverrides({ requiredOccupancy: 0.99 });
+    for (const [dx, dy] of [[1, 0], [1, 0], [0, 1], [0, 1], [-1, 0], [-1, 0]] as const) {
+      session.update({ dx, dy, drawHeld: true, confirm: false });
+    }
+    expect(session.getGame().getOccupancy()).toBeGreaterThan(0);
+    session.applyDebugOverrides({ requiredOccupancy: session.getGame().getOccupancy() * 1.5, wispSpeedMultiplier: 2 });
+    expect(session.getStage()).toBe(6);
+    expect(session.getStatus()).toBe('playing');
+    expect(session.getGame().getWispSurgeLevel()).toBe(2);
+    expect(session.getGame().getWisps().map((w) => w.getSpeedMultiplier())).toEqual([2.6, 2.6]);
+    const payload = buildExportPayload(
+      session.getEffectiveDebugParams(),
+      session.getTimeLimitTicks(),
+      undefined,
+      undefined,
+      session.getDebugOverrides(),
+      session.getStage()
+    ) as Record<string, unknown> & { _notes: Record<string, string> };
+    expect(payload.WISP_SPEED_MULTIPLIER).toBe(2);
+    const note = payload._notes.WISP_SPEED_MULTIPLIER;
+    expect(note).toContain('NORMAL from stage 6 (WISP_SURGE_FIRST_STAGE) on');
+    expect(note).toContain('WISP_SURGE_MULTIPLIERS');
+  });
+
   it('exported on stage 18, has 10 Wisps and says how the count past the table is made', () => {
     const session = sessionAtStage(18, { seed: 1 });
     // Back to the stage's own values: the walk on lowered every goal.

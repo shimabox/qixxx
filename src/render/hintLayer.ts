@@ -13,6 +13,9 @@ import { HINT_ARROW_LENGTH_CELLS, HINT_RING_RADIUS_CELLS, RENDER_SCALE } from '.
 const PULSE_PERIOD_TICKS = 40;
 const RING_COLOR = '#ffffff';
 const RING_OUTLINE = 'rgba(10, 14, 39, 0.85)';
+/** The ring's dark outline and its white line on it (logical px). */
+export const HINT_RING_OUTLINE_WIDTH_PX = RENDER_SCALE * 1.2;
+export const HINT_RING_LINE_WIDTH_PX = RENDER_SCALE * 0.6;
 // The arrow starts this far from the marker's center, so it does not cover it.
 const ARROW_START_CELLS = 2;
 
@@ -113,10 +116,10 @@ export function drawHintMarks(ctx: CanvasRenderingContext2D, shapes: HintMarkSha
     ctx.globalAlpha = ring.alpha;
     ctx.beginPath();
     ctx.arc(ring.x, ring.y, ring.radius, 0, Math.PI * 2);
-    ctx.lineWidth = RENDER_SCALE * 1.2;
+    ctx.lineWidth = HINT_RING_OUTLINE_WIDTH_PX;
     ctx.strokeStyle = RING_OUTLINE;
     ctx.stroke();
-    ctx.lineWidth = RENDER_SCALE * 0.6;
+    ctx.lineWidth = HINT_RING_LINE_WIDTH_PX;
     ctx.strokeStyle = RING_COLOR;
     ctx.stroke();
   }

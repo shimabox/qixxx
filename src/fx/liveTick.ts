@@ -5,7 +5,7 @@
 //
 // Replay viewing never goes through here.
 import type { SessionInput, SessionStatus, GameOverReason } from '../core/session';
-import type { ClaimFeedback, MissFeedback } from '../core/feedback';
+import type { ClaimFeedback, MissFeedback, WispSurgeFeedback } from '../core/feedback';
 import type { LineSpeed } from '../core/claim';
 import type { HitStop } from './hitStop';
 import type { FxDirector } from './director';
@@ -136,6 +136,8 @@ export interface FeedbackSource {
   getMultiplier(): number;
   getStatus(): SessionStatus;
   getGameOverReason(): GameOverReason;
+  /** The tick's Wisp surge notices (GameSession.drainWispSurgeFeedback()); a source without any may leave it out. */
+  drainWispSurgeFeedback?(): WispSurgeFeedback[];
 }
 
 /** The claim/split sounds (SfxEngine); the miss sound stays with its 'miss' GameEvent. */
@@ -143,6 +145,8 @@ export interface ImpactSounds {
   /** `chain`: the claim's place in a row of claims (FxDirector.onClaim()), raising its pitch. */
   playClaim(claim: { share: number; speed: LineSpeed; chain: number }): void;
   playSplitImpact(): void;
+  /** The Wisp surge sound (SfxEngine.playWispSurge()); optional for callers that never pass surge notices. */
+  playWispSurge?(level: 1 | 2): void;
 }
 
 /**
@@ -155,10 +159,15 @@ export interface ImpactSounds {
  * Returns the tick's claim and miss notices — drained here, once — for the
  * STAGE CLEAR result (src/stageResult.ts) and the play log
  * (src/playLog/recorder.ts).
+ *
+ * A Wisp surge notice (a claim raised the surge level) starts the surge
+ * ring and sound once — only while the session is still playing at the end
+ * of the tick: a TIME UP on the same tick ends the run after the claim, and
+ * then neither appears.
  */
 export function applyImpactNotices(
   session: FeedbackSource,
-  fx: Pick<FxDirector, 'onClaim' | 'onMiss'>,
+  fx: Pick<FxDirector, 'onClaim' | 'onMiss' | 'onWispSurge'>,
   hitStop: HitStop,
   sounds: ImpactSounds,
   missReason?: (notice: MissFeedback) => string | null
@@ -178,6 +187,13 @@ export function applyImpactNotices(
   for (const notice of misses) {
     const gameOver = session.getStatus() === 'gameover' && session.getGameOverReason() === 'life';
     hitStop.request(fx.onMiss(notice, { gameOver, reason: missReason?.(notice) ?? null }).hitStopTicks);
+  }
+  const surges = session.drainWispSurgeFeedback?.() ?? [];
+  if (session.getStatus() === 'playing') {
+    for (const notice of surges) {
+      fx.onWispSurge(notice);
+      sounds.playWispSurge?.(notice.level);
+    }
   }
   return { claims, misses };
 }

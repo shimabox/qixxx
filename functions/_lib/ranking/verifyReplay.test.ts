@@ -4,6 +4,7 @@ import { Axis } from '../../../src/core/marker';
 import { encodeRle, InputSample } from '../../../src/core/rle';
 import { MAX_VERIFIED_CLAIMS, GRID_WIDTH, GRID_HEIGHT } from '../../../src/config';
 import { buildStageScript } from '../../../src/core/scriptedRun';
+import { lateSurgeRises, playSurgeRun } from '../../../src/core/surgeRunFixture';
 import { verifyReplay } from './verifyReplay';
 import { simulateReplayFromRle } from '../../../src/core/replayEngine';
 
@@ -165,6 +166,31 @@ describe('verifyReplay', () => {
       stage: session.getStage(),
       durationTicks: session.getTotalTicks(),
       gameOverReason: session.getGameOverReason(),
+    });
+  });
+
+  it('accepts a run whose Wisps speed up on stage 6 (the surge to level 1 and then 2, with play going on), with the same score and stage', () => {
+    // core/surgeRunFixture.ts: a NORMAL run with no debug override, to GAME
+    // OVER, whose stage 6 claims raise the Wisp surge to level 1 and then to
+    // level 2, each leaving play going on, with more ticks played after both,
+    // so the server has to move the sped-up Wisps as the client did.
+    const run = playSurgeRun();
+    const { level1, level2 } = lateSurgeRises(run.rises);
+    expect(level1).toMatchObject({ stage: 6, level: 1, status: 'playing' });
+    expect(level2).toMatchObject({ stage: 6, level: 2, status: 'playing' });
+    expect(level1!.tick).toBeLessThan(level2!.tick);
+    expect(run.samples.length).toBe(run.session.getTotalTicks());
+    expect(run.samples.length).toBeGreaterThan(level2!.tick);
+    expect(run.session.getStatus()).toBe('gameover');
+    expect(run.session.isRunTainted()).toBe(false);
+
+    const result = verifyReplay(run.seed, encodeRle(run.samples));
+    expect(result).toMatchObject({
+      ok: true,
+      score: run.session.getScore(),
+      stage: run.session.getStage(),
+      durationTicks: run.session.getTotalTicks(),
+      gameOverReason: run.session.getGameOverReason(),
     });
   });
 

@@ -10,7 +10,10 @@
 // is published, its baseline must not be edited to make a change pass: a
 // change that alters these runs needs a new ruleset.
 //
-// What each case covers:
+// What each case covers (every one of them, and every stage 1 run below,
+// ends by stage 5 and so never meets the Wisp surge, which NORMAL has from
+// WISP_SURGE_FIRST_STAGE on — checked below: the level is 0 on every tick;
+// the surge is pinned by its own run, core/surgeRunFixture.ts's, below):
 // - small field, seed 6471: occupancy clears (stages 1 and 2), a split clear
 //   (stage 3), a run past stage 3, gameover, close calls and big claims.
 // - small field, seed 704: occupancy clears (stages 1 and 2), a split clear
@@ -29,6 +32,7 @@
 // on all four edges.
 import { describe, it, expect } from 'vitest';
 import { runScriptedSession, ScriptedRunSummary } from './scriptedRun';
+import { playSurgeRun } from './surgeRunFixture';
 import { RULESET_VERSION } from '../config';
 
 const BASELINE_CASES: ReadonlyArray<{
@@ -160,6 +164,54 @@ describe('rule invariance baseline', () => {
       expect(runScriptedSession(options)).toEqual(expected);
     });
   }
+
+  it('stays on Wisp surge level 0 on every tick of every case and every stage 1 run, so no pinned run depends on the surge', () => {
+    for (const { options } of [...BASELINE_CASES, ...STAGE_1_RUNS]) {
+      let ticks = 0;
+      let highest = 0;
+      runScriptedSession({
+        ...options,
+        onTick: (session) => {
+          ticks++;
+          highest = Math.max(highest, session.getGame().getWispSurgeLevel());
+        },
+      });
+      expect(ticks, `seed ${options.seed}`).toBeGreaterThan(0);
+      expect(highest, `seed ${options.seed}`).toBe(0);
+    }
+  });
+
+  it('full-size field, the stage 6 surge run (core/surgeRunFixture.ts, seed 30): the surge to level 1 and 2 on stage 6, then gameover', () => {
+    // The pinned run that goes through the Wisp surge: occupancy clears
+    // (stages 1 and 2), split clears (stages 3 to 5), then stage 6's claims
+    // raise the level to 1 (tick 1635) and 2 (tick 1908) with play going on,
+    // and the Wisps move sped up until the last life is lost.
+    const run = playSurgeRun();
+    expect(run.rises).toEqual([
+      { stage: 6, tick: 1635, level: 1, status: 'playing' },
+      { stage: 6, tick: 1908, level: 2, status: 'playing' },
+    ]);
+    expect(run.summary).toEqual({
+      score: 115316,
+      stage: 6,
+      lives: 0,
+      claims: 8,
+      misses: 3,
+      splits: 3,
+      totalTicks: 3962,
+      status: 'gameover',
+      gameOverReason: 'life',
+      fieldHash: '52253a09',
+      eventsHash: '8aec297f',
+      stages: [
+        { stage: 1, score: 9893, lives: 3, totalTicks: 149, fieldHash: 'bd011965', split: false },
+        { stage: 2, score: 22018, lives: 3, totalTicks: 475, fieldHash: 'f2e67409', split: false },
+        { stage: 3, score: 26177, lives: 3, totalTicks: 765, fieldHash: 'a7487875', split: true },
+        { stage: 4, score: 42507, lives: 3, totalTicks: 1012, fieldHash: 'a1bec209', split: true },
+        { stage: 5, score: 81539, lives: 3, totalTicks: 1500, fieldHash: '3c6a1a25', split: true },
+      ],
+    });
+  });
 
   it("seed 704's pinned stage 4 points are its claim's x1 points doubled", () => {
     // Worked out by hand rather than through the scoring code: at x1 a fast

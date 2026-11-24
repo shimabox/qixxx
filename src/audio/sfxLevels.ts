@@ -60,6 +60,7 @@ export type SfxVoice =
   | 'time-alarm'
   | 'time-beep'
   | 'ember-entered-line'
+  | 'wisp-surge'
   | 'igniter-spawn'
   | 'blaze-spawn'
   | 'ember-spawn'
@@ -97,6 +98,8 @@ export const SFX_VOICE_LEVELS: Readonly<Record<SfxVoice, SfxVoiceLevel>> = {
   'time-alarm': { tier: 'warning', share: 1 },
   'time-beep': { tier: 'warning', share: 0.9 },
   'ember-entered-line': { tier: 'warning', share: 0.8 },
+  // The Wisps speeding up as the goal nears.
+  'wisp-surge': { tier: 'warning', share: 0.8 },
   // 4. Enemies appearing, and the count-up's tick.
   'igniter-spawn': { tier: 'enemy', share: 1 },
   'blaze-spawn': { tier: 'enemy', share: 1 },

@@ -9,8 +9,11 @@
 // not exported, and the core is left as it is), so what is drawn is exactly
 // what hits — src/render/wispShape.test.ts checks the two agree.
 import type { Point } from '../core/field';
+import type { WispSurgeLevel } from '../core/wispSurge';
 import {
   COLOR_WISP_HEAD,
+  COLOR_WISP_HEAD_SURGE_1,
+  COLOR_WISP_HEAD_SURGE_2,
   COLOR_WISP_TRAIL_FAST,
   WISP_TRAIL_ALPHA_FAR,
   WISP_TRAIL_ALPHA_NEAR,
@@ -83,6 +86,15 @@ export function wispTrailColor(speedMultiplier: number): string {
   const to = hexToRgb(COLOR_WISP_TRAIL_FAST);
   const mix = (a: number, b: number) => Math.round(a + (b - a) * t);
   return rgbToHex(mix(from.r, to.r), mix(from.g, to.g), mix(from.b, to.b));
+}
+
+/**
+ * The head's color at a surge level (core/wispSurge.ts): COLOR_WISP_HEAD on
+ * level 0, COLOR_WISP_HEAD_SURGE_1 and _2 above it. The surge cue's rings
+ * take the same color.
+ */
+export function wispHeadColor(level: WispSurgeLevel): string {
+  return level === 2 ? COLOR_WISP_HEAD_SURGE_2 : level === 1 ? COLOR_WISP_HEAD_SURGE_1 : COLOR_WISP_HEAD;
 }
 
 // The cells strictly between `a` and `b` on the Bresenham line from `a` to
