@@ -15,7 +15,8 @@ import { Igniter, shouldSpawnIgniter } from './fuse';
 import { checkCollision } from './collision';
 import { scoreAreaClaim, scoreStageClearBonus, isBigClaim, DEFAULT_SCORE_MULTIPLIER } from './scoring';
 import { EventQueue, GameEvent } from './events';
-import type { ClaimFeedback, MissCause, MissFeedback } from './feedback';
+import type { ClaimFeedback, MissCause, MissFeedback, WispSurgeFeedback } from './feedback';
+import { wispSurgeLevel, wispSurgeMultiplier, WispSurgeLevel } from './wispSurge';
 import {
   MARKER_MOVE_TICKS_FAST,
   MARKER_MOVE_TICKS_SLOW,
@@ -186,6 +187,14 @@ export interface GameOptions {
    * drains return an empty array. Never changes the simulation itself.
    */
   captureFeedback?: boolean;
+  /**
+   * When true, the Wisps speed up as occupancy nears the goal
+   * (core/wispSurge.ts): on every accepted claim and every debug override
+   * change the surge level is decided again, and every Wisp's speed
+   * multiplier becomes its own (the stage's, or the debug override) times the
+   * level's. Defaults to false: the level stays 0 and no speed ever changes.
+   */
+  wispSurge?: boolean;
 }
 
 export class Game {
@@ -250,6 +259,11 @@ export class Game {
   // without it allocates nothing for them.
   private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
   private readonly missFeedback: EventQueue<MissFeedback> | null;
+  private readonly surgeFeedback: EventQueue<WispSurgeFeedback> | null;
+  // The Wisp surge (GameOptions.wispSurge): whether it applies, and the
+  // current level (always 0 without it).
+  private readonly wispSurge: boolean;
+  private surgeLevel: WispSurgeLevel = 0;
 
   // Ember spawn-generation counter (docs/plan.md §14 M6-1): incremented once
   // every time maybeSpawnEmbers()'s cooldown elapses and a spawn cycle
@@ -314,6 +328,8 @@ export class Game {
     this.lives = options.lives ?? INITIAL_LIVES;
     this.claimFeedback = options.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
     this.missFeedback = options.captureFeedback ? new EventQueue<MissFeedback>() : null;
+    this.surgeFeedback = options.captureFeedback ? new EventQueue<WispSurgeFeedback>() : null;
+    this.wispSurge = options.wispSurge ?? false;
 
     // Snapshot this stage's own defaults (docs/plan.md §6 M10 "RESET は
     // ステージ既定値に戻す") before any debug override can touch them.
@@ -381,6 +397,16 @@ export class Game {
 
   getOccupancy(): number {
     return this.occupancy;
+  }
+
+  /** The current Wisp surge level (core/wispSurge.ts); always 0 unless built with `wispSurge: true`. */
+  getWispSurgeLevel(): WispSurgeLevel {
+    return this.surgeLevel;
+  }
+
+  /** Whether this Game was built with `wispSurge: true` (see GameOptions). */
+  isWispSurgeEnabled(): boolean {
+    return this.wispSurge;
   }
 
   getLives(): number {
@@ -479,6 +505,16 @@ export class Game {
   }
 
   /**
+   * Drains (returns and clears) every Wisp surge notice (core/feedback.ts)
+   * queued since the last call: one per claim that raised the surge level
+   * and left the stage still playing. Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainWispSurgeFeedback(): WispSurgeFeedback[] {
+    return this.surgeFeedback ? this.surgeFeedback.drain() : [];
+  }
+
+  /**
    * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4):
    * merges `overrides` into whatever's already active, then immediately
    * reconciles the running stage to match (spawning/despawning Wisps and
@@ -529,7 +565,8 @@ export class Game {
   getEffectiveDebugParams(): EffectiveDebugParams {
     return {
       wispCount: this.wisps.length,
-      wispSpeedMultiplier: this.wisps[0]?.getSpeedMultiplier() ?? this.debugOverrides.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier,
+      // The Wisps' own multiplier, before the surge level's is applied.
+      wispSpeedMultiplier: this.getOwnWispSpeedMultiplier(),
       emberCount: this.embers.length,
       emberMoveTicks: this.embers[0]?.getMoveTicks() ?? this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks,
       emberSpawnIntervalSec: this.emberSpawnIntervalTicks / TICK_RATE,
@@ -556,7 +593,10 @@ export class Game {
   private reconcileDebugOverrides(): void {
     const o = this.debugOverrides;
 
-    const targetWispSpeed = o.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier;
+    // The goal first: the surge level below is decided on the new one.
+    this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
+    this.surgeLevel = this.decideSurgeLevel();
+    const targetWispSpeed = this.getWispSpeedMultiplier();
     this.setWispCount(o.wispCount ?? this.baseWispCount, targetWispSpeed);
     for (const wisp of this.wisps) {
       wisp.setSpeedMultiplier(targetWispSpeed);
@@ -575,13 +615,45 @@ export class Game {
         ? Math.round(o.emberSpawnIntervalSec * TICK_RATE)
         : this.baseEmberSpawnIntervalTicks;
 
-    this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
-
     // The first Ember's wait is read as the stage starts: only a stage not
     // yet started takes a changed (or reset) value; a running one keeps its own.
     if (!this.started) {
       this.emberSpawnCooldownTicks =
         o.firstEmberSec !== undefined ? Math.max(0, Math.round(o.firstEmberSec * TICK_RATE)) : this.baseFirstEmberSpawnTicks;
+    }
+  }
+
+  /** The Wisps' own speed multiplier: the debug override if set, else this stage's. */
+  private getOwnWispSpeedMultiplier(): number {
+    return this.debugOverrides.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier;
+  }
+
+  /** The speed multiplier every Wisp moves at: its own times the surge level's. */
+  private getWispSpeedMultiplier(): number {
+    return this.getOwnWispSpeedMultiplier() * wispSurgeMultiplier(this.surgeLevel);
+  }
+
+  /** The surge level for the current occupancy and goal; 0 without the surge. */
+  private decideSurgeLevel(): WispSurgeLevel {
+    return this.wispSurge ? wispSurgeLevel(this.occupancy, this.requiredOccupancy) : 0;
+  }
+
+  /**
+   * Decides the surge level again after a claim. A level that changed sets
+   * every Wisp's speed at once; one that rose with the stage still playing
+   * also queues a notice for the presentation layer.
+   */
+  private updateSurgeAfterClaim(): void {
+    const level = this.decideSurgeLevel();
+    if (level === this.surgeLevel) return;
+    const rose = level > this.surgeLevel;
+    this.surgeLevel = level;
+    const speed = this.getWispSpeedMultiplier();
+    for (const wisp of this.wisps) {
+      wisp.setSpeedMultiplier(speed);
+    }
+    if (rose && level > 0 && this.status === 'playing' && this.surgeFeedback) {
+      this.surgeFeedback.push({ level: level as 1 | 2, positions: this.wisps.map((w) => w.getPosition()) });
     }
   }
 
@@ -757,6 +829,7 @@ export class Game {
             this.status = 'stageclear';
             this.events.push('stage-clear');
           }
+          this.updateSurgeAfterClaim();
           if (this.claimFeedback) {
             this.claimFeedback.push({
               claimedCells: claimResult.claimedCells,

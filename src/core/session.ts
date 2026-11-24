@@ -12,7 +12,7 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
-import type { ClaimFeedback, MissFeedback } from './feedback';
+import type { ClaimFeedback, MissFeedback, WispSurgeFeedback } from './feedback';
 import { mulberry32, deriveStageSeed } from './rng';
 import { MarkerStart, drawMarkerStart, topCenterMarkerStart } from './markerStart';
 import { Difficulty, initialLivesFor, wispSpeedFor } from './difficulty';
@@ -150,6 +150,7 @@ export class GameSession {
   // capture is off, so a non-capturing session allocates nothing for them.
   private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
   private readonly missFeedback: EventQueue<MissFeedback> | null;
+  private readonly surgeFeedback: EventQueue<WispSurgeFeedback> | null;
   private readonly captureFeedback: boolean;
   // Not readonly: a 'normal'
   // run's seed is now replaced on every retry, at the resetToFreshRun()
@@ -256,6 +257,7 @@ export class GameSession {
     this.captureFeedback = options.captureFeedback ?? false;
     this.claimFeedback = this.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
     this.missFeedback = this.captureFeedback ? new EventQueue<MissFeedback>() : null;
+    this.surgeFeedback = this.captureFeedback ? new EventQueue<WispSurgeFeedback>() : null;
     this.nextDifficulty = options.difficulty ?? 'normal';
     this.difficulty = this.nextDifficulty;
     this.resetToFreshRun();
@@ -635,6 +637,18 @@ export class GameSession {
   }
 
   /**
+   * Drains (returns and clears) every Wisp surge notice (core/feedback.ts)
+   * the currently- and previously-playing stages queued since the last call.
+   * A notice says a claim raised the level with the stage still playing; the
+   * caller still checks getStatus(), since a TIME UP on the same tick ends
+   * the run after the claim. Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainWispSurgeFeedback(): WispSurgeFeedback[] {
+    return this.surgeFeedback ? this.surgeFeedback.drain() : [];
+  }
+
+  /**
    * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4) to
    * the current stage's Game, and remembers them so every subsequent stage
    * (via advanceStage() -> buildStageGame()) starts with the same overrides
@@ -691,12 +705,15 @@ export class GameSession {
     for (const pos of this.game.drainDespawnedEmberPositions()) {
       this.despawnedEmberPositions.push(pos);
     }
-    if (this.claimFeedback && this.missFeedback) {
+    if (this.claimFeedback && this.missFeedback && this.surgeFeedback) {
       for (const notice of this.game.drainClaimFeedback()) {
         this.claimFeedback.push(notice);
       }
       for (const notice of this.game.drainMissFeedback()) {
         this.missFeedback.push(notice);
+      }
+      for (const notice of this.game.drainWispSurgeFeedback()) {
+        this.surgeFeedback.push(notice);
       }
     }
 
@@ -800,6 +817,8 @@ export class GameSession {
       lives: carry.lives,
       multiplier: carry.multiplier,
       captureFeedback: this.captureFeedback,
+      // The Wisps speed up toward the goal on NORMAL only (core/wispSurge.ts).
+      wispSurge: this.difficulty === 'normal',
     });
   }
 
