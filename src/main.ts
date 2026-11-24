@@ -1,5 +1,6 @@
 import { GameSession, SessionInput } from './core/session';
 import { ReplayEngine } from './core/replayEngine';
+import { boardFxFrame, boardWispDraws, renderedFxFrame, stepReplayView } from './replayView';
 import { Renderer } from './render/renderer';
 import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
 import type { StartCueRing } from './render/startCueLayer';
@@ -1988,7 +1989,6 @@ function updateReplay(): void {
   // InputRecorder never observes, highscore is never persisted, sfx never
   // plays.
   if (replayEngine && replayAutoAdvance) {
-    const replaySession = replayEngine.getSession();
     // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
     // the next stage's first tick in one call, so calling it every tick
     // replaces a cleared stage before a single frame can show it. While the
@@ -1998,19 +1998,8 @@ function updateReplay(): void {
     // and the tick that ends the hold makes the very same stepTick() call
     // an unheld playback would have made. Never reached while a skip is in
     // charge of the engine (replayAutoAdvance is false then), so the hold
-    // can't count down behind a skip either.
-    const holding = replayStageClearHold.shouldHold({
-      status: replaySession.getStatus(),
-      finished: replayEngine.isFinished(),
-    });
-    if (holding) return;
-    const advanced = replayEngine.stepTick();
-    // Drain (not forward anywhere) every tick, same as a live run —
-    // GameSession's own doc comments warn these queues grow unbounded
-    // otherwise.
-    replaySession.drainEvents();
-    replaySession.drainDespawnedEmberPositions();
-    if (!advanced) replayAutoAdvance = false;
+    // can't count down behind a skip either. (src/replayView.ts)
+    if (!stepReplayView(replayEngine, replayStageClearHold)) replayAutoAdvance = false;
   }
 }
 
@@ -2353,7 +2342,7 @@ function renderFrame(): void {
   // period lasts; otherwise always visible.
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
   // Impact feedback is live play only: a replay is drawn exactly as before.
-  const fxFrame = viewMode === 'replay' ? null : fx.getFrame();
+  const fxFrame = boardFxFrame(viewMode, fx);
   // Read every frame, so the debug panel's value applies at once.
   renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
   renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
@@ -2391,15 +2380,11 @@ function renderFrame(): void {
     boardGame.getMarker().getPosition(),
     // Each Wisp's own speed sets its trail's color, and the stage's surge
     // level its head's, on whichever board is drawn.
-    boardGame.getWisps().map((wisp) => ({
-      trail: wisp.getTrailRef(),
-      speedMultiplier: wisp.getSpeedMultiplier(),
-      surgeLevel: boardGame.getWispSurgeLevel(),
-    })),
+    boardWispDraws(boardGame),
     boardGame.getEmbers(),
     boardGame.getIgniterPosition(),
     markerVisible,
-    demoEngine ? undefined : fxFrame ?? undefined
+    renderedFxFrame(fxFrame, demoEngine !== null)
   );
   // The travelling multiplier crosses the field outside #canvas-wrap, so the
   // pause screen does not cover it: it is not drawn while paused.
