@@ -43,6 +43,8 @@ export interface PageSetup {
   hintsSeen: readonly string[];
   /** SOUND: ON saved. */
   soundOn: boolean;
+  /** The Title screen's MODE saved (NORMAL when absent). */
+  difficulty?: 'normal' | 'easy';
   /** GET /api/ranking: the board's entries, or 'fail' for an error answer. */
   ranking: RankingEntry[] | 'fail';
   /** GET /api/ranking/{id}/replay's body, if any is asked for. */
@@ -68,6 +70,7 @@ function initScript(setup: PageSetup): string {
   if (setup.highScore !== null) storage['qixxx.highScore'] = String(setup.highScore);
   if (setup.hintsSeen.length > 0) storage['qixxx.hintsSeen'] = JSON.stringify(setup.hintsSeen);
   storage['qixxx.muted'] = setup.soundOn ? 'false' : 'true';
+  if (setup.difficulty !== undefined) storage['qixxx.difficulty'] = setup.difficulty;
   return `(() => {
     const seed = ${setup.seed};
     const real = crypto.getRandomValues.bind(crypto);
@@ -203,7 +206,11 @@ export interface Probe {
   demoShown: boolean;
   demoTicks: number | null;
   ticks: number;
+  /** Ticks played on the stage the run is on. */
+  stageTicks: number;
   remaining: number;
+  /** The stage's Wisp surge level (0 for none). */
+  surge: number;
 }
 
 const PROBE = `(() => {
@@ -235,7 +242,9 @@ const PROBE = `(() => {
     demoShown: demo.shown,
     demoTicks: demo.ticks,
     ticks: s.getTotalTicks(),
+    stageTicks: s.getStageTicks(),
     remaining: s.getRemainingTicks(),
+    surge: game.getWispSurgeLevel(),
   };
 })()`;
 

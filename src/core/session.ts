@@ -878,9 +878,9 @@ export class GameSession {
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
       // Spread multiple Wisps symmetrically around the cluster center so a
-      // multi-Wisp stage (docs/plan.md §12.7, stage 2+) doesn't spawn them
-      // on top of each other; clamped to stay within the interior even on
-      // the small fields used by tests.
+      // multi-Wisp stage (STAGE_TABLE's wispCount, two or more from stage 3)
+      // doesn't spawn them on top of each other; clamped to stay within the
+      // interior even on the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
       wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, speed));

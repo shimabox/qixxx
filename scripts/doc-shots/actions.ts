@@ -4,7 +4,7 @@
 // ordinary run (its high score and ranking offer behave as for a player).
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page } from '@playwright/test';
-import { advanceUntil, probe, type Probe } from './page';
+import { advanceUntil, FRAME_MS, probe, type Probe } from './page';
 
 export type DrawKey = 'Space' | 'Shift';
 
@@ -26,6 +26,19 @@ export async function settle(page: Page, expression: string, what: string): Prom
     await flushTasks(page);
   }
   throw new Error(`${what}: not ready within 20s`);
+}
+
+/**
+ * Advances the faked clock one frame at a time until `expression` holds:
+ * for what the page shows on game time (a panel that opens some ticks after
+ * the answer it waits on has arrived).
+ */
+export async function advanceUntilShown(page: Page, expression: string, maxMs: number, what: string): Promise<void> {
+  for (let elapsed = 0; elapsed <= maxMs; elapsed += FRAME_MS) {
+    if (await page.evaluate<boolean>(`Boolean(${expression})`)) return;
+    await page.clock.runFor(FRAME_MS);
+  }
+  throw new Error(`${what}: not shown within ${maxMs}ms of game time`);
 }
 
 /** Lets the page run the tasks already queued (a network answer being read), the clock stopped. */
