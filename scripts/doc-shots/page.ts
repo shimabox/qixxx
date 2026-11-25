@@ -203,7 +203,11 @@ export interface Probe {
   demoShown: boolean;
   demoTicks: number | null;
   ticks: number;
+  /** Ticks played on the stage the run is on. */
+  stageTicks: number;
   remaining: number;
+  /** The stage's Wisp surge level (0 for none). */
+  surge: number;
 }
 
 const PROBE = `(() => {
@@ -235,7 +239,9 @@ const PROBE = `(() => {
     demoShown: demo.shown,
     demoTicks: demo.ticks,
     ticks: s.getTotalTicks(),
+    stageTicks: s.getStageTicks(),
     remaining: s.getRemainingTicks(),
+    surge: game.getWispSurgeLevel(),
   };
 })()`;
 

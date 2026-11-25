@@ -6,14 +6,19 @@
 //
 // The runs are ordinary runs — keys on the faked clock, the seed fixed —
 // so the HUD's goal, the high score and the ranking offer read as they
-// would for a player. The one exception is ember-blaze, a close-up of the
-// field with no HUD in it, which shortens the time between Ember pairs.
+// would for a player. The pictures from stage 3 on play the core's surge
+// run's recorded input instead of keys (./surgeRun.ts), still an ordinary
+// run. Two pictures change a setting: ember-blaze, a close-up of the field
+// with no HUD in it, which shortens the time between Ember pairs, and
+// readme-debug, which shows the debug panel's slider being used.
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page } from '@playwright/test';
 import { GRID_HEIGHT, GRID_WIDTH, RULESET_VERSION } from '../../src/config';
 import { demoReplayPayload } from './demoReplay';
 import { ALL_HINTS, probe, type OpenPage, type PageSetup, type Probe, type RankingEntry, type Viewport } from './page';
+import { installSurgeRun, playSurgeRunTo, SURGE_RUN_SEED } from './surgeRun';
 import {
+  advanceUntilShown,
   cutColumn,
   drawTo,
   drawUntilClosed,
@@ -331,8 +336,11 @@ export const SHOTS: Shot[] = [
       await loseAllLives(page);
       await modalShown(page);
       await waitAnswered(page, opened, 'ranking', 2);
-      await settle(page, `document.getElementById('ranking-submit-panel') && document.getElementById('ranking-submit-panel').style.display !== 'none'`, 'the submission form');
+      // The form opens on game time: once the GAME OVER result has shown in
+      // full and RANKING_OFFER_DELAY_TICKS more have passed.
+      await advanceUntilShown(page, `document.getElementById('ranking-submit-panel') && document.getElementById('ranking-submit-panel').style.display !== 'none'`, 10_000, 'the submission form');
       await wait(page, 1_500);
+      expect(await page.evaluate<boolean>(`window.__game__.getRankingOffer().panelShown`), 'the submission form still open');
     },
   },
   {
@@ -548,9 +556,10 @@ export const SHOTS: Shot[] = [
     setup: () => base(GUIDE),
     prepare: async (page) => {
       await startRun(page);
-      // A close-up with no HUD: Ember generations every 2 seconds, and the
-      // first pair cleared away, so the third generation (the Blaze) comes
-      // without minutes of play. The overrides are dropped once it is due.
+      // A close-up with no HUD: an Ember pair every 2 seconds, and the first
+      // two pairs cleared away, so a pair of Blazes (every spawn cycle from
+      // the stage's second on makes Blazes) comes without minutes of play.
+      // The overrides are dropped once it is due.
       await walkToX(page, 90);
       await page.evaluate(`window.__game__.session.applyDebugOverrides({ emberSpawnIntervalSec: 2 })`);
       await waitFor(page, (p) => p.embers.length > 0, 40_000, 'the first Ember pair');
@@ -638,30 +647,33 @@ export const SHOTS: Shot[] = [
     },
   },
   {
+    // Stage 3, the first with two Wisps, 1.5 seconds in.
     name: 'two-wisps-field',
     server: 'preview',
-    setup: () => base(GUIDE),
+    setup: () => base(GUIDE, { seed: SURGE_RUN_SEED }),
     prepare: async (page) => {
+      await installSurgeRun(page);
       await startRun(page);
-      await clearStage1(page);
-      await wait(page, 5_000);
-      await page.keyboard.press('Space');
-      await waitFor(page, (p) => p.status === 'playing' && p.stage === 2, 3_000, 'stage 2');
-      await wait(page, 1_500);
-      await expectState(page, (p) => playingFullLives(p) && p.stage === 2 && p.wisps.length === 2, 'stage 2 with 2 Wisps');
+      await playSurgeRunTo(page, (p) => p.status === 'playing' && p.stage === 3 && p.stageTicks >= 90, 'stage 3');
+      await expectState(
+        page,
+        (p) => playingFullLives(p) && p.stage === 3 && p.wisps.length === 2 && p.multiplier === 1 && !p.drawing,
+        'stage 3 with 2 Wisps'
+      );
     },
   },
   {
+    // Stage 3 cleared by a split: the clear screen under SPLIT!.
     name: 'split-clear',
     server: 'preview',
-    setup: () => base(GUIDE),
+    setup: () => base(GUIDE, { seed: SURGE_RUN_SEED }),
     prepare: async (page) => {
+      await installSurgeRun(page);
       await startRun(page);
-      await clearStage1(page);
-      await wait(page, 5_000);
-      await page.keyboard.press('Space');
-      await waitFor(page, (p) => p.status === 'playing' && p.stage === 2, 3_000, 'stage 2');
-      await splitStage2(page);
+      await playSurgeRunTo(page, (p) => p.status === 'stageclear' && p.stage === 3, 'stage 3 cleared');
+      await wait(page, 400);
+      await expectState(page, (p) => p.status === 'stageclear' && p.stage === 3 && p.multiplier === 2 && p.lives === 3, 'stage 3 cleared by a split');
+      expect(await page.evaluate<boolean>(`window.__game__.session.getGame().getLastClearWasSplit() && window.__game__.fx.isSplitBannerActive()`), 'SPLIT! shown');
     },
   },
   {
@@ -696,26 +708,4 @@ async function openDebugPanel(page: Page): Promise<void> {
   const shown = await page.evaluate<boolean>(`getComputedStyle(document.getElementById('debug-panel')).display !== 'none'`);
   if (!shown) await page.locator('#debug-badge').click();
   await wait(page, 100);
-}
-
-/** Stage 2: a full-height cut between the two Wisps, once they are far enough apart. */
-async function splitStage2(page: Page): Promise<void> {
-  for (let i = 0; i < 40; i++) {
-    const p = await probe(page);
-    expect(p.status === 'playing' && p.stage === 2, 'still on stage 2', p);
-    const xs = p.wisps.map((w) => w.x).sort((a, b) => a - b);
-    if (p.grace === 0 && xs[1] - xs[0] > 40) {
-      const x = Math.round((xs[0] + xs[1]) / 2);
-      log('split at', x, JSON.stringify(p));
-      const after = await cutColumn(page, x, 'Space');
-      if (after.status === 'stageclear') {
-        await wait(page, 400);
-        return;
-      }
-      log('no split', JSON.stringify(after));
-    } else {
-      await wait(page, 300);
-    }
-  }
-  throw new Error('no split on stage 2');
 }
