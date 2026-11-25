@@ -13,7 +13,14 @@
 // readme-debug, which shows the debug panel's slider being used.
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Page } from '@playwright/test';
-import { GRID_HEIGHT, GRID_WIDTH, RULESET_VERSION } from '../../src/config';
+import {
+  COLOR_WISP_HEAD_SURGE_2,
+  EASY_INITIAL_LIVES,
+  GRID_HEIGHT,
+  GRID_WIDTH,
+  INITIAL_LIVES,
+  RULESET_VERSION,
+} from '../../src/config';
 import { demoReplayPayload } from './demoReplay';
 import { ALL_HINTS, probe, type OpenPage, type PageSetup, type Probe, type RankingEntry, type Viewport } from './page';
 import { installSurgeRun, playSurgeRunTo, SURGE_RUN_SEED } from './surgeRun';
@@ -113,7 +120,18 @@ async function expectState(page: Page, check: (p: Probe) => boolean, what: strin
 }
 
 /** The run still on, no life lost: nothing went wrong while the picture was waited for. */
-const playingFullLives = (p: Probe): boolean => p.status === 'playing' && p.lives === 3 && !p.paused;
+const playingWithLives =
+  (lives: number) =>
+  (p: Probe): boolean =>
+    p.status === 'playing' && p.lives === lives && !p.paused;
+/** playingWithLives() for a NORMAL run. */
+const playingFullLives = playingWithLives(INITIAL_LIVES);
+
+/** The last frame drew neither the stage's title nor its start cue (both last the stage's first second). */
+const STAGE_START_GONE = `window.__game__.getFxTextBoxes().stageTitle === null && window.__game__.getStartCue() === null`;
+
+/** The HUD's row as shown. */
+const hudText = (page: Page): Promise<string> => page.evaluate<string>(`document.getElementById('hud-row').innerText`);
 
 /** The GAME OVER result's best line ('to-best', 'to-best-near' or 'new-record'; null while not shown). */
 async function gameOverBest(page: Page): Promise<{ best: string | null; highlight: string | null }> {
@@ -199,10 +217,10 @@ async function hudClip(page: Page): Promise<Clip> {
 // Seed 1: the Wisp starts on the right half of the field (x 122), so the
 // left side is the safe one to claim first.
 
-/** A fast cut down column 40: the left quarter becomes blue. */
-async function firstClaim(page: Page): Promise<Probe> {
+/** A fast cut down column 40: the left quarter becomes blue (a BIG CLAIM). `lives`: the run's lives, 5 on EASY. */
+async function firstClaim(page: Page, lives = INITIAL_LIVES): Promise<Probe> {
   const p = await cutColumn(page, 40, 'Space');
-  expect(p.occ > 0 && p.lives === 3, 'first claim', p);
+  expect(p.occ > 0 && p.lives === lives, 'first claim', p);
   return p;
 }
 
@@ -353,11 +371,17 @@ export const SHOTS: Shot[] = [
       await page.locator('#debug-panel input[type=range]').first().fill('3');
       await page.evaluate(`(document.activeElement && document.activeElement.blur(), true)`);
       await startRun(page);
+      // Once the stage's title and start cue are gone, so they do not cover the effects.
+      await wait(page, 1_100);
       await page.getByRole('button', { name: 'TEST CLAIM L' }).click();
       await wait(page, 250);
       await page.getByRole('button', { name: 'TEST CLAIM L' }).click();
       await wait(page, 300);
+      // The button press scrolled the panel down: back to its top, where the Wisp count slider is.
+      await page.evaluate(`(document.getElementById('debug-panel').scrollTop = 0, true)`);
+      await wait(page, 16);
       await expectState(page, (p) => playingFullLives(p) && p.wisps.length === 3, 'a run with 3 Wisps');
+      expect(await page.evaluate<boolean>(STAGE_START_GONE), 'the stage title and the start cue gone');
     },
   },
   {
@@ -383,6 +407,22 @@ export const SHOTS: Shot[] = [
     },
   },
   {
+    // The Title screen after one press of MODE: the run waiting there is built again on EASY.
+    name: 'title-mode',
+    server: 'preview',
+    setup: () => base(TITLE),
+    prepare: async (page) => {
+      await wait(page, 1_000);
+      await page.locator('#difficulty-button').click();
+      await wait(page, 500);
+      await expectState(page, (p) => p.status === 'title' && p.lives === EASY_INITIAL_LIVES, 'the Title screen on EASY');
+      const label = await page.evaluate<string>(`document.getElementById('difficulty-button').textContent`);
+      expect(label === 'MODE: EASY', `the MODE button on EASY: ${label}`);
+      const hud = await hudText(page);
+      expect(hud.includes('EASY') && hud.includes('◆◆◆◆◆'), `the EASY HUD: ${hud}`);
+    },
+  },
+  {
     name: 'how-to-play-panel',
     server: 'preview',
     setup: () => base(GUIDE),
@@ -403,6 +443,21 @@ export const SHOTS: Shot[] = [
       await firstClaim(page);
       await wait(page, 1_500);
       await expectState(page, playingFullLives, 'still playing after the first claim');
+    },
+    clip: hudClip,
+  },
+  {
+    // hud's run on EASY (the MODE saved as EASY): the same line, 5 lives.
+    name: 'hud-easy',
+    server: 'preview',
+    setup: () => base(README, { difficulty: 'easy' }),
+    prepare: async (page) => {
+      await startRun(page);
+      await firstClaim(page, EASY_INITIAL_LIVES);
+      await wait(page, 1_500);
+      await expectState(page, playingWithLives(EASY_INITIAL_LIVES), 'still playing on EASY after the first claim');
+      const hud = await hudText(page);
+      expect(hud.includes('EASY') && hud.includes(`HI ${SAVED_BEST}`) && hud.includes('◆◆◆◆◆'), `the EASY HUD: ${hud}`);
     },
     clip: hudClip,
   },
@@ -451,6 +506,7 @@ export const SHOTS: Shot[] = [
       await startRun(page);
       await wait(page, 1_000);
       expect((await probe(page)).hint === 'draw', 'the draw hint');
+      expect(await page.evaluate<boolean>(STAGE_START_GONE), 'the stage title and the start cue gone');
     },
   },
   {
@@ -461,6 +517,20 @@ export const SHOTS: Shot[] = [
       await startRun(page);
       await wait(page, 1_000);
       expect((await probe(page)).hint === 'draw', 'the draw hint');
+      expect(await page.evaluate<boolean>(STAGE_START_GONE), 'the stage title and the start cue gone');
+    },
+  },
+  {
+    // Stage 1's first ticks: its title over the field and the start cue's rings closing on the marker.
+    name: 'stage-title',
+    server: 'preview',
+    setup: () => base(GUIDE),
+    prepare: async (page) => {
+      await startRun(page);
+      await wait(page, 200);
+      await expectState(page, (p) => playingFullLives(p) && p.stage === 1 && p.stageTicks < 30, 'stage 1 just started');
+      const shown = await page.evaluate<boolean>(`window.__game__.getFxTextBoxes().stageTitle !== null && window.__game__.getStartCue() !== null`);
+      expect(shown, 'the stage title and the start cue drawn');
     },
   },
   {
@@ -470,8 +540,10 @@ export const SHOTS: Shot[] = [
     prepare: async (page) => {
       await startRun(page);
       await walkToX(page, 50);
-      await wait(page, 100);
+      // On past the stage's first second, its title and start cue.
+      await waitFor(page, (p) => p.stageTicks >= 70, 2_000, 'the stage title gone');
       await expectState(page, (p) => playingFullLives(p) && !p.drawing && p.marker.y === 0, 'the marker on the top edge');
+      expect(await page.evaluate<boolean>(STAGE_START_GONE), 'the stage title and the start cue gone');
     },
   },
   {
@@ -496,6 +568,23 @@ export const SHOTS: Shot[] = [
       await wait(page, 1_500);
       await expectState(page, playingFullLives, 'still playing after the first claim');
     },
+  },
+  {
+    // claim-fast's claim just after it closes: BIG CLAIM by its points.
+    name: 'big-claim',
+    server: 'preview',
+    setup: () => base(GUIDE),
+    prepare: async (page) => {
+      await startRun(page);
+      await firstClaim(page);
+      await wait(page, 300);
+      await expectState(page, playingFullLives, 'still playing after the first claim');
+      const tags = await page.evaluate<number>(`window.__game__.getFxTextBoxes().claimTags.length`);
+      expect(tags > 0, 'BIG CLAIM drawn');
+    },
+    // The claimed strip with the praise, the points and BIG CLAIM over it
+    // (the HUD's score is still counting up, so it is left out).
+    clip: (page) => fieldClip(page, 0, 36, 64, 80),
   },
   {
     name: 'claim-slow',
@@ -534,6 +623,7 @@ export const SHOTS: Shot[] = [
       await startRun(page);
       await wait(page, 1_200);
       await expectState(page, (p) => playingFullLives(p) && p.wisps.length === 1, 'the Wisp in play');
+      expect(await page.evaluate<boolean>(STAGE_START_GONE), 'the stage title and the start cue gone');
     },
     clip: async (page) => clipAround(page, (await probe(page)).wisps[0], 350, 272),
   },
@@ -674,6 +764,24 @@ export const SHOTS: Shot[] = [
       await wait(page, 400);
       await expectState(page, (p) => p.status === 'stageclear' && p.stage === 3 && p.multiplier === 2 && p.lives === 3, 'stage 3 cleared by a split');
       expect(await page.evaluate<boolean>(`window.__game__.session.getGame().getLastClearWasSplit() && window.__game__.fx.isSplitBannerActive()`), 'SPLIT! shown');
+    },
+  },
+  {
+    // Stage 6: the claim that raises the Wisp surge to level 2, its rings spreading from the heads.
+    name: 'wisp-surge',
+    server: 'preview',
+    setup: () => base(GUIDE, { seed: SURGE_RUN_SEED }),
+    prepare: async (page) => {
+      await installSurgeRun(page);
+      await startRun(page);
+      await playSurgeRunTo(page, (p) => p.status === 'playing' && p.stage === 6 && p.surge === 2, 'stage 6 at surge level 2');
+      await wait(page, 160);
+      await expectState(page, (p) => playingFullLives(p) && p.stage === 6 && p.surge === 2, 'stage 6 still on, surge level 2');
+      const draw = await page.evaluate<{ rings: unknown[]; headColors: string[] }>(`window.__game__.getWispSurgeDraw()`);
+      expect(
+        draw.rings.length > 0 && draw.headColors.length > 0 && draw.headColors.every((c) => c === COLOR_WISP_HEAD_SURGE_2),
+        `the level 2 heads and rings: ${JSON.stringify(draw)}`
+      );
     },
   },
   {
