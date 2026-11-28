@@ -8,14 +8,27 @@
 import type { GameEvent } from '../core/events';
 import type { LineSpeed } from '../core/claim';
 import type { TimeWarningCue } from '../timeWarningCue';
+import { classifyClaimShare, fxParams } from '../fx/params';
+import { sfxLevels, sfxPeak } from './sfxLevels';
 import {
-  SFX_MASTER_GAIN,
-  SFX_DRAW_GAIN,
   SFX_DRAW_FREQ_FAST,
   SFX_DRAW_FREQ_SLOW,
-  SFX_AREA_CLAIMED_FREQ,
-  SFX_AREA_CLAIMED_DURATION,
+  SFX_DEFAULT_ATTACK,
+  SFX_IMPACT_ATTACK,
+  SFX_TONE_STOP_TAIL,
+  SFX_CLAIM_HIT_FREQ,
+  SFX_CLAIM_HIT_DURATION,
+  SFX_CLAIM_LOW_MID_FREQ,
+  SFX_CLAIM_LOW_LARGE_FREQ,
+  SFX_CLAIM_LOW_DURATION,
+  SFX_CLAIM_RISE_FREQ_START,
+  SFX_CLAIM_RISE_FREQ_END_FAST,
+  SFX_CLAIM_RISE_FREQ_END_SLOW,
+  SFX_CLAIM_RISE_DURATION,
+  SFX_SPLIT_IMPACT_FREQ,
+  SFX_SPLIT_IMPACT_DURATION,
   SFX_MISS_FREQ,
+  SFX_MISS_OVERTONE_FREQ,
   SFX_MISS_DURATION,
   SFX_STAGE_CLEAR_NOTES,
   SFX_STAGE_CLEAR_NOTE_DURATION,
@@ -28,6 +41,7 @@ import {
   SFX_EMBER_SPAWN_FREQ,
   SFX_EMBER_SPAWN_DURATION,
   SFX_EMBER_DESPAWN_FREQ,
+  SFX_EMBER_DESPAWN_END_FREQ,
   SFX_EMBER_DESPAWN_DURATION,
   SFX_EMBER_BLAZE_SPAWN_FREQ,
   SFX_EMBER_BLAZE_SPAWN_DURATION,
@@ -39,6 +53,24 @@ import {
   SFX_TIME_WARNING_BEEP_FREQ,
   SFX_TIME_WARNING_BEEP_HIGH_FREQ,
   SFX_TIME_WARNING_BEEP_DURATION,
+  SFX_WISP_SURGE_1_FREQ,
+  SFX_WISP_SURGE_2_FREQ,
+  SFX_WISP_SURGE_RISE,
+  SFX_WISP_SURGE_DURATION,
+  SFX_GAMEOVER_HIT_FREQ,
+  SFX_GAMEOVER_HIT_DURATION,
+  SFX_GAMEOVER_LIFE_NOTES,
+  SFX_GAMEOVER_TIME_NOTES,
+  SFX_GAMEOVER_NOTE_DURATION,
+  SFX_COUNT_TICK_FREQ,
+  SFX_COUNT_TICK_DURATION,
+  SFX_COUNT_END_NOTES,
+  SFX_COUNT_END_NOTE_DURATION,
+  SFX_NEW_RECORD_NOTES,
+  SFX_NEW_RECORD_NOTE_DURATION,
+  SFX_LOG_MAX,
+  GAMEOVER_COUNT_TICK_EVERY,
+  TICK_RATE,
 } from '../config';
 
 // Safari (incl. iOS) still only exposes `webkitAudioContext` in some
@@ -48,7 +80,53 @@ interface WindowWithWebkitAudio extends Window {
   webkitAudioContext?: AudioContextCtor;
 }
 
-/** Where a falling one-shot (miss, ember-despawned) ends its glide from `freq`. */
+/** Semitones the claim sound rises per step of a chain of claims. */
+const CHAIN_SEMITONES_PER_STEP = 2;
+
+/**
+ * The claim sound's pitch multiplier at `chain` (1 for the first claim of a
+ * row): two semitones higher per further claim, capped at `maxSteps` steps.
+ */
+export function claimChainPitch(chain: number, maxSteps: number): number {
+  const steps = Math.max(0, Math.min(Math.floor(chain) - 1, Math.floor(maxSteps)));
+  return Math.pow(2, (steps * CHAIN_SEMITONES_PER_STEP) / 12);
+}
+
+/**
+ * Every name a sound is recorded under (getLog(), window.__game__.getSfxLog()).
+ * record() only takes these, so a new sound has to be added here — which
+ * puts it under the tests that walk this table (src/audio/sfx.test.ts).
+ */
+export const SFX_LOG_NAMES = [
+  'claim-small',
+  'claim-mid',
+  'claim-large',
+  'split',
+  'miss',
+  'stage-clear',
+  'gameover-life',
+  'gameover-time',
+  'count',
+  'count-tick',
+  'count-end',
+  'new-record',
+  'alarm',
+  'beep',
+  'beep-high',
+  'wisp-surge-1',
+  'wisp-surge-2',
+  'igniter-spawn',
+  'igniter-approach',
+  'ember-spawn',
+  'blaze-spawn',
+  'ember-line',
+  'ember-out',
+  'draw',
+] as const;
+
+export type SfxLogName = (typeof SFX_LOG_NAMES)[number];
+
+/** Where a falling one-shot (miss, the split thump, the GAME OVER hit) ends its glide from `freq`. */
 function descendFrom(freq: number): number {
   return Math.max(20, freq * 0.4);
 }
@@ -60,6 +138,7 @@ export class SfxEngine {
   private drawOsc: OscillatorNode | null = null;
   private drawGain: GainNode | null = null;
   private drawing = false;
+  private readonly log: SfxLogName[] = [];
 
   /** @param initialMuted Seeded from src/storage/settings.ts by main.ts. */
   constructor(initialMuted = false) {
@@ -73,8 +152,32 @@ export class SfxEngine {
   setMuted(muted: boolean): void {
     this.muted = muted;
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setTargetAtTime(muted ? 0 : SFX_MASTER_GAIN, this.ctx.currentTime, 0.01);
+      this.masterGain.gain.setTargetAtTime(muted ? 0 : sfxLevels.master, this.ctx.currentTime, 0.01);
     }
+  }
+
+  /**
+   * Puts the master gain at `sfxLevels.master` now (0 while muted), so a
+   * changed master applies to the sounds already ringing too.
+   */
+  applyMasterLevel(): void {
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setTargetAtTime(this.muted ? 0 : sfxLevels.master, this.ctx.currentTime, 0.01);
+    }
+  }
+
+  /**
+   * The context and the master gain, for the music (src/audio/bgm.ts) to
+   * play through — null while muted, so nothing is created to sound, and
+   * null until a user gesture has created the context (resume()), so the
+   * music never creates it on its own.
+   */
+  getAudioGraph(): { ctx: AudioContext; output: AudioNode } | null {
+    if (this.muted) return null;
+    const ctx = this.ctx;
+    if (!ctx || !this.masterGain) return null;
+    this.resumeIfSuspended(ctx);
+    return { ctx, output: this.masterGain };
   }
 
   toggleMuted(): boolean {
@@ -181,50 +284,61 @@ export class SfxEngine {
       osc.type = 'square';
       osc.frequency.value = freq;
       gain.gain.value = 0;
-      gain.gain.linearRampToValueAtTime(SFX_DRAW_GAIN, ctx.currentTime + 0.02);
+      gain.gain.linearRampToValueAtTime(sfxPeak('draw'), ctx.currentTime + 0.02);
       osc.connect(gain).connect(this.masterGain);
       osc.start();
       this.drawOsc = osc;
       this.drawGain = gain;
       this.drawing = true;
+      this.record('draw');
     } else {
       this.drawOsc.frequency.setTargetAtTime(freq, ctx.currentTime, 0.03);
     }
   }
 
-  /** Consumes GameEvents (docs/plan.md §3.8/§9.9) drained from GameSession, playing the matching one-shot SE for each. */
+  /**
+   * Consumes GameEvents (docs/plan.md §3.8/§9.9) drained from GameSession,
+   * playing the matching one-shot SE for each. 'area-claimed' and
+   * 'split-clear' are silent here: their sounds depend on the claim's size
+   * and speed, so main.ts plays them from the claim notice instead
+   * (playClaim() / playSplitImpact()).
+   */
   handleEvents(events: readonly GameEvent[]): void {
     for (const event of events) {
       switch (event) {
         case 'area-claimed':
-          this.playAreaClaimed();
+        case 'split-clear':
           break;
         case 'stage-clear':
-          this.playStageClear();
-          break;
-        case 'split-clear':
-          this.playSplitClear();
+          if (this.record('stage-clear')) this.playStageClear();
           break;
         case 'miss':
-          this.playMiss();
+          if (this.record('miss')) this.playMiss();
           break;
         case 'igniter-spawned':
-          this.playTone(SFX_IGNITER_SPAWN_FREQ, SFX_IGNITER_SPAWN_DURATION, 'sawtooth', 0.18);
+          if (this.record('igniter-spawn')) this.playTone(SFX_IGNITER_SPAWN_FREQ, SFX_IGNITER_SPAWN_DURATION, 'sawtooth', sfxPeak('igniter-spawn'));
           break;
         case 'igniter-approaching':
-          this.playTone(SFX_IGNITER_APPROACH_FREQ, SFX_IGNITER_APPROACH_DURATION, 'square', 0.1);
+          if (this.record('igniter-approach')) this.playTone(SFX_IGNITER_APPROACH_FREQ, SFX_IGNITER_APPROACH_DURATION, 'square', sfxPeak('igniter-approach'));
           break;
         case 'ember-spawned':
-          this.playTone(SFX_EMBER_SPAWN_FREQ, SFX_EMBER_SPAWN_DURATION, 'triangle', 0.15);
+          if (this.record('ember-spawn')) this.playTone(SFX_EMBER_SPAWN_FREQ, SFX_EMBER_SPAWN_DURATION, 'square', sfxPeak('ember-spawn'));
           break;
         case 'ember-blaze-spawned':
-          this.playTone(SFX_EMBER_BLAZE_SPAWN_FREQ, SFX_EMBER_BLAZE_SPAWN_DURATION, 'sawtooth', 0.18);
+          if (this.record('blaze-spawn')) this.playTone(SFX_EMBER_BLAZE_SPAWN_FREQ, SFX_EMBER_BLAZE_SPAWN_DURATION, 'sawtooth', sfxPeak('blaze-spawn'));
           break;
         case 'ember-entered-line':
-          this.playArpeggio(SFX_EMBER_ENTERED_LINE_NOTES, SFX_EMBER_ENTERED_LINE_NOTE_DURATION, 'square', 0.16);
+          if (this.record('ember-line')) this.playArpeggio(SFX_EMBER_ENTERED_LINE_NOTES, SFX_EMBER_ENTERED_LINE_NOTE_DURATION, 'square', sfxPeak('ember-entered-line'));
           break;
         case 'ember-despawned':
-          this.playTone(SFX_EMBER_DESPAWN_FREQ, SFX_EMBER_DESPAWN_DURATION, 'sine', 0.15, descendFrom(SFX_EMBER_DESPAWN_FREQ));
+          if (!this.record('ember-out')) break;
+          this.playTone(
+            SFX_EMBER_DESPAWN_FREQ,
+            SFX_EMBER_DESPAWN_DURATION,
+            'triangle',
+            sfxPeak('ember-despawn'),
+            SFX_EMBER_DESPAWN_END_FREQ
+          );
           break;
       }
     }
@@ -236,23 +350,36 @@ export class SfxEngine {
    * calls this directly, so a replay's session can never trigger it.
    */
   playTimeWarning(cue: TimeWarningCue): void {
+    if (!this.record(cue)) return;
     switch (cue) {
       case 'alarm':
         this.playTone(
           SFX_TIME_WARNING_ALARM_FREQ_START,
           SFX_TIME_WARNING_ALARM_DURATION,
           'square',
-          0.2,
+          sfxPeak('time-alarm'),
           SFX_TIME_WARNING_ALARM_FREQ_END
         );
         break;
       case 'beep':
-        this.playTone(SFX_TIME_WARNING_BEEP_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', 0.16);
+        this.playTone(SFX_TIME_WARNING_BEEP_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', sfxPeak('time-beep'));
         break;
       case 'beep-high':
-        this.playTone(SFX_TIME_WARNING_BEEP_HIGH_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', 0.16);
+        this.playTone(SFX_TIME_WARNING_BEEP_HIGH_FREQ, SFX_TIME_WARNING_BEEP_DURATION, 'square', sfxPeak('time-beep'));
         break;
     }
+  }
+
+  /**
+   * The Wisp surge: one short rising sawtooth as a claim raises the surge
+   * level to `level`, higher for level 2. Not a GameEvent: main.ts plays it
+   * from the live session's surge notice, so a replay's session and the
+   * Title demo never trigger it.
+   */
+  playWispSurge(level: 1 | 2): void {
+    if (!this.record(`wisp-surge-${level}`)) return;
+    const freq = level === 2 ? SFX_WISP_SURGE_2_FREQ : SFX_WISP_SURGE_1_FREQ;
+    this.playTone(freq, SFX_WISP_SURGE_DURATION, 'sawtooth', sfxPeak('wisp-surge'), freq * SFX_WISP_SURGE_RISE);
   }
 
   dispose(): void {
@@ -264,27 +391,222 @@ export class SfxEngine {
     }
   }
 
-  private playAreaClaimed(): void {
-    this.playTone(SFX_AREA_CLAIMED_FREQ, SFX_AREA_CLAIMED_DURATION, 'triangle', 0.22);
+  /**
+   * The area-claim sound: a short hit that peaks at once, with a low layer
+   * under a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
+   * sweep rising while the new area fills in (higher for a slow line).
+   * `share` is the occupancy the claim added (0-1), sized the same way as
+   * the visual feedback (src/fx/params.ts). `chain` is the claim's place in
+   * a row of claims (src/fx/director.ts): from the second, the hit and the
+   * sweep rise two semitones per step, up to chainPitchMaxSteps steps, so a
+   * run of claims climbs. The low layer keeps its pitch.
+   */
+  playClaim({ share, speed, chain = 1 }: { share: number; speed: LineSpeed; chain?: number }): void {
+    const size = classifyClaimShare(share, fxParams);
+    if (!this.record(`claim-${size}`)) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const pitch = claimChainPitch(chain, fxParams.chainPitchMaxSteps);
+    this.playTone(SFX_CLAIM_HIT_FREQ * pitch, SFX_CLAIM_HIT_DURATION, 'triangle', sfxPeak('claim-hit'), undefined, now, SFX_IMPACT_ATTACK);
+    if (size !== 'small') {
+      const lowFreq = size === 'large' ? SFX_CLAIM_LOW_LARGE_FREQ : SFX_CLAIM_LOW_MID_FREQ;
+      this.playTone(lowFreq, SFX_CLAIM_LOW_DURATION, 'square', sfxPeak('claim-low'), undefined, now, SFX_IMPACT_ATTACK);
+    }
+    const riseEnd = speed === 'slow' ? SFX_CLAIM_RISE_FREQ_END_SLOW : SFX_CLAIM_RISE_FREQ_END_FAST;
+    this.playTone(
+      SFX_CLAIM_RISE_FREQ_START * pitch,
+      SFX_CLAIM_RISE_DURATION,
+      'triangle',
+      sfxPeak('claim-rise'),
+      riseEnd * pitch,
+      now + SFX_CLAIM_HIT_DURATION
+    );
   }
 
+  /** The split sound: a low, short thump, then the split arpeggio. */
+  playSplitImpact(): void {
+    if (!this.record('split')) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.playTone(
+      SFX_SPLIT_IMPACT_FREQ,
+      SFX_SPLIT_IMPACT_DURATION,
+      'square',
+      sfxPeak('split-impact'),
+      descendFrom(SFX_SPLIT_IMPACT_FREQ),
+      now,
+      SFX_IMPACT_ATTACK
+    );
+    this.playArpeggio(
+      SFX_SPLIT_CLEAR_NOTES,
+      SFX_SPLIT_CLEAR_NOTE_DURATION,
+      'square',
+      sfxPeak('split-clear'),
+      now + SFX_SPLIT_IMPACT_DURATION,
+      SFX_IMPACT_ATTACK
+    );
+  }
+
+  /**
+   * The miss: a low sawtooth falling from 90 Hz, with a quieter one an octave
+   * up falling alongside it — small speakers drop the low one, not the layer.
+   */
   private playMiss(): void {
-    this.playTone(SFX_MISS_FREQ, SFX_MISS_DURATION, 'sawtooth', 0.25, descendFrom(SFX_MISS_FREQ));
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.playTone(
+      SFX_MISS_FREQ,
+      SFX_MISS_DURATION,
+      'sawtooth',
+      sfxPeak('miss'),
+      descendFrom(SFX_MISS_FREQ),
+      now,
+      SFX_IMPACT_ATTACK
+    );
+    this.playTone(
+      SFX_MISS_OVERTONE_FREQ,
+      SFX_MISS_DURATION,
+      'sawtooth',
+      sfxPeak('miss-overtone'),
+      descendFrom(SFX_MISS_OVERTONE_FREQ),
+      now,
+      SFX_IMPACT_ATTACK
+    );
   }
 
   private playStageClear(): void {
-    this.playArpeggio(SFX_STAGE_CLEAR_NOTES, SFX_STAGE_CLEAR_NOTE_DURATION, 'triangle', 0.22);
+    this.playArpeggio(
+      SFX_STAGE_CLEAR_NOTES,
+      SFX_STAGE_CLEAR_NOTE_DURATION,
+      'triangle',
+      sfxPeak('stage-clear'),
+      undefined,
+      SFX_IMPACT_ATTACK
+    );
   }
 
-  private playSplitClear(): void {
-    this.playArpeggio(SFX_SPLIT_CLEAR_NOTES, SFX_SPLIT_CLEAR_NOTE_DURATION, 'square', 0.2);
-  }
-
-  private playArpeggio(notes: readonly number[], noteDuration: number, type: OscillatorType, gain: number): void {
+  /**
+   * The GAME OVER close: a low, falling hit, then three notes resolving
+   * upward — different for a lost last life and for TIME UP!, and never a
+   * sad fall, so it reads as an end that invites another run.
+   */
+  playGameOver(reason: 'life' | 'time'): void {
+    if (!this.record(`gameover-${reason}`)) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
+    const now = ctx.currentTime;
+    this.playTone(
+      SFX_GAMEOVER_HIT_FREQ,
+      SFX_GAMEOVER_HIT_DURATION,
+      'square',
+      sfxPeak('gameover'),
+      descendFrom(SFX_GAMEOVER_HIT_FREQ),
+      now,
+      SFX_IMPACT_ATTACK
+    );
+    this.playArpeggio(
+      reason === 'time' ? SFX_GAMEOVER_TIME_NOTES : SFX_GAMEOVER_LIFE_NOTES,
+      SFX_GAMEOVER_NOTE_DURATION,
+      'triangle',
+      sfxPeak('gameover'),
+      now + SFX_GAMEOVER_HIT_DURATION
+    );
+  }
+
+  /** One tick of the GAME OVER score count-up. */
+  playCountTick(): void {
+    if (!this.record('count-tick')) return;
+    this.playTone(SFX_COUNT_TICK_FREQ, SFX_COUNT_TICK_DURATION, 'triangle', sfxPeak('count-tick'));
+  }
+
+  /** The GAME OVER score count-up stopping on the final score. */
+  playCountEnd(): void {
+    if (!this.record('count-end')) return;
+    this.playArpeggio(SFX_COUNT_END_NOTES, SFX_COUNT_END_NOTE_DURATION, 'triangle', sfxPeak('count-end'));
+  }
+
+  /** A beaten best on the GAME OVER screen: a bright rising fanfare. */
+  playNewRecord(): void {
+    if (!this.record('new-record')) return;
+    this.playArpeggio(SFX_NEW_RECORD_NOTES, SFX_NEW_RECORD_NOTE_DURATION, 'square', sfxPeak('new-record'));
+  }
+
+  /**
+   * The debug panel's COUNT: the count-up as GAME OVER plays it — ten ticks
+   * GAMEOVER_COUNT_TICK_EVERY ticks apart, then the stop — recorded once.
+   */
+  playCountSample(): void {
+    if (!this.record('count')) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const every = GAMEOVER_COUNT_TICK_EVERY / TICK_RATE;
+    const now = ctx.currentTime;
+    for (let i = 0; i < 10; i++) {
+      this.playTone(SFX_COUNT_TICK_FREQ, SFX_COUNT_TICK_DURATION, 'triangle', sfxPeak('count-tick'), undefined, now + i * every);
+    }
+    this.playArpeggio(SFX_COUNT_END_NOTES, SFX_COUNT_END_NOTE_DURATION, 'triangle', sfxPeak('count-end'), now + 10 * every);
+  }
+
+  /**
+   * The debug panel's DRAW: the drawing drone held for `seconds`, by itself
+   * (the live drone follows the marker and would stop it at once).
+   */
+  playDrawSample(seconds = 1): void {
+    if (!this.record('draw')) return;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = SFX_DRAW_FREQ_FAST;
+    env.gain.setValueAtTime(0, now);
+    env.gain.linearRampToValueAtTime(sfxPeak('draw'), now + 0.02);
+    env.gain.setValueAtTime(sfxPeak('draw'), now + seconds);
+    env.gain.linearRampToValueAtTime(0, now + seconds + 0.05);
+    osc.connect(env).connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + seconds + 0.08);
+    osc.addEventListener('ended', () => {
+      osc.disconnect();
+      env.disconnect();
+    });
+  }
+
+  /**
+   * The names of the sounds played, oldest first, the last SFX_LOG_MAX of
+   * them — only those actually played, so nothing while muted. Read by the
+   * E2E suite through window.__game__.
+   */
+  getLog(): SfxLogName[] {
+    return [...this.log];
+  }
+
+  // Notes `name` as played and says whether it may play: never while muted
+  // or without audio.
+  private record(name: SfxLogName): boolean {
+    if (this.muted || !this.ensureContext()) return false;
+    this.log.push(name);
+    if (this.log.length > SFX_LOG_MAX) this.log.splice(0, this.log.length - SFX_LOG_MAX);
+    return true;
+  }
+
+  private playArpeggio(
+    notes: readonly number[],
+    noteDuration: number,
+    type: OscillatorType,
+    peak: number,
+    startTime?: number,
+    attack = SFX_DEFAULT_ATTACK
+  ): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const start = startTime ?? ctx.currentTime;
     notes.forEach((freq, i) => {
-      this.playTone(freq, noteDuration, type, gain, undefined, ctx.currentTime + i * noteDuration);
+      this.playTone(freq, noteDuration, type, peak, undefined, start + i * noteDuration, attack);
     });
   }
 
@@ -296,15 +618,18 @@ export class SfxEngine {
    * ringing) never fight over shared state.
    *
    * With `endFreq` the pitch glides from `freq` to it over the note, falling
-   * or rising; without it the note holds `freq`.
+   * or rising; without it the note holds `freq`. `peak` is the envelope's
+   * peak, always from the level table (src/audio/sfxLevels.ts's sfxPeak());
+   * `attack` is how long the note takes to reach it.
    */
   private playTone(
     freq: number,
     duration: number,
-    type: OscillatorType = 'sine',
-    gain = 0.2,
+    type: OscillatorType,
+    peak: number,
     endFreq?: number,
-    startTime?: number
+    startTime?: number,
+    attack = SFX_DEFAULT_ATTACK
   ): void {
     if (this.muted) return;
     const ctx = this.ensureContext();
@@ -321,12 +646,12 @@ export class SfxEngine {
     }
 
     env.gain.setValueAtTime(0, start);
-    env.gain.linearRampToValueAtTime(gain, start + 0.01);
+    env.gain.linearRampToValueAtTime(peak, start + attack);
     env.gain.exponentialRampToValueAtTime(0.0001, start + duration);
 
     osc.connect(env).connect(this.masterGain);
     osc.start(start);
-    osc.stop(start + duration + 0.02);
+    osc.stop(start + duration + SFX_TONE_STOP_TAIL);
     osc.addEventListener('ended', () => {
       osc.disconnect();
       env.disconnect();
@@ -358,7 +683,7 @@ export class SfxEngine {
 
     this.ctx = new Ctor();
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = this.muted ? 0 : SFX_MASTER_GAIN;
+    this.masterGain.gain.value = this.muted ? 0 : sfxLevels.master;
     this.masterGain.connect(this.ctx.destination);
     return this.ctx;
   }

@@ -36,6 +36,7 @@ import { MOVE_KEYS, DRAW_FAST_KEYS, DRAW_SLOW_KEYS } from './keys';
 import {
   CANVAS_HEIGHT,
   CANVAS_WIDTH,
+  PAUSE_BUTTON_MIN_SIZE_PX,
   TOUCH_BOTTOM_CONTROLS_PADDING_Y,
   TOUCH_BUTTON_SIZE,
   TOUCH_DPAD_DEAD_ZONE_RADIUS,
@@ -47,23 +48,25 @@ import {
   TOUCH_SIDE_COLUMN_PADDING,
   TOUCH_SIDE_MIN_FIELD_WIDTH,
 } from '../config';
+import { t } from '../i18n';
 
 interface ButtonSpec {
   code: string;
-  label: string;
+  /** Read when the button is built (after the page language is set). */
+  label: () => string;
   gridArea: string;
 }
 
 const DPAD_BUTTONS: ButtonSpec[] = [
-  { code: MOVE_KEYS.up[0], label: '▲', gridArea: 'up' },
-  { code: MOVE_KEYS.left[0], label: '◀', gridArea: 'left' },
-  { code: MOVE_KEYS.right[0], label: '▶', gridArea: 'right' },
-  { code: MOVE_KEYS.down[0], label: '▼', gridArea: 'down' },
+  { code: MOVE_KEYS.up[0], label: () => '▲', gridArea: 'up' },
+  { code: MOVE_KEYS.left[0], label: () => '◀', gridArea: 'left' },
+  { code: MOVE_KEYS.right[0], label: () => '▶', gridArea: 'right' },
+  { code: MOVE_KEYS.down[0], label: () => '▼', gridArea: 'down' },
 ];
 
 const ACTION_BUTTONS: ButtonSpec[] = [
-  { code: DRAW_SLOW_KEYS[0], label: 'SLOW', gridArea: 'slow' },
-  { code: DRAW_FAST_KEYS[0], label: 'FAST', gridArea: 'fast' },
+  { code: DRAW_SLOW_KEYS[0], label: () => t('touch.slow'), gridArea: 'slow' },
+  { code: DRAW_FAST_KEYS[0], label: () => t('touch.fast'), gridArea: 'fast' },
 ];
 
 // Side length (CSS px) of the square box the FAST/SLOW buttons are
@@ -207,10 +210,18 @@ function preventTouchGesture(event: TouchEvent): void {
   event.preventDefault();
 }
 
+export interface TouchControlsOptions {
+  /** The PAUSE button was pressed (src/pause.ts). Without it, no PAUSE button is built. */
+  onPause?: () => void;
+}
+
 export class TouchControls {
   private container: HTMLDivElement;
   private dispatchTarget: EventTarget;
   private disposers: Array<() => void> = [];
+  private readonly options: TouchControlsOptions;
+  private pauseButton: HTMLButtonElement | null = null;
+  private pauseButtonShown = false;
 
   /**
    * @param dispatchTarget Where synthetic KeyboardEvents are dispatched —
@@ -219,8 +230,9 @@ export class TouchControls {
    * @param parent Where the control DOM is mounted. Defaults to
    *   `document.body`.
    */
-  constructor(dispatchTarget: EventTarget = window, parent: HTMLElement = document.body) {
+  constructor(dispatchTarget: EventTarget = window, parent: HTMLElement = document.body, options: TouchControlsOptions = {}) {
     this.dispatchTarget = dispatchTarget;
+    this.options = options;
     this.container = this.buildContainer();
     this.container.appendChild(this.buildDpad());
     this.container.appendChild(this.buildActions());
@@ -353,8 +365,53 @@ export class TouchControls {
 
     const extra = document.createElement('div');
     extra.id = 'touch-actions-extra';
+    if (this.options.onPause) extra.appendChild(this.buildPauseButton(this.options.onPause));
     actions.appendChild(extra);
     return actions;
+  }
+
+  /**
+   * Shows the PAUSE button while the run can be paused or is paused; hidden
+   * it takes no room. A no-op unless that changes.
+   */
+  setPauseButtonShown(shown: boolean): void {
+    if (!this.pauseButton || shown === this.pauseButtonShown) return;
+    this.pauseButtonShown = shown;
+    this.pauseButton.style.display = shown ? 'block' : 'none';
+    if (!shown && document.activeElement === this.pauseButton) this.pauseButton.blur();
+  }
+
+  // The PAUSE button, in #touch-actions-extra: index.html places it below
+  // FAST / SLOW in bottom mode, out of the flow so the controls do not move,
+  // and next to the credit and MUTE in side mode. It sends no key, so a press
+  // is never a confirm, a move or a draw, and it keeps no focus.
+  private buildPauseButton(onPause: () => void): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.id = 'pause-button';
+    button.type = 'button';
+    button.textContent = t('pause.button');
+    button.style.display = 'none';
+    button.style.boxSizing = 'border-box';
+    button.style.minWidth = `${PAUSE_BUTTON_MIN_SIZE_PX}px`;
+    button.style.minHeight = `${PAUSE_BUTTON_MIN_SIZE_PX}px`;
+    button.style.padding = '0 4px';
+    button.style.borderRadius = '4px';
+    button.style.border = '1px solid #00ff41';
+    button.style.background = 'rgba(10, 14, 39, 0.7)';
+    button.style.color = '#00ff41';
+    button.style.font = '11px monospace';
+    button.style.touchAction = 'manipulation';
+    button.style.userSelect = 'none';
+    button.style.webkitUserSelect = 'none';
+    const onClick = (event: MouseEvent): void => {
+      (event.currentTarget as HTMLButtonElement).blur();
+      onPause();
+    };
+    button.addEventListener('click', onClick);
+    button.addEventListener('contextmenu', (e) => e.preventDefault());
+    this.disposers.push(() => button.removeEventListener('click', onClick));
+    this.pauseButton = button;
+    return button;
   }
 
   // The FAST/SLOW cluster: a small relative box, pinned to the container's
@@ -388,7 +445,7 @@ export class TouchControls {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.code = spec.code;
-    button.textContent = spec.label;
+    button.textContent = spec.label();
     button.style.width = `${TOUCH_BUTTON_SIZE}px`;
     button.style.height = `${TOUCH_BUTTON_SIZE}px`;
     button.style.borderRadius = '50%';

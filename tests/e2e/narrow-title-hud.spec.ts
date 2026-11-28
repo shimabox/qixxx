@@ -27,7 +27,7 @@
 // - P2 (stale non-#hud width after the mode decision): wouldSingleLineFit()
 //   only ever measured hudRow's non-#hud siblings (credit link, mute
 //   button) once, at decision time — so a change to any of them afterward
-//   (the mute button's label growing MUTE -> UNMUTE, or the dev-only DEBUG
+//   (the mute button's label growing SOUND: ON -> SOUND: OFF, or the dev-only DEBUG
 //   badge mounting asynchronously after `?debug`'s dynamic import resolves)
 //   could invalidate an already-committed single-line decision without ever
 //   re-checking it. Fixed by reserving the mute button's widest possible
@@ -60,22 +60,24 @@ async function expectFullyReadableHud(page: import('@playwright/test').Page): Pr
   expect(await isUnclipped(line1)).toBe(true);
   await expect(line1).toContainText('STAGE');
   await expect(line1).toContainText('SCORE');
-  await expect(line1).toContainText('HI');
+  // HI in two-line mode; on one line the goal slot holds HI for a seeded run
+  // and the next target (TO BEST ...) for a normal one.
+  await expect(line1).toContainText(stacked ? /HI \d/ : /HI \d|TO BEST \d|TO #10 \d|TOP 10!|NEW BEST!/);
 
   if (stacked) {
     await expect(line2).toBeVisible();
     await expect(line3).toBeVisible();
     expect(await isUnclipped(line2)).toBe(true);
     expect(await isUnclipped(line3)).toBe(true);
-    await expect(line2).toContainText('OCCUPANCY');
-    await expect(line2).toContainText('LIVES');
+    await expect(line2).toContainText('% LEFT');
+    await expect(line2).toContainText('◆');
     await expect(line3).toContainText('TIME');
   } else {
     await expect(line2).toBeHidden();
     await expect(line3).toBeHidden();
     await expect(line1).toContainText('TIME');
-    await expect(line1).toContainText('OCCUPANCY');
-    await expect(line1).toContainText('LIVES');
+    await expect(line1).toContainText('% LEFT');
+    await expect(line1).toContainText('◆');
   }
 }
 
@@ -101,11 +103,11 @@ async function setWorstCaseHudText(page: import('@playwright/test').Page): Promi
     const l2 = document.getElementById('hud-line2') as HTMLElement;
     const l3 = document.getElementById('hud-line3') as HTMLElement;
     if (l2.style.display === 'block') {
-      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999';
-      l2.textContent = 'OCCUPANCY: 100%  LIVES: 9  x9';
-      l3.textContent = 'TIME 3:00.0';
+      l1.textContent = 'STAGE 999  SCORE 999999  HI 999999';
+      l2.textContent = '10%/90% 80% LEFT  ◆◆◇  x9';
+      l3.textContent = 'TIME 3:00.0  TO BEST 999999';
     } else {
-      l1.textContent = 'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+      l1.textContent = 'STAGE 999  SCORE 999999  TO BEST 999999  TIME 3:00.0  10%/90% 80% LEFT  ◆◆◇  x9';
     }
   });
 }
@@ -231,18 +233,18 @@ test.describe('short-viewport normal/seeded HUD (P2 fix, 2026-08-12 follow-up)',
 });
 
 test.describe('non-#hud row width changing after the mode decision (P2 fix, 2026-08-13 follow-up)', () => {
-  test('toggling MUTE/UNMUTE repeatedly never clips a near-worst-case single-line HUD', async ({ page }) => {
+  test('toggling SOUND: ON / SOUND: OFF repeatedly never clips a near-worst-case single-line HUD', async ({ page }) => {
     // A borderline single-line viewport (empirically found: the
     // single/stacked transition sits at 871-872px wide at this height with
     // this fix applied — comfortable margin above that, not a razor's-edge
     // pixel, for CI stability) reproducing the reviewer's report that a
     // moderate desktop-class viewport, not just a narrow phone, clips once
-    // MUTE grows the HUD's non-text neighbor.
+    // the sound toggle grows the HUD's non-text neighbor.
     await page.setViewportSize({ width: 880, height: 700 });
     // Start unmuted ("音声ON" in the report) — loadMuted() (src/storage/
     // settings.ts) defaults to muted unless localStorage explicitly says
-    // 'false', and the bug only showed up going *from* the shorter "MUTE"
-    // label *to* the longer "UNMUTE" one (the direction that grows the
+    // 'false', and the bug only showed up going *from* the shorter "SOUND: ON"
+    // label *to* the longer "SOUND: OFF" one (the direction that grows the
     // button and steals width from the HUD text).
     await page.addInitScript(() => localStorage.setItem('qixxx.muted', 'false'));
     await page.goto(APP_URL);

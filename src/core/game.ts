@@ -13,20 +13,27 @@ import { Wisp, Rng } from './enemy';
 import { Ember, Heading } from './patrol';
 import { Igniter, shouldSpawnIgniter } from './fuse';
 import { checkCollision } from './collision';
-import { scoreAreaClaim, scoreStageClearBonus, DEFAULT_SCORE_MULTIPLIER } from './scoring';
+import { scoreAreaClaim, scoreStageClearBonus, isBigClaim, DEFAULT_SCORE_MULTIPLIER } from './scoring';
 import { EventQueue, GameEvent } from './events';
+import type { ClaimFeedback, MissCause, MissFeedback, WispSurgeFeedback } from './feedback';
+import { wispSurgeLevel, wispSurgeMultiplier, WispSurgeLevel } from './wispSurge';
 import {
   MARKER_MOVE_TICKS_FAST,
   MARKER_MOVE_TICKS_SLOW,
   INITIAL_LIVES,
   MISS_GRACE_TICKS,
+  MISS_LINE_LOCK_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
   EMBER_SPAWN_INTERVAL_TICKS,
   EMBER_MOVE_TICKS,
   EMBER_BRANCH_CHASE_PROBABILITY,
-  EMBER_MAX_CONCURRENT_STAGE1,
+  EMBER_MAX_CONCURRENT_DEFAULT,
   EMBER_LINE_ENTRY_GENERATION,
   TICK_RATE,
+  BIG_CLAIM_SHARE,
+  BIG_CLAIM_MULTIPLIER,
+  NEAR_MISS_DISTANCE_CELLS,
+  NEAR_MISS_BONUS,
 } from '../config';
 
 /**
@@ -51,6 +58,24 @@ export interface DebugOverrides {
   emberBranchChaseProbability?: number;
   /** Required occupancy fraction [0.10, 0.90] to clear the stage. */
   requiredOccupancy?: number;
+  /** Share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
+  bigClaimShare?: number;
+  /** What a big claim's area points are multiplied by (BIG_CLAIM_MULTIPLIER). */
+  bigClaimMultiplier?: number;
+  /** How close (cells) a Wisp head must come to the line for a close call (NEAR_MISS_DISTANCE_CELLS). */
+  nearMissDistanceCells?: number;
+  /** The close-call bonus before the multiplier (NEAR_MISS_BONUS). */
+  nearMissBonus?: number;
+  /** Ticks after a miss with no further miss (MISS_GRACE_TICKS); from the next miss on. */
+  missGraceTicks?: number;
+  /** Ticks after a miss with no new line (MISS_LINE_LOCK_TICKS); from the next miss on. */
+  missLineLockTicks?: number;
+  /**
+   * Seconds from a stage's start to its first Ember pair, on every stage
+   * (EMBER_FIRST_SPAWN_SEC is stage 1's own). Read as a stage starts: a
+   * change in the middle of a stage applies from the next one.
+   */
+  firstEmberSec?: number;
 }
 
 /**
@@ -67,6 +92,14 @@ export interface EffectiveDebugParams {
   emberSpawnIntervalSec: number;
   emberBranchChaseProbability: number;
   requiredOccupancy: number;
+  bigClaimShare: number;
+  bigClaimMultiplier: number;
+  nearMissDistanceCells: number;
+  nearMissBonus: number;
+  missGraceTicks: number;
+  missLineLockTicks: number;
+  /** The override if set, else this stage's own wait for its first Ember pair. */
+  firstEmberSec: number;
 }
 
 export interface GameInput {
@@ -97,6 +130,12 @@ export interface GameOptions {
   embers?: Ember[];
   /** Overrides EMBER_SPAWN_INTERVAL_TICKS (test hook, avoids waiting out the real 30s interval). */
   emberSpawnIntervalTicks?: number;
+  /**
+   * Ticks from the stage's start to its first Ember pair (the stage table's
+   * `firstEmberSec`). Defaults to the spawn interval, so every pair — the
+   * first included — is one interval apart.
+   */
+  firstEmberSpawnTicks?: number;
   /** Initial score multiplier (test hook for exercising the miss-reset path; docs/plan.md §3.5/§3.6). */
   multiplier?: number;
   /**
@@ -112,38 +151,50 @@ export interface GameOptions {
    */
   lives?: number;
   /**
-   * Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped
-   * at STAGE_MAX_DIFFICULTY — see core/stage.ts). Takes precedence over the
+   * Wisps present this stage (core/stage.ts's table). Takes precedence over the
    * single `wisp` constructor parameter when provided. Defaults to a single
    * Wisp (the `wisp` param, or a freshly-constructed one) so single-Wisp
    * callers/tests are unaffected.
    */
   wisps?: Wisp[];
   /**
-   * Required occupancy to clear this stage (docs/plan.md §12.7): 65% at
-   * stage 1, escalating to 90% by stage 10. Defaults to
-   * DEFAULT_REQUIRED_OCCUPANCY.
+   * Required occupancy to clear this stage (core/stage.ts's table).
+   * Defaults to DEFAULT_REQUIRED_OCCUPANCY (stage 1's).
    */
   requiredOccupancy?: number;
   /**
    * Ticks per BORDER-cell step for every Ember spawned/overridden this stage
-   * (docs/plan.md §12.7: 3 at stage 1, down to 1 by stage 10 — see
-   * core/stage.ts). Defaults to EMBER_MOVE_TICKS (the stage-1 baseline).
+   * (core/stage.ts's table). Defaults to EMBER_MOVE_TICKS (stage 1's).
    */
   emberMoveTicks?: number;
   /**
    * Branch-chase probability for every Ember spawned/overridden this stage
-   * (docs/plan.md §12.7: 0.7 at stage 1, up to 1.0 by stage 10). Defaults to
+   * (core/stage.ts: 0.7 at stage 1, up to 1.0 by stage 4). Defaults to
    * EMBER_BRANCH_CHASE_PROBABILITY (the stage-1 baseline).
    */
   emberBranchChaseProbability?: number;
   /**
    * Max Embers allowed alive at once before maybeSpawnEmbers() starts
-   * skipping spawns (docs/plan.md §12.7 "Ember 同時数上限": 2 at stage 1, up
-   * to 10 by stage 10). Bypassed while a debug emberCount override is active
-   * (see maybeSpawnEmbers()). Defaults to EMBER_MAX_CONCURRENT_STAGE1.
+   * skipping spawns (core/stage.ts's table). Bypassed while a debug
+   * emberCount override is active (see maybeSpawnEmbers()). Defaults to
+   * EMBER_MAX_CONCURRENT_DEFAULT (stage 1's).
    */
   maxConcurrentEmbers?: number;
+  /**
+   * When true, every accepted claim and every miss also queues a read-only
+   * notice (core/feedback.ts) for drainClaimFeedback()/drainMissFeedback().
+   * Defaults to false: no notice is built and no line is copied, and both
+   * drains return an empty array. Never changes the simulation itself.
+   */
+  captureFeedback?: boolean;
+  /**
+   * When true, the Wisps speed up as occupancy nears the goal
+   * (core/wispSurge.ts): on every accepted claim and every debug override
+   * change the surge level is decided again, and every Wisp's speed
+   * multiplier becomes its own (the stage's, or the debug override) times the
+   * level's. Defaults to false: the level stays 0 and no speed ever changes.
+   */
+  wispSurge?: boolean;
 }
 
 export class Game {
@@ -173,10 +224,22 @@ export class Game {
   // §4.2/§3.6 "2匹 QIX への拡張"). Consumed by the session/stage layer to
   // decide whether to bump the next stage's score multiplier.
   private lastClearWasSplit = false;
+  // How much the split that most recently cleared this stage raises the next
+  // stage's multiplier: the smaller side's Wisp count (at least 1), 0 when
+  // the stage did not clear by a split. Read by the session layer.
+  private lastSplitMultiplierGain = 0;
   // Remaining post-miss grace ticks (docs/plan.md §3.5): while > 0, all miss
   // detection (Wisp x line, Ember x marker, Igniter catch-up) is suspended so
   // a single sustained contact costs exactly one life, not one per tick.
   private graceTicks = 0;
+  // Remaining post-miss ticks during which no new line can be started
+  // (MISS_LINE_LOCK_TICKS); independent of, and normally shorter than, the
+  // grace above.
+  private lineLockTicks = 0;
+  // True once a Wisp head came within the near-miss distance of the line
+  // being drawn (see checkNearMiss()). One mark per line: it is read when
+  // the line closes and cleared whenever the line goes, for any reason.
+  private lineNearMissed = false;
   // Discrete occurrences this stage's simulation has produced but that
   // nobody has drained yet (docs/plan.md §3.8/§9.9: this is the entire
   // core -> audio bridge — Game never touches AudioContext itself). See
@@ -191,6 +254,16 @@ export class Game {
   // union. See drainDespawnedEmberPositions() below and GameSession's
   // forwarding of the same.
   private despawnedEmberPositions = new EventQueue<Point>();
+  // Claim/miss notices for the presentation layer (core/feedback.ts). Both
+  // stay null unless GameOptions.captureFeedback is set, so a Game built
+  // without it allocates nothing for them.
+  private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
+  private readonly missFeedback: EventQueue<MissFeedback> | null;
+  private readonly surgeFeedback: EventQueue<WispSurgeFeedback> | null;
+  // The Wisp surge (GameOptions.wispSurge): whether it applies, and the
+  // current level (always 0 without it).
+  private readonly wispSurge: boolean;
+  private surgeLevel: WispSurgeLevel = 0;
 
   // Ember spawn-generation counter (docs/plan.md §14 M6-1): incremented once
   // every time maybeSpawnEmbers()'s cooldown elapses and a spawn cycle
@@ -218,6 +291,10 @@ export class Game {
   private readonly baseEmberSpawnIntervalTicks: number;
   private readonly baseEmberBranchChaseProbability: number;
   private readonly baseRequiredOccupancy: number;
+  private readonly baseFirstEmberSpawnTicks: number;
+  // False until the first update(): the first-Ember override (firstEmberSec)
+  // only reaches a stage that has not started yet.
+  private started = false;
   // Ember concurrency cap (docs/plan.md §6 M12 / §12.7): not debug-overridable
   // itself (there's no panel slider for it), just the stage's own fixed
   // value for the lifetime of this Game instance. See maybeSpawnEmbers().
@@ -243,11 +320,16 @@ export class Game {
 
     this.embers = options.embers ? [...options.embers] : [];
     this.emberSpawnIntervalTicks = options.emberSpawnIntervalTicks ?? EMBER_SPAWN_INTERVAL_TICKS;
-    this.emberSpawnCooldownTicks = this.emberSpawnIntervalTicks;
+    this.baseFirstEmberSpawnTicks = options.firstEmberSpawnTicks ?? this.emberSpawnIntervalTicks;
+    this.emberSpawnCooldownTicks = this.baseFirstEmberSpawnTicks;
     this.multiplier = options.multiplier ?? DEFAULT_SCORE_MULTIPLIER;
     this.requiredOccupancy = options.requiredOccupancy ?? DEFAULT_REQUIRED_OCCUPANCY;
     this.score = options.score ?? 0;
     this.lives = options.lives ?? INITIAL_LIVES;
+    this.claimFeedback = options.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
+    this.missFeedback = options.captureFeedback ? new EventQueue<MissFeedback>() : null;
+    this.surgeFeedback = options.captureFeedback ? new EventQueue<WispSurgeFeedback>() : null;
+    this.wispSurge = options.wispSurge ?? false;
 
     // Snapshot this stage's own defaults (docs/plan.md §6 M10 "RESET は
     // ステージ既定値に戻す") before any debug override can touch them.
@@ -258,7 +340,7 @@ export class Game {
     this.baseEmberSpawnIntervalTicks = this.emberSpawnIntervalTicks;
     this.baseEmberBranchChaseProbability = options.emberBranchChaseProbability ?? EMBER_BRANCH_CHASE_PROBABILITY;
     this.baseRequiredOccupancy = this.requiredOccupancy;
-    this.maxConcurrentEmbers = options.maxConcurrentEmbers ?? EMBER_MAX_CONCURRENT_STAGE1;
+    this.maxConcurrentEmbers = options.maxConcurrentEmbers ?? EMBER_MAX_CONCURRENT_DEFAULT;
   }
 
   getField(): Field {
@@ -274,7 +356,7 @@ export class Game {
     return this.wisps[0];
   }
 
-  /** All Wisps present this stage (docs/plan.md §12.7: stage n = n Wisps, capped at STAGE_MAX_DIFFICULTY). */
+  /** All Wisps present this stage (core/stage.ts's table). */
   getWisps(): Wisp[] {
     return this.wisps;
   }
@@ -286,6 +368,11 @@ export class Game {
   /** See `lastClearWasSplit` — true iff the stage most recently cleared via a split, not occupancy. */
   getLastClearWasSplit(): boolean {
     return this.lastClearWasSplit;
+  }
+
+  /** See `lastSplitMultiplierGain` — 0 unless the stage most recently cleared via a split. */
+  getLastSplitMultiplierGain(): number {
+    return this.lastSplitMultiplierGain;
   }
 
   getEmbers(): Ember[] {
@@ -310,6 +397,16 @@ export class Game {
 
   getOccupancy(): number {
     return this.occupancy;
+  }
+
+  /** The current Wisp surge level (core/wispSurge.ts); always 0 unless built with `wispSurge: true`. */
+  getWispSurgeLevel(): WispSurgeLevel {
+    return this.surgeLevel;
+  }
+
+  /** Whether this Game was built with `wispSurge: true` (see GameOptions). */
+  isWispSurgeEnabled(): boolean {
+    return this.wispSurge;
   }
 
   getLives(): number {
@@ -338,6 +435,31 @@ export class Game {
     return this.graceTicks;
   }
 
+  /** Ticks after a miss during which no further miss can happen (MISS_GRACE_TICKS). */
+  private getMissGraceTicks(): number {
+    return this.debugOverrides.missGraceTicks ?? MISS_GRACE_TICKS;
+  }
+
+  /** Ticks after a miss during which no new line can be started (MISS_LINE_LOCK_TICKS). */
+  private getMissLineLockTicks(): number {
+    return this.debugOverrides.missLineLockTicks ?? MISS_LINE_LOCK_TICKS;
+  }
+
+  /** Remaining post-miss ticks during which no new line can be started (0 when none). */
+  getLineLockTicks(): number {
+    return this.lineLockTicks;
+  }
+
+  /** The share of the field one claim must fill to be a big claim (BIG_CLAIM_SHARE). */
+  private getBigClaimShare(): number {
+    return this.debugOverrides.bigClaimShare ?? BIG_CLAIM_SHARE;
+  }
+
+  /** What a big claim's area points are multiplied by (BIG_CLAIM_MULTIPLIER). */
+  private getBigClaimMultiplier(): number {
+    return this.debugOverrides.bigClaimMultiplier ?? BIG_CLAIM_MULTIPLIER;
+  }
+
   /**
    * Drains (returns and clears) every GameEvent queued since the last call
    * (docs/plan.md §3.8/§9.9). Pure data — see core/events.ts. Callers (e.g.
@@ -358,6 +480,38 @@ export class Game {
    */
   drainDespawnedEmberPositions(): Point[] {
     return this.despawnedEmberPositions.drain();
+  }
+
+  /** True when this Game was built with `captureFeedback: true` (see GameOptions). */
+  isCapturingFeedback(): boolean {
+    return this.claimFeedback !== null;
+  }
+
+  /**
+   * Drains (returns and clears) every claim notice queued since the last
+   * call (core/feedback.ts). Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainClaimFeedback(): ClaimFeedback[] {
+    return this.claimFeedback ? this.claimFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every miss notice queued since the last call
+   * (core/feedback.ts). Always empty unless built with `captureFeedback: true`.
+   */
+  drainMissFeedback(): MissFeedback[] {
+    return this.missFeedback ? this.missFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every Wisp surge notice (core/feedback.ts)
+   * queued since the last call: one per claim that raised the surge level
+   * and left the stage still playing. Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainWispSurgeFeedback(): WispSurgeFeedback[] {
+    return this.surgeFeedback ? this.surgeFeedback.drain() : [];
   }
 
   /**
@@ -411,7 +565,8 @@ export class Game {
   getEffectiveDebugParams(): EffectiveDebugParams {
     return {
       wispCount: this.wisps.length,
-      wispSpeedMultiplier: this.wisps[0]?.getSpeedMultiplier() ?? this.debugOverrides.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier,
+      // The Wisps' own multiplier, before the surge level's is applied.
+      wispSpeedMultiplier: this.getOwnWispSpeedMultiplier(),
       emberCount: this.embers.length,
       emberMoveTicks: this.embers[0]?.getMoveTicks() ?? this.debugOverrides.emberMoveTicks ?? this.baseEmberMoveTicks,
       emberSpawnIntervalSec: this.emberSpawnIntervalTicks / TICK_RATE,
@@ -420,6 +575,13 @@ export class Game {
         this.debugOverrides.emberBranchChaseProbability ??
         this.baseEmberBranchChaseProbability,
       requiredOccupancy: this.requiredOccupancy,
+      bigClaimShare: this.getBigClaimShare(),
+      bigClaimMultiplier: this.getBigClaimMultiplier(),
+      nearMissDistanceCells: this.getNearMissDistance(),
+      nearMissBonus: this.getNearMissBonus(),
+      missGraceTicks: this.getMissGraceTicks(),
+      missLineLockTicks: this.getMissLineLockTicks(),
+      firstEmberSec: this.debugOverrides.firstEmberSec ?? this.baseFirstEmberSpawnTicks / TICK_RATE,
     };
   }
 
@@ -431,7 +593,10 @@ export class Game {
   private reconcileDebugOverrides(): void {
     const o = this.debugOverrides;
 
-    const targetWispSpeed = o.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier;
+    // The goal first: the surge level below is decided on the new one.
+    this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
+    this.surgeLevel = this.decideSurgeLevel();
+    const targetWispSpeed = this.getWispSpeedMultiplier();
     this.setWispCount(o.wispCount ?? this.baseWispCount, targetWispSpeed);
     for (const wisp of this.wisps) {
       wisp.setSpeedMultiplier(targetWispSpeed);
@@ -450,7 +615,46 @@ export class Game {
         ? Math.round(o.emberSpawnIntervalSec * TICK_RATE)
         : this.baseEmberSpawnIntervalTicks;
 
-    this.requiredOccupancy = o.requiredOccupancy ?? this.baseRequiredOccupancy;
+    // The first Ember's wait is read as the stage starts: only a stage not
+    // yet started takes a changed (or reset) value; a running one keeps its own.
+    if (!this.started) {
+      this.emberSpawnCooldownTicks =
+        o.firstEmberSec !== undefined ? Math.max(0, Math.round(o.firstEmberSec * TICK_RATE)) : this.baseFirstEmberSpawnTicks;
+    }
+  }
+
+  /** The Wisps' own speed multiplier: the debug override if set, else this stage's. */
+  private getOwnWispSpeedMultiplier(): number {
+    return this.debugOverrides.wispSpeedMultiplier ?? this.baseWispSpeedMultiplier;
+  }
+
+  /** The speed multiplier every Wisp moves at: its own times the surge level's. */
+  private getWispSpeedMultiplier(): number {
+    return this.getOwnWispSpeedMultiplier() * wispSurgeMultiplier(this.surgeLevel);
+  }
+
+  /** The surge level for the current occupancy and goal; 0 without the surge. */
+  private decideSurgeLevel(): WispSurgeLevel {
+    return this.wispSurge ? wispSurgeLevel(this.occupancy, this.requiredOccupancy) : 0;
+  }
+
+  /**
+   * Decides the surge level again after a claim. A level that changed sets
+   * every Wisp's speed at once; one that rose with the stage still playing
+   * also queues a notice for the presentation layer.
+   */
+  private updateSurgeAfterClaim(): void {
+    const level = this.decideSurgeLevel();
+    if (level === this.surgeLevel) return;
+    const rose = level > this.surgeLevel;
+    this.surgeLevel = level;
+    const speed = this.getWispSpeedMultiplier();
+    for (const wisp of this.wisps) {
+      wisp.setSpeedMultiplier(speed);
+    }
+    if (rose && level > 0 && this.status === 'playing' && this.surgeFeedback) {
+      this.surgeFeedback.push({ level: level as 1 | 2, positions: this.wisps.map((w) => w.getPosition()) });
+    }
   }
 
   /** Spawns/despawns Wisps until exactly `target` remain (docs/plan.md §6 M10). */
@@ -522,8 +726,10 @@ export class Game {
     if (this.status !== 'playing') {
       return null;
     }
+    this.started = true;
 
     const inGraceAtTickStart = this.graceTicks > 0;
+    const lineLockedAtTickStart = this.lineLockTicks > 0;
     const markerPositionBeforeMove = this.marker.getPosition();
     let missedThisTick = false;
     for (const wisp of this.wisps) {
@@ -552,14 +758,14 @@ export class Game {
     // still handled the same tick it happens, not one tick late.
     this.despawnStrandedEmbers();
     this.maybeSpawnEmbers();
+    this.checkNearMiss();
 
-    if (
-      !inGraceAtTickStart &&
-      this.marker.isDrawing() &&
-      this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionBeforeMove))
-    ) {
-      this.handleMiss();
-      missedThisTick = true;
+    if (!inGraceAtTickStart && this.marker.isDrawing()) {
+      const hitWisp = this.findWispTouching(markerPositionBeforeMove);
+      if (hitWisp) {
+        this.handleMiss('wisp', hitWisp);
+        missedThisTick = true;
+      }
     }
 
     const holdingDirection = input.dx !== 0 || input.dy !== 0;
@@ -579,13 +785,37 @@ export class Game {
         const wispPositions = this.wisps.map((w) => w.getPosition());
         const claimResult: ClaimResult = claimArea(this.field, result.closedLine, wispPositions, lineSpeed);
         this.despawnIgniter();
+        // The line is gone either way: its mark is read here and not kept.
+        const nearMissed = this.lineNearMissed;
+        this.lineNearMissed = false;
         if (claimResult.accepted) {
+          const occupancyBefore = this.occupancy;
           this.occupancy = claimResult.occupancy;
-          this.score += scoreAreaClaim(claimResult.claimedCells, lineSpeed, this.multiplier);
+          const bigClaim = isBigClaim(
+            claimResult.claimedCells,
+            this.field.getClaimableCellCount(),
+            this.getBigClaimShare()
+          );
+          const areaScore = scoreAreaClaim(
+            claimResult.claimedCells,
+            lineSpeed,
+            this.multiplier,
+            bigClaim ? this.getBigClaimMultiplier() : 1
+          );
+          this.score += areaScore;
+          const nearMissBonus = nearMissed ? Math.floor(this.getNearMissBonus() * this.multiplier) : 0;
+          this.score += nearMissBonus;
           this.despawnStrandedEmbers();
           this.relocateStrandedMarker(result.closedLine);
           this.events.push('area-claimed');
           this.lastClearWasSplit = claimResult.split;
+          // A split raises the next stage's multiplier by the smaller side's
+          // Wisp count, so cutting a crowd in half pays more than shaving one off.
+          this.lastSplitMultiplierGain = claimResult.split
+            ? Math.max(1, Math.min(claimResult.anchorSideEnemies, claimResult.otherSideEnemies))
+            : 0;
+          // Only read back by the optional claim notice below.
+          let stageClearBonus = 0;
           if (claimResult.split) {
             // Splitting the Wisps apart clears the stage instantly, regardless
             // of occupancy (docs/plan.md §4.2/§3.6). The multiplier bump for
@@ -594,12 +824,35 @@ export class Game {
             this.status = 'stageclear';
             this.events.push('split-clear');
           } else if (this.occupancy >= this.requiredOccupancy) {
-            this.score += scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
+            stageClearBonus = scoreStageClearBonus(this.occupancy, this.requiredOccupancy);
+            this.score += stageClearBonus;
             this.status = 'stageclear';
             this.events.push('stage-clear');
           }
+          this.updateSurgeAfterClaim();
+          if (this.claimFeedback) {
+            this.claimFeedback.push({
+              claimedCells: claimResult.claimedCells,
+              occupancyBefore,
+              occupancyAfter: this.occupancy,
+              lineSpeed,
+              areaScore,
+              bigClaim,
+              nearMissBonus,
+              stageClearBonus,
+              multiplier: this.multiplier,
+              split: claimResult.split,
+              splitMultiplierGain: this.lastSplitMultiplierGain,
+              stageCleared: this.status === 'stageclear',
+              closedLine: result.closedLine.map((p) => ({ x: p.x, y: p.y })),
+            });
+          }
         }
       }
+    }
+    // A line retracted all the way back to its start is gone too.
+    if (!this.marker.isDrawing()) {
+      this.lineNearMissed = false;
     }
 
     // Grace is measured from tick start so a miss created above retains its
@@ -607,16 +860,21 @@ export class Game {
     // this decrement reaches zero; collision checks resume on the next tick.
     if (inGraceAtTickStart) {
       this.graceTicks--;
-      if (this.graceTicks === 0) {
+    }
+    // The line lock counts the same way. A miss earlier in this tick (only
+    // possible when the lock outlasts the grace) restarted it: leave it whole.
+    if (lineLockedAtTickStart && !missedThisTick) {
+      this.lineLockTicks--;
+      if (this.lineLockTicks === 0) {
         // Movement has already run for this tick, so line entry becomes
-        // available to the next tick without shortening the protected window.
+        // available to the next tick without shortening the locked window.
         this.marker.setLineEntryEnabled(true);
       }
     }
 
     const igniterCaughtMarker = this.status === 'playing' && this.updateIgniter(holdingDirection);
     if (igniterCaughtMarker && !inGraceAtTickStart && !missedThisTick) {
-      this.handleMiss();
+      this.handleMiss('igniter', null);
       missedThisTick = true;
     }
 
@@ -626,11 +884,16 @@ export class Game {
       // both checks below instead of calling getPosition() (a fresh
       // allocation) once per Wisp and again once per Ember.
       const markerPositionAfterMove = this.marker.getPosition();
-      if (
-        this.wisps.some((w) => checkCollision(this.field, w.getTrailRef(), markerPositionAfterMove)) ||
-        this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))
-      ) {
-        this.handleMiss();
+      // Wisps first, then Embers — the same order (and the same
+      // short-circuit) as the single `wisps.some(...) || embers.some(...)`
+      // check this replaced; it is only split up so the miss can name what
+      // it was.
+      const hitWisp = this.findWispTouching(markerPositionAfterMove);
+      if (hitWisp) {
+        this.handleMiss('wisp', hitWisp);
+        missedThisTick = true;
+      } else if (this.embers.some((e) => pointsEqual(e.getPositionRef(), markerPositionAfterMove))) {
+        this.handleMiss('ember', null);
         missedThisTick = true;
       }
     }
@@ -639,9 +902,64 @@ export class Game {
   }
 
   /**
+   * Marks the line being drawn when any Wisp's head is within the near-miss
+   * distance (the larger of the x and y differences) of one of its cells or
+   * of the marker. Looks only at the square of cells around each head (side
+   * 2 x distance + 1), so the cost does not grow with the line's length: the
+   * only LINE cells on the field are the line being drawn. Once marked, a
+   * line stays marked, so nothing more is looked at until it goes.
+   */
+  private checkNearMiss(): void {
+    if (this.lineNearMissed || !this.marker.isDrawing()) return;
+    const distance = Math.max(0, Math.floor(this.getNearMissDistance()));
+    const marker = this.marker.getPositionRef();
+    for (const wisp of this.wisps) {
+      const head = wisp.getTrailRef()[0];
+      if (!head) continue;
+      if (Math.abs(head.x - marker.x) <= distance && Math.abs(head.y - marker.y) <= distance) {
+        this.lineNearMissed = true;
+        return;
+      }
+      if (this.field.hasStateInRect(LINE, head.x - distance, head.y - distance, head.x + distance, head.y + distance)) {
+        this.lineNearMissed = true;
+        return;
+      }
+    }
+  }
+
+  /** How close (cells) a Wisp head must come to the line to mark it (NEAR_MISS_DISTANCE_CELLS). */
+  private getNearMissDistance(): number {
+    return this.debugOverrides.nearMissDistanceCells ?? NEAR_MISS_DISTANCE_CELLS;
+  }
+
+  /** What a marked line's accepted claim adds, before the multiplier (NEAR_MISS_BONUS). */
+  private getNearMissBonus(): number {
+    return this.debugOverrides.nearMissBonus ?? NEAR_MISS_BONUS;
+  }
+
+  /** True while the line being drawn carries the near-miss mark (always false with no line). */
+  isLineNearMissed(): boolean {
+    return this.lineNearMissed;
+  }
+
+  /**
+   * The first Wisp (in `wisps` order) whose trail touches the line or the
+   * marker at `markerPosition`, or null. Visits Wisps in the same order and
+   * stops at the same one as `wisps.some(...)` would.
+   */
+  private findWispTouching(markerPosition: Point): Wisp | null {
+    for (const wisp of this.wisps) {
+      if (checkCollision(this.field, wisp.getTrailRef(), markerPosition)) {
+        return wisp;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Spawns a fresh pair of Embers from the top of the field's border every
-   * EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md §3.4 (2) / §12.7 stage 1:
-   * 30s, down to 5s by stage 10), starting from opposite top corners and
+   * spawn interval (the stage's own, core/stage.ts's table; the first pair
+   * after `firstEmberSpawnTicks`), starting from opposite top corners and
    * heading toward each other.
    *
    * Concurrency-capped (docs/plan.md §6 M12 / §12.7 "Ember 同時数上限"): once
@@ -829,19 +1147,33 @@ export class Game {
    * vanishes and retract is re-enabled, a life is lost, the score
    * multiplier resets to 1, and a grace period starts during which no
    * further miss can be triggered (so one sustained contact = one life).
+   *
+   * `cause`/`hitWisp` only describe the miss for the optional feedback
+   * notice (core/feedback.ts); they never change what the miss does.
    */
-  private handleMiss(): void {
+  private handleMiss(cause: MissCause, hitWisp: Wisp | null): void {
+    if (this.missFeedback) {
+      // Read before cancelLine() below snaps the marker back and clears the line.
+      this.missFeedback.push({
+        cause,
+        position: hitWisp ? hitWisp.getPosition() : this.marker.getPosition(),
+        line: this.marker.getLine(),
+      });
+    }
     this.events.push('miss');
     this.marker.cancelLine(this.field);
+    this.lineNearMissed = false;
     this.despawnIgniter();
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
-    this.graceTicks = MISS_GRACE_TICKS;
+    this.graceTicks = Math.max(0, Math.round(this.getMissGraceTicks()));
     // Grace-period exploit fix (docs/plan.md §3.5 "案B"): the invincibility
-    // window granted below must not double as a free pass to draw. BORDER
+    // window granted above must not double as a free pass to draw. BORDER
     // movement stays available (see Marker.tryMove) so the player can still
     // reposition to safety; only entering a fresh UNCLAIMED cell is blocked
-    // until the grace period elapses (re-enabled in update() below).
-    this.marker.setLineEntryEnabled(false);
+    // for the line lock's ticks (re-enabled in update() above), which end
+    // before the grace does.
+    this.lineLockTicks = Math.max(0, Math.round(this.getMissLineLockTicks()));
+    this.marker.setLineEntryEnabled(this.lineLockTicks === 0);
     this.lives -= 1;
     if (this.lives <= 0) {
       this.status = 'gameover';

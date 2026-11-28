@@ -321,7 +321,14 @@ describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
 
     for (const outcome of outcomes) {
       expect(outcome).toEqual(outcomes[0]);
-      expect(outcome.result).toEqual({ accepted: true, claimedCells: 12, occupancy: 12 / 32, split: true });
+      expect(outcome.result).toEqual({
+        accepted: true,
+        claimedCells: 12,
+        occupancy: 12 / 32,
+        split: true,
+        anchorSideEnemies: 1,
+        otherSideEnemies: 1,
+      });
       expect(outcome.result.occupancy).toBeLessThan(1);
     }
   });
@@ -357,7 +364,14 @@ describe('claimArea — 2 Wisps (M4, docs/plan.md §4.2 / §7.1)', () => {
       'fast'
     );
 
-    expect(result).toEqual({ accepted: false, claimedCells: 0, occupancy: occupancyBefore, split: false });
+    expect(result).toEqual({
+      accepted: false,
+      claimedCells: 0,
+      occupancy: occupancyBefore,
+      split: false,
+      anchorSideEnemies: 0,
+      otherSideEnemies: 0,
+    });
     expect(parsed.field.getOccupancy()).toBe(occupancyBefore);
     expect(renderField(parsed.field)).toBe(
       ['########', '#f..s..#', '#f#.s..#', '#f..s..#', '########'].join('\n')

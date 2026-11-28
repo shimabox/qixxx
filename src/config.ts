@@ -14,18 +14,108 @@ export const TICK_DURATION = 1 / TICK_RATE; // seconds per update
 // running thousands of catch-up ticks after the tab was inactive (spiral of death).
 export const MAX_FRAME_DELTA = 0.25;
 
-// Stage progression (docs/plan.md §12.7, replacing the earlier §3.7 table):
-// a single linear interpolation from stage 1 (baseline) to stage
-// STAGE_MAX_DIFFICULTY (every parameter at its documented max), stage 11+
-// held at the stage-10 values. core/stage.ts's getStageConfig() does the
-// interpolating; the constants below only pin down each curve's two
-// endpoints. Stage 1's endpoint is simply this file's existing single-value
-// constants (WISP_SPEED's implicit x1 multiplier, EMBER_MOVE_TICKS,
-// EMBER_BRANCH_CHASE_PROBABILITY, EMBER_SPAWN_INTERVAL_SEC,
-// DEFAULT_REQUIRED_OCCUPANCY) — only the stage-10 endpoints need new
-// constants (the `_MAX`/`_MIN` ones below).
-export const STAGE_MAX_DIFFICULTY = 10;
-export const DEFAULT_REQUIRED_OCCUPANCY = 0.65; // stage 1 baseline; escalates to REQUIRED_OCCUPANCY_MAX by stage 10
+// Stage progression: every stage has its own character instead of every value
+// rising together with the stage number. Each row of STAGE_TABLE is one
+// stage (row 0 = stage 1); every stage past the last row plays the last row
+// with one more Wisp per stage, up to LATE_STAGE_WISP_COUNT_MAX.
+// core/stage.ts's getStageConfig() reads it.
+//
+// `titleId` names the stage's title shown when it starts (the text itself is
+// in src/i18n/messages.ts, `stageTitle.<titleId>`). `firstEmberSec` is how
+// long the stage waits before its first Ember pair; later pairs follow every
+// `emberSpawnIntervalSec`. `emberMoveTicks` is ticks per border cell (smaller
+// is faster).
+//
+// Stage 1 is a gentle start with a single slow Wisp. Stage 2 keeps the single
+// Wisp but makes it very fast, so the second stage asks for something new
+// rather than just more of the first; stage 3 brings the second Wisp, and
+// with it the first stage that can be split (a split needs two Wisps or
+// more). Stages 4 and 11 are scoring stages (many slow Wisps, easy to split
+// for a big multiplier) and stage 6 is a breather. Skipping those three (so
+// stage 3 is followed by 5, 5 by 7 and 10 by 12), no step from one stage to
+// the next raises both the Wisp count and their speed at once, no stage
+// moves Wisps faster than x3.0 and no goal is above 80%
+// (src/core/stage.test.ts holds the table to this).
+export interface StageTableRow {
+  titleId: StageTitleId;
+  wispCount: number;
+  wispSpeedMultiplier: number;
+  emberSpawnIntervalSec: number;
+  firstEmberSec: number;
+  maxConcurrentEmbers: number;
+  emberMoveTicks: number;
+  requiredOccupancy: number;
+}
+export type StageTitleId =
+  | 'warmUp'
+  | 'sprinter'
+  | 'fastPair'
+  | 'slowSwarm'
+  | 'emberRush'
+  | 'breather'
+  | 'quartet'
+  | 'fastFour'
+  | 'quintet'
+  | 'fastFive'
+  | 'bigSwarm'
+  | 'emberStorm'
+  | 'sextet'
+  | 'fastSix'
+  | 'final';
+// Stage 1 brings its first Ember sooner than its interval, so a first run
+// meets one early. The debug panel can override this for every stage.
+export const EMBER_FIRST_SPAWN_SEC = 15;
+// The two Ember stages (5 and 12) bring their first Ember almost at once, so
+// the stage's theme shows from its start; later Embers keep the stage's
+// interval.
+export const EMBER_STAGE_FIRST_SPAWN_SEC = 3;
+const stageRow = (
+  titleId: StageTitleId,
+  wispCount: number,
+  wispSpeedMultiplier: number,
+  emberSpawnIntervalSec: number,
+  maxConcurrentEmbers: number,
+  emberMoveTicks: number,
+  requiredOccupancy: number,
+  firstEmberSec: number = emberSpawnIntervalSec
+): StageTableRow => ({
+  titleId,
+  wispCount,
+  wispSpeedMultiplier,
+  emberSpawnIntervalSec,
+  firstEmberSec,
+  maxConcurrentEmbers,
+  emberMoveTicks,
+  requiredOccupancy,
+});
+export const STAGE_TABLE: readonly StageTableRow[] = [
+  stageRow('warmUp', 1, 1.0, 30, 2, 3, 0.65, EMBER_FIRST_SPAWN_SEC), // 1
+  stageRow('sprinter', 1, 2.4, 18, 3, 2, 0.7), // 2: one very fast Wisp
+  stageRow('fastPair', 2, 2.4, 16, 4, 2, 0.72), // 3: the first stage that can be split
+  stageRow('slowSwarm', 6, 1.2, 20, 4, 2, 0.6), // 4: scoring stage
+  stageRow('emberRush', 3, 2.4, 10, 6, 2, 0.75, EMBER_STAGE_FIRST_SPAWN_SEC), // 5
+  stageRow('breather', 2, 1.6, 26, 2, 3, 0.6), // 6: breather
+  stageRow('quartet', 4, 2.4, 15, 6, 2, 0.78), // 7
+  stageRow('fastFour', 4, 2.8, 12, 7, 2, 0.8), // 8
+  stageRow('quintet', 5, 2.8, 10, 8, 1, 0.8), // 9
+  stageRow('fastFive', 5, 3.0, 8, 8, 1, 0.8), // 10
+  stageRow('bigSwarm', 8, 1.4, 16, 4, 2, 0.65), // 11: scoring stage
+  stageRow('emberStorm', 3, 2.8, 6, 10, 1, 0.78, EMBER_STAGE_FIRST_SPAWN_SEC), // 12
+  stageRow('sextet', 6, 2.6, 10, 8, 1, 0.8), // 13
+  stageRow('fastSix', 6, 3.0, 8, 8, 1, 0.8), // 14
+  stageRow('final', 7, 3.0, 8, 10, 1, 0.8), // 15 and every stage after it (one more Wisp each stage)
+];
+// Past the last row, each stage adds one Wisp to the last row's count (stage
+// 16 has 8, stage 17 has 9) up to this many; every other value stays the last
+// row's. The speed does not rise, so the table's rule (no step raises both the
+// count and the speed) still holds. Ten Wisps start in a row 27 cells wide,
+// well inside the normal field.
+export const LATE_STAGE_WISP_COUNT_MAX = 10;
+// The lowest goal of any stage: the largest stage-clear bonus a stage can give
+// is measured from it (functions/_lib/scoreLimits.ts).
+export const MIN_REQUIRED_OCCUPANCY = Math.min(...STAGE_TABLE.map((row) => row.requiredOccupancy));
+// The goal a standalone Game uses when none is given (tests): stage 1's.
+export const DEFAULT_REQUIRED_OCCUPANCY = STAGE_TABLE[0].requiredOccupancy;
 
 // Time limit: every run is capped at
 // a fixed time *budget* instead of running until lives run out — the whole
@@ -43,13 +133,42 @@ export const TIME_LIMIT_TICKS = 10800;
 
 // Lives (M2, docs/plan.md §3.5)
 export const INITIAL_LIVES = 3;
+
+// EASY (src/core/difficulty.ts), chosen on the Title screen: every stage's
+// Wisps move at the stage table's speed times EASY_WISP_SPEED_FACTOR, and a
+// new run starts with EASY_INITIAL_LIVES (carried across stages as on
+// NORMAL). Everything else — time, Embers, goals, scoring — is NORMAL's.
+export const EASY_WISP_SPEED_FACTOR = 0.7;
+export const EASY_INITIAL_LIVES = 5;
+// The GAME OVER screen suggests EASY once EASY_PROMPT_STREAK_RUNS kept runs
+// in a row (the play log's newest, this one included) ended on stage
+// EASY_PROMPT_STREAK_STAGE or earlier. Back on the Title screen after it, the
+// MODE button's text (and its underline) lights up in
+// EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR and its glow pulses
+// EASY_PROMPT_TOGGLE_PULSE_COUNT times, EASY_PROMPT_TOGGLE_PULSE_SEC each
+// (lit and still with reduced motion). The glow (a text-shadow, CSS px) is
+// blurred EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX while lit and at each end of a
+// pulse, and EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX in the middle of a pulse.
+export const EASY_PROMPT_STREAK_RUNS = 3;
+export const EASY_PROMPT_STREAK_STAGE = 3;
+export const EASY_PROMPT_TOGGLE_PULSE_COUNT = 3;
+export const EASY_PROMPT_TOGGLE_PULSE_SEC = 1.6;
+export const EASY_PROMPT_TOGGLE_HIGHLIGHT_COLOR = '#ffffff';
+export const EASY_PROMPT_TOGGLE_GLOW_REST_BLUR_PX = 6;
+export const EASY_PROMPT_TOGGLE_GLOW_PEAK_BLUR_PX = 14;
 // Grace period after a miss (ticks) during which no further miss can be
 // triggered (docs/plan.md §3.5 sanity: without it, an enemy sharing the
 // marker's cell — e.g. an Ember passing over a stationary marker — would
 // re-trigger a miss on every consecutive tick and drain all lives from a
 // single contact). Normal updates (enemy movement, line drawing) continue
 // during the grace period; only miss detection is suspended.
-export const MISS_GRACE_TICKS = 120; // 2s at TICK_RATE=60
+export const MISS_GRACE_TICKS = 60; // 1s at TICK_RATE=60
+// For this many ticks after a miss no new line can be started (moving along
+// the border stays free), so the invincibility is not a free pass to draw.
+// Shorter than MISS_GRACE_TICKS, so the player is back to drawing soon:
+// a line started in the rest of the grace cannot be missed on until the
+// grace ends. The debug panel can change both at run time.
+export const MISS_LINE_LOCK_TICKS = 30; // 0.5s
 
 // Wisp: the line-dwelling wandering enemy (docs/plan.md §3.4 describes this as
 // "QIX"; per §1 the original name is never used in code/UI, hence "Wisp").
@@ -60,6 +179,25 @@ export const WISP_TURN_JITTER = 0.2; // max random heading change per tick, radi
 // The trail records the head's grid cell each time it changes, so it always
 // spans this many *distinct* cells (8-12 per docs/plan.md §4.3).
 export const WISP_HISTORY_LENGTH = 10;
+
+// Wisp surge (src/core/wispSurge.ts, NORMAL from WISP_SURGE_FIRST_STAGE on):
+// the closer a stage's occupancy gets to its goal, the faster its Wisps. Past
+// WISP_SURGE_FIRST_RATIO of the goal (exactly that share is still level 0)
+// the Wisps reach level 1; within WISP_SURGE_FINAL_MARGIN of the goal
+// (exactly that margin included), level 2. Each level multiplies the Wisps'
+// own speed multiplier (the stage's, or the debug panel's override) by its
+// entry in WISP_SURGE_MULTIPLIERS. The level never falls within a stage: it
+// follows occupancy, which only grows. WISP_SURGE_EPSILON absorbs floating
+// point error at both edges (0.8 - 0.1 reads 0.7000000000000001).
+// WISP_SURGE_FIRST_STAGE: the first stage the surge applies on; every NORMAL
+// stage from it on (past the table's last row too) has it, the earlier NORMAL
+// stages and every EASY stage never do. Stage 6 is the breather (two Wisps
+// at x1.6), so a run meets the surge first where it is easiest to read.
+export const WISP_SURGE_FIRST_STAGE = 6;
+export const WISP_SURGE_FIRST_RATIO = 0.5;
+export const WISP_SURGE_FINAL_MARGIN = 0.1;
+export const WISP_SURGE_MULTIPLIERS: readonly [number, number, number] = [1, 1.15, 1.3];
+export const WISP_SURGE_EPSILON = 1e-9;
 
 // Wisp spawn-cluster randomization (anti-exploit): previously every stage
 // spawned its Wisp cluster dead-center, symmetric around the marker's own
@@ -76,11 +214,24 @@ export const WISP_HISTORY_LENGTH = 10;
 export const WISP_SPAWN_MARGIN_X_RATIO = 0.2;
 export const WISP_SPAWN_MARGIN_Y_RATIO = 0.25;
 // Minimum horizontal distance (grid cells) the Wisp cluster's center must
-// keep from the marker's starting column (floor(width/2)) — the actual
-// anti-exploit guarantee. On very small (e.g. test) fields the interior may
+// keep from the marker's starting column when the marker starts on the top
+// or bottom edge (floor(width/2) on stage 1) — the actual anti-exploit
+// guarantee. On very small (e.g. test) fields the interior may
 // not be wide enough to honor this fully; buildWisps() degrades gracefully
 // there (best effort, still fully clamped inside the field).
 export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN = 15;
+// The same guarantee for a marker that starts on the left or right edge: the
+// cluster center keeps at least this many rows from the marker's starting
+// row. The Wisps line up in one row, so a center on the start row would put
+// the whole cluster in reach of one straight line from the start.
+export const WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW = 15;
+
+// Where on its edge the marker may start a stage, as fractions of the edge's
+// length (core/markerStart.ts): each of the four edges offers these points,
+// in this order, so there are 4 x (this list's length) candidates — one at
+// the middle of each edge. Stage 1 always starts at the top edge's middle;
+// from stage 2 one candidate is drawn at random per stage.
+export const MARKER_START_FRACTIONS: readonly number[] = [0.5];
 
 // Marker movement rate: number of ticks required to advance one grid cell.
 // Fast = 1 tick/cell. Slow (M3, §5.1) halves the effective speed (2 ticks/cell).
@@ -91,12 +242,13 @@ export const MARKER_MOVE_TICKS_SLOW = 2;
 // "Sparx"; per §1 the original name is never used in code/UI, hence "Ember").
 // It walks the BORDER cell graph (docs/plan.md §4.3), one cell every
 // EMBER_MOVE_TICKS ticks (slower than the marker's 1 tick/cell fast rate), and
-// a new pair appears every EMBER_SPAWN_INTERVAL_TICKS ticks (docs/plan.md
-// §12.7 stage 1: 30s, escalating to EMBER_SPAWN_INTERVAL_MIN_SEC by stage
-// STAGE_MAX_DIFFICULTY).
-export const EMBER_SPAWN_INTERVAL_SEC = 30;
+// a new pair appears every EMBER_SPAWN_INTERVAL_TICKS ticks. These are the
+// defaults of a standalone Game (tests); a real stage takes its own values
+// from STAGE_TABLE above.
+export const EMBER_SPAWN_INTERVAL_SEC = STAGE_TABLE[0].emberSpawnIntervalSec;
 export const EMBER_SPAWN_INTERVAL_TICKS = EMBER_SPAWN_INTERVAL_SEC * TICK_RATE;
-export const EMBER_MOVE_TICKS = 3; // stage 1 baseline; escalates down to EMBER_MOVE_TICKS_MIN by stage 10
+export const EMBER_MOVE_TICKS = STAGE_TABLE[0].emberMoveTicks;
+export const EMBER_MAX_CONCURRENT_DEFAULT = STAGE_TABLE[0].maxConcurrentEmbers;
 
 // Branch-chase probability (docs/plan.md §6 M8 / §12.2, curve per §12.7): at
 // a BORDER-graph branch (2+ non-reversing candidate cells), Ember picks the
@@ -107,7 +259,8 @@ export const EMBER_MOVE_TICKS = 3; // stage 1 baseline; escalates down to EMBER_
 // feedback). 0.7 was chosen so Embers reliably threaten the marker along
 // inner borders while still occasionally patrolling straight through a
 // junction (avoids feeling perfectly omniscient); this is the stage 1
-// baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage 10.
+// baseline, escalating to EMBER_BRANCH_CHASE_PROBABILITY_MAX by stage
+// EMBER_BRANCH_CHASE_MAX_STAGE (4).
 export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 
 // Ember line-entry generation threshold (docs/plan.md §14 M6-1 "ブレイズ"):
@@ -115,37 +268,24 @@ export const EMBER_BRANCH_CHASE_PROBABILITY = 0.7;
 // (a skipped cycle at the concurrency cap still counts). From this
 // generation onward, every Ember spawned that cycle is a "Blaze" — it can
 // walk onto LINE cells, not just BORDER (see patrol.ts's `canEnterLine`).
-// Debug-panel emberCount overrides and the GameOptions.embers test hook
-// always produce plain (non-Blaze) Embers, regardless of generation.
-export const EMBER_LINE_ENTRY_GENERATION = 3;
+// With 2, a stage's first natural cycle brings plain Embers and every later
+// cycle brings Blazes.
+// Debug-panel emberCount overrides always produce plain (non-Blaze) Embers,
+// and Embers passed in through the GameOptions.embers test hook keep the
+// kind they were given, regardless of generation.
+export const EMBER_LINE_ENTRY_GENERATION = 2;
 
-// Stage 1 -> STAGE_MAX_DIFFICULTY interpolation endpoints (docs/plan.md
-// §12.7 — replaces the earlier §3.7 stage-2/stage-3+ step constants).
-// core/stage.ts's getStageConfig() linearly interpolates every parameter
-// between its stage-1 baseline (the plain constants above) and the matching
-// `_MAX`/`_MIN` endpoint below, reaching the endpoint exactly at stage
-// STAGE_MAX_DIFFICULTY (10) and holding it for every stage beyond that.
-export const WISP_SPEED_MULTIPLIER_MAX = 5.0; // stage 10: x5 (docs/plan.md §12.7)
-export const EMBER_MOVE_TICKS_MIN = 1; // stage 10: 1 tick/cell (fastest)
-export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // stage 10: always chases at a branch
-// Stage 10's Ember spawn interval floor. The debug panel's own slider goes
-// down to 1s (src/debug/panel.ts RANGES.emberSpawnIntervalSec), but 5s is the
-// deliberately chosen in-curve floor (docs/plan.md §12.7's one documented
-// deviation from "match the panel's most extreme value"): at 1s, Embers
-// would spawn faster than a player can realistically out-maneuver the M11
-// containment mechanic, making that counterplay meaningless. 5s keeps Embers
-// relentless at stage 10 while leaving room to react.
-export const EMBER_SPAWN_INTERVAL_MIN_SEC = 5;
-// Max Embers allowed alive at once (docs/plan.md §12.7 "Ember 同時数上限",
-// new in M12): bounds both the difficulty curve and worst-case per-frame
-// render cost (each Ember draws a glow halo, docs/plan.md §7.3's 60fps
-// budget) now that stage 10 can otherwise accumulate Embers indefinitely.
-// Game.maybeSpawnEmbers() skips spawning once at this cap, but a debug-panel
-// emberCount override (docs/plan.md §6 M10) bypasses it — that's an explicit
-// developer action, not the natural stage curve.
-export const EMBER_MAX_CONCURRENT_STAGE1 = 2;
-export const EMBER_MAX_CONCURRENT_MAX = 10;
-export const REQUIRED_OCCUPANCY_MAX = 0.9; // stage 10: 90% (docs/plan.md §12.7)
+// The branch-chase probability is the one stage value still interpolated
+// (core/stage.ts): linearly from EMBER_BRANCH_CHASE_PROBABILITY at stage 1 to
+// EMBER_BRANCH_CHASE_PROBABILITY_MAX at EMBER_BRANCH_CHASE_MAX_STAGE, held
+// there for every later stage (0.7, 0.8, 0.9 on stages 1-3, then 1.0).
+export const EMBER_BRANCH_CHASE_PROBABILITY_MAX = 1.0; // always chases at a branch
+export const EMBER_BRANCH_CHASE_MAX_STAGE = 4;
+// A stage's `maxConcurrentEmbers` (STAGE_TABLE) bounds both the difficulty
+// and the worst-case per-frame render cost (each Ember draws a glow halo).
+// Game.maybeSpawnEmbers() skips spawning once at that cap, but a debug-panel
+// emberCount override bypasses it — that's an explicit developer action, not
+// the stage's own value.
 
 // Split multiplier (docs/plan.md §3.6): the score multiplier for a stage is
 // `split successes + 1`, capped at 9x, and resets to 1x (0 successes) the
@@ -170,6 +310,22 @@ export const SCORE_PER_CELL_FAST = 0.5;
 export const SCORE_PER_CELL_SLOW = 1.0;
 export const STAGE_CLEAR_BONUS_PER_PERCENT_POINT = 100;
 export const DEFAULT_SCORE_MULTIPLIER = 1;
+// A big claim: one claim that fills at least BIG_CLAIM_SHARE of the field
+// (the same denominator as the occupancy) scores its area points times
+// BIG_CLAIM_MULTIPLIER, applied before the one truncation to an integer
+// (core/scoring.ts). The threshold itself counts. A split claim is scored
+// the same way. The debug panel can change both at run time.
+export const BIG_CLAIM_SHARE = 0.15;
+export const BIG_CLAIM_MULTIPLIER = 1.5;
+// A close call: while a line is being drawn, every tick after the enemies
+// move, a Wisp head within NEAR_MISS_DISTANCE_CELLS (the larger of the x and
+// y differences) of a cell of that line or of the marker marks the line.
+// Closing a marked line into an accepted claim adds NEAR_MISS_BONUS x the
+// multiplier, once. The mark goes whenever the line does (a miss, a
+// rejected or accepted claim, retracting back to the start). The debug
+// panel can change both at run time.
+export const NEAR_MISS_DISTANCE_CELLS = 3;
+export const NEAR_MISS_BONUS = 200;
 
 // Colors (neon-like, not copying original)
 export const COLOR_BACKGROUND = '#0a0e27'; // Dark blue-black
@@ -180,6 +336,10 @@ export const COLOR_GRID_LINE = 'rgba(255, 255, 255, 0.1)'; // Subtle grid
 export const COLOR_LINE = '#ffe066'; // Neon yellow - in-progress line
 export const COLOR_MARKER = '#ffffff'; // Marker (player) - bright white
 export const COLOR_WISP_HEAD = '#b967ff'; // Neon purple - Wisp head
+// The Wisp head at surge levels 1 and 2 (WISP_SURGE_*): pinks, apart from
+// the Embers' orange and dark red.
+export const COLOR_WISP_HEAD_SURGE_1 = '#ff6ad5';
+export const COLOR_WISP_HEAD_SURGE_2 = '#ff3d81';
 export const COLOR_EMBER = '#ff8c1a'; // Neon orange - Ember (border patrol)
 export const COLOR_IGNITER = '#ff3b3b'; // Neon red - Igniter (line chaser)
 // Deep crimson - Blaze (docs/plan.md §14 M6-1: the line-entering, enhanced
@@ -214,7 +374,7 @@ export const HUD_TIME_WARNING_COLOR = '#ff3b3b';
 // pitch from SFX_TIME_WARNING_HIGH_FROM_SEC. Nothing plays at 0: that tick is
 // the TIME UP gameover itself.
 // The beeps sit well above the Igniter approach beep (500 Hz) and apart from
-// the area-claimed chime (660 Hz), so neither can be mistaken for them.
+// the area-claim hit (SFX_CLAIM_HIT_FREQ), so neither can be mistaken for them.
 export const SFX_TIME_WARNING_SECOND_ALARM_SEC = 15;
 export const SFX_TIME_WARNING_BEEP_FROM_SEC = 10;
 export const SFX_TIME_WARNING_HIGH_FROM_SEC = 5;
@@ -224,6 +384,13 @@ export const SFX_TIME_WARNING_ALARM_DURATION = 0.4;
 export const SFX_TIME_WARNING_BEEP_FREQ = 880;
 export const SFX_TIME_WARNING_BEEP_HIGH_FREQ = 1320; // 1.5x the plain beep
 export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
+// The Wisp surge sound (audio/sfx.ts's playWispSurge()): one short rising
+// sawtooth as a claim raises the surge level, level 2 a fifth above level 1.
+// Its own sound, not the time warning's beeps or alarm.
+export const SFX_WISP_SURGE_1_FREQ = 330;
+export const SFX_WISP_SURGE_2_FREQ = 495;
+export const SFX_WISP_SURGE_RISE = 1.5; // ends at this many times its start
+export const SFX_WISP_SURGE_DURATION = 0.2; // seconds, within 0.25
 // The HUD switches from its single nowrap+ellipsis line to its
 // stacked-lines layout (main.ts's updateHudMode(), hudLine2/hudLine3) so
 // STAGE/SCORE/HI/TIME/OCCUPANCY/LIVES/xN all stay visible instead of being
@@ -259,8 +426,19 @@ export const SFX_TIME_WARNING_BEEP_DURATION = 0.07; // both beeps
 // dev-only tool, exactly like a 7+-digit cumulative score, rather than one
 // this sizing protects against. A 7+-digit cumulative score remains the
 // other accepted residual.
+//
+// The goal slot (src/hudGoal.ts) replaced `HI: <n>` in the single line, and
+// the occupancy now reads `<current>%/<goal>% <left>% LEFT` (src/hudText.ts):
+// its widest form is 16 characters, since the goal is always two digits
+// (every STAGE_TABLE goal is 60%-80%) and the points left
+// can only have two digits while the current share has one or two. The
+// widest goal is `TO BEST <6 digits>`, and the lives are INITIAL_LIVES marks
+// (or `◆xN` for a dev-only override past them). The colons went, so this
+// text is no wider than the one it replaced. An EASY run is measured with
+// its `EASY  ` lead and EASY_INITIAL_LIVES marks instead (src/hudText.ts's
+// hudWorstCaseStatsText()).
 export const HUD_WORST_CASE_STATS_TEXT =
-  'STAGE 999  SCORE: 999999  HI: 999999  TIME 3:00.0  OCCUPANCY: 100%  LIVES: 9  x9';
+  'STAGE 999  SCORE 999999  TO BEST 999999  TIME 3:00.0  10%/90% 80% LEFT  ◆◆◇  x9';
 
 // #hud-row's internal flex `gap` (main.ts's getHudRowElement()), between
 // #hud / the credit link / the mute button. Kept as a constant — like
@@ -282,9 +460,23 @@ export const GLOW_BLUR_FIELD_EDGE = 10; // px, for the single cached outer-borde
 // Wisp trail afterimage fade (docs/plan.md §6 M5 "Wispの残像表現の強化"):
 // each successively older trail cell is drawn more transparent, from
 // WISP_TRAIL_ALPHA_NEAR (just behind the head) down to WISP_TRAIL_ALPHA_FAR
-// (oldest cell), interpolated linearly across the trail's length.
-export const WISP_TRAIL_ALPHA_NEAR = 0.55;
-export const WISP_TRAIL_ALPHA_FAR = 0.05;
+// (oldest cell), interpolated linearly across the trail's length. Every
+// cell the trail can hit is drawn (src/render/wispShape.ts) — the cells
+// between two trail points take a value between theirs — and even the
+// oldest is plainly visible, since all of it is deadly.
+export const WISP_TRAIL_ALPHA_NEAR = 0.8;
+export const WISP_TRAIL_ALPHA_FAR = 0.35;
+// A faint glow of the trail's own color around its cells, WISP_TRAIL_GLOW_CELLS
+// wide on each side at WISP_TRAIL_GLOW_ALPHA_RATIO of the cells' opacity, so the
+// trail reads thicker than a line. Drawing only: the cells themselves are
+// the part that hits, and the glow stays clearly fainter than them.
+export const WISP_TRAIL_GLOW_CELLS = 0.5;
+export const WISP_TRAIL_GLOW_ALPHA_RATIO = 0.35;
+// The trail's color follows the Wisp's speed multiplier: COLOR_WISP_HEAD at
+// x1, COLOR_WISP_TRAIL_FAST from WISP_TRAIL_FAST_AT_MULTIPLIER up, mixed
+// linearly between. The head keeps COLOR_WISP_HEAD.
+export const COLOR_WISP_TRAIL_FAST = '#ffd6f5'; // Whitish pink
+export const WISP_TRAIL_FAST_AT_MULTIPLIER = 3.0; // the fastest stage's multiplier (STAGE_TABLE)
 
 // Miss feedback (docs/plan.md §6 M5 "ミス時の簡易フィードバック"): the
 // marker blinks (alternates hidden/visible) every MISS_BLINK_INTERVAL_TICKS
@@ -295,31 +487,54 @@ export const MISS_BLINK_INTERVAL_TICKS = 6;
 // asset files. Frequencies in Hz, durations in seconds, gains as linear
 // [0,1] envelope peaks (kept low since several can overlap the same frame).
 export const SFX_MASTER_GAIN = 0.25;
-export const SFX_DRAW_GAIN = 0.05;
+// How loud each sound is, as a tier and a share of it (src/audio/sfxLevels.ts):
+// a tier's value is the peak of its loudest sound, and the tiers run from the
+// most important moment down — the split, then claims / misses / clears /
+// GAME OVER, then the warnings, then the enemies appearing, then the drone
+// while drawing. Starting values: the debug panel's SOUND section tunes them
+// by ear.
+export const SFX_LEVEL_SPLIT = 0.36;
+export const SFX_LEVEL_IMPACT = 0.28;
+export const SFX_LEVEL_WARNING = 0.2;
+export const SFX_LEVEL_ENEMY = 0.13;
+export const SFX_LEVEL_DRAW = 0.04;
 export const SFX_DRAW_FREQ_FAST = 220;
 export const SFX_DRAW_FREQ_SLOW = 130;
-export const SFX_AREA_CLAIMED_FREQ = 660;
-export const SFX_AREA_CLAIMED_DURATION = 0.12;
+// The miss: a falling sawtooth that peaks at once (SFX_IMPACT_ATTACK). Its
+// envelope plus SFX_TONE_STOP_TAIL stays within 0.35s. A quieter sawtooth an
+// octave up (SFX_MISS_OVERTONE_FREQ) falls with it over the same time, so the
+// miss is still heard on a laptop or phone speaker that cannot play 90 Hz.
 export const SFX_MISS_FREQ = 90;
-export const SFX_MISS_DURATION = 0.35;
+export const SFX_MISS_OVERTONE_FREQ = SFX_MISS_FREQ * 2;
+export const SFX_MISS_DURATION = 0.33;
 export const SFX_STAGE_CLEAR_NOTES = [523, 659, 784, 1047]; // C5 E5 G5 C6 arpeggio
-export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.14;
+// Both clear arpeggios peak at once (SFX_IMPACT_ATTACK) with short notes, so
+// they ring briefly after the moment instead of trailing over the next one.
+export const SFX_STAGE_CLEAR_NOTE_DURATION = 0.11;
 export const SFX_SPLIT_CLEAR_NOTES = [784, 988, 1175, 1568, 1976]; // brighter/longer — a "special" clear
-export const SFX_SPLIT_CLEAR_NOTE_DURATION = 0.11;
+export const SFX_SPLIT_CLEAR_NOTE_DURATION = 0.09;
 export const SFX_IGNITER_SPAWN_FREQ = 340;
 export const SFX_IGNITER_SPAWN_DURATION = 0.1;
 export const SFX_IGNITER_APPROACH_FREQ = 500;
 export const SFX_IGNITER_APPROACH_DURATION = 0.05;
-export const SFX_EMBER_SPAWN_FREQ = 260;
-export const SFX_EMBER_SPAWN_DURATION = 0.08;
+// An Ember spawning: a short square-wave blip held high enough to be heard on
+// a laptop or phone speaker — the enemy tier is quiet, and a low, round tone
+// there was lost on small speakers.
+export const SFX_EMBER_SPAWN_FREQ = 520;
+export const SFX_EMBER_SPAWN_DURATION = 0.1;
 // A short descending "pop" for an Ember despawning after losing its BORDER
-// footing (docs/plan.md §6 M11 / §12.6) — lower/quicker than the spawn tone
-// so the two read as clearly distinct events.
-export const SFX_EMBER_DESPAWN_FREQ = 180;
-export const SFX_EMBER_DESPAWN_DURATION = 0.07;
-// A sharper, higher one-shot for a Blaze spawning (docs/plan.md §14 M6-1
-// "通常スポーン音より鋭い音") — higher-pitched and shorter than
-// SFX_EMBER_SPAWN_* so the two spawn sounds are clearly distinguishable.
+// footing (docs/plan.md §6 M11 / §12.6): a triangle falling from
+// SFX_EMBER_DESPAWN_FREQ to SFX_EMBER_DESPAWN_END_FREQ, so it reads as going
+// away where the spawn blip holds its pitch. It starts high enough to be
+// heard on small speakers, and stays clear of the 880 / 1320 Hz time warning
+// beeps and the 1047 Hz claim hit.
+export const SFX_EMBER_DESPAWN_FREQ = 620;
+export const SFX_EMBER_DESPAWN_END_FREQ = 250;
+export const SFX_EMBER_DESPAWN_DURATION = 0.1;
+// A sharper one-shot for a Blaze spawning (docs/plan.md §14 M6-1
+// "通常スポーン音より鋭い音") — a sawtooth, shorter than SFX_EMBER_SPAWN_*'s
+// square and at its own pitch, so the two spawn sounds are clearly
+// distinguishable.
 export const SFX_EMBER_BLAZE_SPAWN_FREQ = 420;
 export const SFX_EMBER_BLAZE_SPAWN_DURATION = 0.07;
 // A short 2-note alarm blip for the instant a Blaze steps from BORDER onto
@@ -328,6 +543,372 @@ export const SFX_EMBER_BLAZE_SPAWN_DURATION = 0.07;
 // no new audio machinery needed.
 export const SFX_EMBER_ENTERED_LINE_NOTES = [880, 660];
 export const SFX_EMBER_ENTERED_LINE_NOTE_DURATION = 0.05;
+// How quickly a one-shot reaches its peak (seconds). The default keeps the
+// older one-shots as they were; the claim, split and miss sounds hit their
+// peak almost at once so the moment itself is felt, not a swell after it.
+export const SFX_DEFAULT_ATTACK = 0.01;
+export const SFX_IMPACT_ATTACK = 0.004; // within 5ms
+// Area claim (audio/sfx.ts's playClaim()): a short bright hit, a low layer
+// for a mid-size (around 220 Hz) or large (around 110 Hz) claim, then a
+// rising sweep while the new area fills in. The hit and the low layer end
+// within 0.08s (their nodes stop SFX_TONE_STOP_TAIL later, already silent).
+export const SFX_CLAIM_HIT_FREQ = 1047; // C6, between the 880 / 1320 Hz time warning beeps
+export const SFX_CLAIM_HIT_DURATION = 0.05;
+export const SFX_CLAIM_LOW_MID_FREQ = 220;
+export const SFX_CLAIM_LOW_LARGE_FREQ = 110;
+export const SFX_CLAIM_LOW_DURATION = 0.06;
+export const SFX_CLAIM_RISE_FREQ_START = 440;
+export const SFX_CLAIM_RISE_FREQ_END_FAST = 880;
+export const SFX_CLAIM_RISE_FREQ_END_SLOW = 1175; // a slow (double-score) line rises further
+export const SFX_CLAIM_RISE_DURATION = 0.2;
+// Split clear (playSplitImpact()): a low, short thump, then the split
+// arpeggio (SFX_SPLIT_CLEAR_NOTES) right after it.
+export const SFX_SPLIT_IMPACT_FREQ = 70;
+export const SFX_SPLIT_IMPACT_DURATION = 0.1;
+// Every one-shot oscillator is stopped this long after its envelope ends.
+export const SFX_TONE_STOP_TAIL = 0.02;
+// GAME OVER (playGameOver()): a low falling hit, then three notes resolving
+// upward — a close, not a sad fall. Life lost: G4 B4 D5; time up: E4 G#4 B4.
+export const SFX_GAMEOVER_HIT_FREQ = 110;
+export const SFX_GAMEOVER_HIT_DURATION = 0.12;
+export const SFX_GAMEOVER_LIFE_NOTES = [392, 494, 587];
+export const SFX_GAMEOVER_TIME_NOTES = [330, 415, 494];
+export const SFX_GAMEOVER_NOTE_DURATION = 0.1;
+// The GAME OVER score count-up: a short tick while it counts, two notes when
+// it stops. Pitches clear of the time warning beeps (880 / 1320 Hz) and the
+// claim hit (1047 Hz).
+export const SFX_COUNT_TICK_FREQ = 1175; // D6
+export const SFX_COUNT_TICK_DURATION = 0.03;
+export const SFX_COUNT_END_NOTES = [784, 1175]; // G5 D6
+export const SFX_COUNT_END_NOTE_DURATION = 0.06;
+// A beaten best: a bright five-note fanfare.
+export const SFX_NEW_RECORD_NOTES = [659, 784, 988, 1319, 1568]; // E5 G5 B5 E6 G6
+export const SFX_NEW_RECORD_NOTE_DURATION = 0.08;
+// How many sounds the engine's own record keeps (SfxEngine.getLog()).
+export const SFX_LOG_MAX = 64;
+
+// The background music (src/audio/bgm.ts, src/audio/bgmScore.ts): plays in
+// live play while the sound is on, one of three tunes a stage in turn —
+// stage 1 the first, 2 the second, 3 the third, 4 the first again.
+export const BGM_TRACK_ORDER = ['tense', 'acid', 'hunt'] as const;
+// Each tune's own gain under the master (the debug panel's BGM slider scales
+// all three by the same factor). The levels of a tune's notes under it are
+// part of the tune (src/audio/bgmScore.ts).
+export const BGM_GAIN_TENSE = 0.2;
+export const BGM_GAIN_ACID = 0.18;
+export const BGM_GAIN_HUNT = 0.18;
+// Each tune's tempo, and the faster one from BGM_RUSH_FROM_SEC left.
+export const BGM_TEMPO = {
+  tense: { bpm: 126, rushBpm: 140 },
+  acid: { bpm: 130, rushBpm: 144 },
+  hunt: { bpm: 170, rushBpm: 178 },
+} as const;
+export const BGM_RUSH_FROM_SEC = 30;
+// The intensity (0-3) rises one step at each of these seconds left: 180-135s
+// is 0, 135-90s is 1, 90-30s is 2, 30s and below is 3.
+export const BGM_INTENSITY_FROM_SEC = [135, 90, 30] as const;
+// Notes are scheduled on the audio clock this far ahead of now.
+export const BGM_LOOKAHEAD_SEC = 0.2;
+// How long a stopped play-through fades out (seconds): quickly for a pause,
+// the switch, mute, a replay or Title; longer at GAME OVER, under its close.
+export const BGM_FADE_SEC = 0.05;
+export const BGM_GAMEOVER_FADE_SEC = 0.3;
+
+// Impact feedback (src/fx/): the short pause ("hit stop"), the fill reveal,
+// the score popup, flashes, shakes and shards that answer an area claim, a
+// split and a miss. Every duration is in fixed ticks (TICK_RATE per second),
+// never rendered frames, so they last the same on any display. Shake
+// amplitudes are in canvas logical pixels (CANVAS_WIDTH x CANVAS_HEIGHT).
+// These are the starting values of src/fx/params.ts's fxParams, which the
+// debug panel can change at run time.
+export interface FxShakeSpec {
+  ticks: number;
+  amplitudePx: number;
+  axes: 'y' | 'xy';
+}
+// A claim's size is the occupancy it added (after - before): below MID is
+// small, from MID is mid, from LARGE is large.
+export const FX_CLAIM_SHARE_MID = 0.05;
+export const FX_CLAIM_SHARE_LARGE = 0.2;
+export const FX_HITSTOP_CLAIM_SMALL_TICKS = 3;
+export const FX_HITSTOP_CLAIM_MID_TICKS = 6;
+export const FX_HITSTOP_CLAIM_LARGE_TICKS = 10;
+export const FX_HITSTOP_SPLIT_TICKS = 20;
+export const FX_HITSTOP_MISS_TICKS = 12;
+export const FX_LINE_FLASH_TICKS = 6; // the closed line glows white, fading back
+export const FX_FILL_REVEAL_TICKS = 12; // newly claimed cells appear outward from the line
+export const FX_POPUP_TICKS = 40; // "+score" floats up and fades
+export const FX_SHAKE_SMALL: FxShakeSpec = { ticks: 6, amplitudePx: 2, axes: 'y' }; // large claim
+export const FX_SHAKE_MEDIUM: FxShakeSpec = { ticks: 10, amplitudePx: 4, axes: 'xy' }; // miss
+export const FX_SHAKE_LARGE: FxShakeSpec = { ticks: 16, amplitudePx: 6, axes: 'xy' }; // split
+export const FX_MISS_FLASH_TICKS = 4; // first half light, second half dark
+export const FX_SHARD_TICKS = 20; // the vanished line breaks into shards
+export const FX_SPLIT_BANNER_TICKS = 60; // "SPLIT!"
+export const FX_SPLIT_FLASH_TICKS = 12; // the closed line, extended to the field edges, flashes white
+export const FX_SPLIT_CONFIRM_LOCK_TICKS = 40; // confirm is not passed on after a split
+export const FX_MULTIPLIER_FLY_TICKS = 40; // the next multiplier travels to the HUD
+export const FX_MULTIPLIER_HIGHLIGHT_TICKS = 20; // then the HUD multiplier is highlighted
+export const FX_GAMEOVER_HOLD_TICKS = 32; // after a game-ending miss: modal waits, confirm is not passed on
+// From this added occupancy a claim is praised AWESOME! (from MID it is NICE!,
+// from LARGE GREAT!). Only the praise word reads it; the claim size used for
+// the hit stop, shake and sound stays small / mid / large.
+export const FX_CLAIM_SHARE_HUGE = 0.3;
+// The text's glitch (src/fx/textGlitch.ts): SPLIT! tears apart for its first
+// BANNER ticks, the score popup and the travelling multiplier split their
+// colours for their first POPUP ticks.
+export const FX_TEXT_GLITCH_BANNER_TICKS = 9;
+export const FX_TEXT_GLITCH_POPUP_TICKS = 6;
+// The score popup (and its praise word) appears this much larger and eases
+// back to its normal size by the end of BOUNCE_TICKS.
+export const FX_POPUP_BOUNCE_SCALE = 1.4;
+export const FX_POPUP_BOUNCE_TICKS = 8;
+// Sparks from the closed line on every claim: up to MAX cells picked evenly
+// along the line, one spark each, flying DISTANCE cells across the line over
+// TICKS ticks while fading out.
+export const FX_SPARK_MAX = 24;
+export const FX_SPARK_TICKS = 16;
+export const FX_SPARK_DISTANCE_CELLS = 5;
+// Claims in a row: a claim within WINDOW ticks of the previous one adds one
+// to the chain (shown as CHAIN xN from 2). Each step raises the claim sound
+// by two semitones, up to PITCH_MAX_STEPS steps. Display and sound only.
+export const FX_CHAIN_WINDOW_TICKS = 180;
+export const FX_CHAIN_PITCH_MAX_STEPS = 6;
+// The HUD's score counts up to the real score over this many ticks.
+export const FX_SCORE_ROLL_TICKS = 18;
+// The goals, the retry and the stage result (presentation only, like the
+// impact feedback above; the tick values and the text size start
+// src/fx/params.ts's fxParams, which the debug panel can change).
+// The HUD multiplier is emphasised for this many ticks after it rises (cyan)
+// or falls back to x1 (warning colour).
+export const HUD_MULTIPLIER_EMPHASIS_TICKS = 24;
+// The HUD multiplier is always drawn this much larger (a transform, so the
+// line keeps its height), and up to EXTRA more at the start of its emphasis.
+export const HUD_MULTIPLIER_BASE_SCALE = 1.15;
+export const HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE = 0.35;
+// The occupancy gauge between the HUD and the field: its height in CSS px,
+// and how close to the goal (in percentage points) it turns brighter.
+export const HUD_GAUGE_HEIGHT_PX = 4;
+export const HUD_GAUGE_NEAR_GOAL_POINTS = 10;
+export const HUD_GAUGE_TRACK_COLOR = 'rgba(255, 255, 255, 0.14)';
+export const HUD_GAUGE_FILL_COLOR = 'rgba(0, 255, 65, 0.55)';
+export const HUD_GAUGE_NEAR_COLOR = '#b6ffc8';
+export const HUD_GAUGE_GOAL_COLOR = '#ffffff';
+// The STAGE CLEAR result (AREA / BONUS / TOTAL) counts up over this many ticks.
+export const STAGE_RESULT_ROLL_TICKS = 30;
+// GAME OVER: the keyboard and the field wait at most this many ticks for the
+// ranking check (/api/ranking) before they can start the next run again.
+export const RETRY_OFFER_WAIT_MAX_TICKS = 90;
+// GAME OVER: confirm from the keyboard, the field and the touch buttons is
+// dropped for this many ticks from the modal appearing.
+export const RETRY_CONFIRM_GUARD_TICKS = 24;
+// A field shorter than COMPACT CSS px gets the GAME OVER modal's tighter
+// spacing, and one shorter than TINY (a phone held sideways) its tiny layout
+// (src/ui/gameOverModal.ts's setDensity()).
+export const GAMEOVER_MODAL_COMPACT_BELOW_PX = 400;
+export const GAMEOVER_MODAL_TINY_BELOW_PX = 200;
+// The GAME OVER result (src/gameOverResult.ts), in live ticks from the modal
+// appearing: the score counts up from 0 (ease-out) over
+// GAMEOVER_COUNT_TICKS with a tick sound every GAMEOVER_COUNT_TICK_EVERY,
+// then pops (GAMEOVER_POP_SCALE back to 1 over GAMEOVER_POP_TICKS); the run's
+// highlight follows GAMEOVER_HIGHLIGHT_DELAY_TICKS later, and NEW RECORD (with
+// GAMEOVER_SPARK_COUNT sparks for GAMEOVER_SPARK_TICKS) or the distance to the
+// best GAMEOVER_RECORD_DELAY_TICKS later. A distance within
+// GAMEOVER_NEAR_BEST_RATIO of the best glows like NEW RECORD. None of it holds
+// the retry: confirm works as soon as RETRY_CONFIRM_GUARD_TICKS have passed.
+export const GAMEOVER_COUNT_TICKS = 42;
+export const GAMEOVER_COUNT_TICK_EVERY = 4;
+export const GAMEOVER_POP_TICKS = 8;
+export const GAMEOVER_POP_SCALE = 1.25;
+export const GAMEOVER_HIGHLIGHT_DELAY_TICKS = 6;
+export const GAMEOVER_RECORD_DELAY_TICKS = 12;
+export const GAMEOVER_SPARK_TICKS = 30;
+export const GAMEOVER_SPARK_COUNT = 12;
+export const GAMEOVER_NEAR_BEST_RATIO = 0.1;
+// The ranking submission panel opens this many live ticks after the GAME OVER
+// result's last line (the best line) is due — counted from when it is due,
+// also for a run with no best line, from the modal appearing under reduced
+// motion — so the result is read before the panel covers it. A ranking reply
+// that comes later opens it at once.
+export const RANKING_OFFER_DELAY_TICKS = 90;
+// How far a GAME OVER spark travels from the NEW RECORD line (CSS px).
+export const GAMEOVER_SPARK_DISTANCE_PX = 26;
+// The effects' text (+score, praise, CHAIN xN) is never drawn smaller than
+// this many CSS px on screen, however far the field is scaled down.
+export const FX_TEXT_MIN_DISPLAY_PX = 11;
+// The miss reason (WISP HIT YOUR LINE, STOPPED TOO LONG, ...): shown next to
+// the contact for TICKS ticks from the miss — through the miss hit stop and
+// after it — fading out over its last FADE_TICKS, and never drawn smaller
+// than MIN_DISPLAY_PX CSS px on screen. A reading text, so it does not move.
+export const FX_MISS_REASON_TICKS = 60;
+// The stage's title (STAGE n and its name, config.ts's STAGE_TABLE) over the
+// field when a stage starts, for this many ticks. Play does not wait for it.
+export const FX_STAGE_TITLE_TICKS = 60;
+// BIG CLAIM / CLOSE CALL +N next to a claim's score, for this many ticks.
+export const FX_CLAIM_TAG_TICKS = 50;
+// Their colours: gold for a big claim, hot orange for a close call — apart
+// from the praise words' and SPLIT!'s magenta and cyan neon.
+export const COLOR_FX_BIG_CLAIM = '#ffd23f';
+export const COLOR_FX_CLOSE_CALL = '#ff8a3d';
+export const FX_MISS_REASON_FADE_TICKS = 12;
+export const FX_MISS_REASON_MIN_DISPLAY_PX = 13;
+// Its colour: the warning red, lighter so it reads on the dark field, edged
+// in COLOR_FX_OUTLINE so it reads on a claimed area as well.
+export const COLOR_FX_MISS_REASON = '#ff6b6b';
+// The effects' text: a geometric display face bundled with the game
+// (public/fonts/), falling back to monospace until it has loaded or if it
+// cannot be loaded.
+export const FX_TEXT_FONT_FAMILY = '"Orbitron", monospace';
+// The Japanese sentences (directions, notices, status and error lines, the
+// miss reason): the device's own Japanese fonts — none is bundled — falling
+// back to monospace. English text keeps its fonts.
+export const JA_TEXT_FONT_FAMILY = '"Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", "Meiryo", monospace';
+export const COLOR_FX_NEON_CYAN = '#37e6ff';
+export const COLOR_FX_NEON_MAGENTA = '#ff2bd6';
+export const COLOR_FX_NEON_CORE = '#ffffff';
+export const COLOR_FX_TEXT_FILL = '#eaffff';
+// Colors of the impact feedback layer (src/render/fxLayer.ts).
+export const COLOR_FX_FLASH_LIGHT = '#ffffff';
+export const COLOR_FX_FLASH_DARK = '#000000';
+export const COLOR_FX_OUTLINE = '#0a0e27'; // dark outline keeps popups/SPLIT! readable on any fill
+export const COLOR_FX_POPUP = '#ffffff';
+export const COLOR_FX_SPLIT = '#ffe066';
+// The start cue: as each stage starts, rings close in on the marker so its
+// start — which moves from stage 2 — is seen at a glance. Shown for the stage
+// title's time (fxParams.stageTitleTicks), as FX_START_CUE_PULSES rings one
+// after another, each shrinking from FROM_RADIUS to TO_RADIUS cells while it
+// brightens. With reduced motion: one ring of REDUCED_RADIUS cells that
+// stays its size and fades out. Always centred on where the marker is when
+// the frame is drawn; clipped to the field. Display only.
+export const FX_START_CUE_PULSES = 2;
+export const FX_START_CUE_FROM_RADIUS_CELLS = 12;
+export const FX_START_CUE_TO_RADIUS_CELLS = 2.5;
+export const FX_START_CUE_REDUCED_RADIUS_CELLS = 5;
+// The ring's alpha at the start of a pulse (it reaches 1 as it lands).
+export const FX_START_CUE_MIN_ALPHA = 0.35;
+export const FX_START_CUE_LINE_WIDTH_PX = 2.5; // logical canvas px
+// The ring's thin white core, as a share of the ring's line width.
+export const FX_START_CUE_CORE_WIDTH_RATIO = 1 / 3;
+// ...and never thinner than this many CSS px on screen, however far the
+// field is scaled down (a phone held sideways shows it at ~0.3x).
+export const FX_START_CUE_MIN_LINE_DISPLAY_PX = 2;
+export const FX_START_CUE_GLOW_BLUR = 10; // logical canvas px
+export const COLOR_FX_START_CUE = COLOR_FX_NEON_CYAN;
+// The Wisp surge cue: when a claim raises the surge level (WISP_SURGE_*) and
+// play goes on, a ring spreads out from every Wisp head for
+// WISP_SURGE_CUE_TICKS, from FROM_RADIUS to TO_RADIUS cells while it fades,
+// in the new level's head color (COLOR_WISP_HEAD_SURGE_*). Each ring follows
+// its Wisp's head and is clipped to the field. No text. With reduced motion: one
+// ring of REDUCED_RADIUS cells that stays its size and fades out.
+// Every radius stays outside the hint's ring around the Wisps
+// (HINT_RING_RADIUS_CELLS, with its dark outline, src/render/hintLayer.ts),
+// line width included, so the claimed-side hint shown with the first claim
+// never covers the surge ring drawn under it.
+export const WISP_SURGE_CUE_TICKS = 30;
+export const WISP_SURGE_CUE_FROM_RADIUS_CELLS = 7.5;
+export const WISP_SURGE_CUE_TO_RADIUS_CELLS = 12;
+export const WISP_SURGE_CUE_REDUCED_RADIUS_CELLS = 8;
+export const WISP_SURGE_CUE_LINE_WIDTH_PX = 2; // logical canvas px
+export const WISP_SURGE_CUE_GLOW_BLUR = 10; // logical canvas px
+
+// In-play hints (src/hints/): a short line over the field, plus a mark on the
+// field or a glowing touch button, the first time a situation comes up.
+// Display only — they never touch the input, the run or the score.
+// A timed hint (the claimed side, an enemy's first appearance) stays this
+// many ticks; the split hint a little longer, being the longest sentence.
+export const HINT_TIMED_TICKS = 150;
+export const HINT_SPLIT_TICKS = 180;
+// The slow-line hint stays until a slow-line claim, or at most this long.
+export const HINT_SLOW_MAX_TICKS = 600;
+// A timed hint that comes up while another is shown waits its turn; one
+// that has waited longer than this is dropped (and shown another time).
+export const HINT_QUEUE_MAX_WAIT_TICKS = 300;
+// The ring around a hint's target: shown for RING_TICKS from the hint
+// appearing, RADIUS cells across the field's own cells.
+export const HINT_RING_TICKS = 90;
+export const HINT_RING_RADIUS_CELLS = 5;
+// The drawing hint's arrow from the marker into the field, in cells.
+export const HINT_ARROW_LENGTH_CELLS = 8;
+// The hint line fades in and out over this many ticks (not with reduced motion).
+export const HINT_FADE_TICKS = 12;
+// The hint line's text size (CSS px): the field's on-screen width times
+// HINT_BAR_FONT_PER_FIELD_WIDTH, kept between HINT_BAR_FONT_PX and
+// HINT_BAR_FONT_MAX_PX, so a wide field (a PC screen) gets a line that reads
+// at its scale. On a field shown less than HINT_BAR_COMPACT_BELOW_PX tall,
+// the smaller HINT_BAR_FONT_COMPACT_PX.
+export const HINT_BAR_FONT_PX = 13;
+export const HINT_BAR_FONT_MAX_PX = 18;
+export const HINT_BAR_FONT_PER_FIELD_WIDTH = 0.018;
+export const HINT_BAR_FONT_COMPACT_PX = 12;
+export const HINT_BAR_COMPACT_BELOW_PX = 200;
+// The Title screen's menu (src/ui/titleMenu.ts): HOW TO PLAY, RANKING and
+// MODE in one row under the title text, as underlined text (CSS px). The
+// roomy row's text size, and the small row's (no side padding, for a narrow
+// field) when the roomy one does not fit the field's width less
+// TITLE_MENU_INSET_PX each side; on a field too narrow for that too, the
+// small buttons stack one under another.
+export const TITLE_MENU_FONT_PX = 13;
+export const TITLE_BUTTON_COMPACT_FONT_PX = 10;
+// The room between the title text and the row under it; between the field
+// and the row when it sits under the field; and the row's room from the
+// field's sides and bottom edge.
+export const TITLE_MENU_GAP_PX = 16;
+export const TITLE_MENU_BELOW_GAP_PX = 4;
+export const TITLE_MENU_INSET_PX = 2;
+// Each button's height at least (its press target), under the title text or
+// under the field. Along the field's bottom edge — a field with no room for
+// that — the buttons keep their own height.
+export const TITLE_MENU_MIN_TARGET_PX = 28;
+// The buttons' padding: above and below the text, and each side of it in the
+// roomy row (none in the small one).
+export const TITLE_MENU_PADDING_Y_PX = 2;
+export const TITLE_MENU_PADDING_X_PX = 4;
+// Between the buttons: in the roomy row, in the small row, and stacked.
+export const TITLE_MENU_BUTTON_GAP_PX = 12;
+export const TITLE_MENU_COMPACT_BUTTON_GAP_PX = 6;
+export const TITLE_MENU_COLUMN_GAP_PX = 2;
+// The underline, and the outline of the button the keyboard is on.
+export const TITLE_MENU_UNDERLINE_THICKNESS_PX = 1;
+export const TITLE_MENU_UNDERLINE_OFFSET_PX = 3;
+export const TITLE_MENU_FOCUS_OUTLINE_PX = 2;
+// The Title screen's demo: a top-ranked run's replay played silently behind
+// the title text (src/titleDemo.ts). It starts this many ticks after the
+// Title screen appears, trying at most this many of the board's best replays
+// (one fetch each, kept for the page), and holds a finished run's last board
+// this many ticks before playing it again from the start.
+export const TITLE_DEMO_START_DELAY_TICKS = 60;
+export const TITLE_DEMO_MAX_CANDIDATES = 3;
+export const TITLE_DEMO_END_HOLD_TICKS = 120;
+// The demo board is drawn under a veil of the background color (COLOR_BACKGROUND)
+// at this opacity, so the title text and the buttons over it stay readable.
+export const TITLE_DEMO_DIM_ALPHA = 0.55;
+// The DEMO tag in the field's bottom-left corner: its text size (CSS px), the
+// smaller size on a field shown less than TITLE_DEMO_LABEL_COMPACT_BELOW_PX
+// tall, and its distance from the field's left and bottom edges for each. On
+// the small field the title text, wrapped to the field's width, leaves little
+// room below it, so the small tag sits on the field's bottom edge. When the
+// Title menu takes the field's bottom edge (src/ui/titleMenu.ts), the tag
+// moves to the top-left corner, as far from the top as from the left.
+export const TITLE_DEMO_LABEL_COMPACT_BELOW_PX = 200;
+export const TITLE_DEMO_LABEL_FONT_PX = 12;
+export const TITLE_DEMO_LABEL_FONT_COMPACT_PX = 10;
+export const TITLE_DEMO_LABEL_INSET_PX = 8;
+export const TITLE_DEMO_LABEL_INSET_COMPACT_PX = 4;
+export const TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX = 0;
+// After HOW TO PLAY closes, confirms (keys, a tap on the field, the touch
+// buttons) are dropped for this many ticks, so the key that closed it does
+// not also start a run.
+export const HOW_TO_CLOSE_GUARD_TICKS = 12;
+// The pause (src/pause.ts): the touch PAUSE button's and the pause screen's
+// RESUME button's smallest pressable side (CSS px).
+export const PAUSE_BUTTON_MIN_SIZE_PX = 44;
+// The pause screen's PAUSED heading and its resume hint (CSS px), and their
+// smaller sizes on a field shown less than PAUSE_OVERLAY_COMPACT_BELOW_PX
+// tall, where the heading, RESUME and the hint must all still fit.
+export const PAUSE_OVERLAY_TITLE_FONT_PX = 28;
+export const PAUSE_OVERLAY_TITLE_FONT_COMPACT_PX = 16;
+export const PAUSE_OVERLAY_HINT_FONT_PX = 13;
+export const PAUSE_OVERLAY_HINT_FONT_COMPACT_PX = 11;
+export const PAUSE_OVERLAY_COMPACT_BELOW_PX = 200;
 
 // Character visibility (docs/plan.md §6 M9 / §12.3): the marker and enemies
 // were all a single 1-cell dot, indistinguishable except by color and hard
@@ -350,11 +931,12 @@ export const MARKER_GLOW_BLUR = 10; // px
 export const MARKER_PULSE_AMPLITUDE = 0.12; // +/- fraction of the base radius
 export const MARKER_PULSE_SPEED = 0.025; // radians per rendered frame (~4s period at 60fps)
 
-// Wisp head, drawn as a bright core + softer halo circle (~2x2 cells across,
-// up from the former 1-cell dot). The afterimage trail behind it is
-// unchanged (still per-cell fillRect, see WISP_TRAIL_ALPHA_* above).
-export const WISP_HEAD_HALO_RADIUS_CELLS = 1.0;
-export const WISP_HEAD_CORE_RADIUS_CELLS = 0.55;
+// Wisp head, drawn as a bright core + softer halo circle (~4x4 cells across).
+// Only the head's own cell hits, so the drawn head is larger than what can
+// hit, never smaller. The afterimage trail behind it is per-cell fillRect
+// (see WISP_TRAIL_ALPHA_* above).
+export const WISP_HEAD_HALO_RADIUS_CELLS = 2.0;
+export const WISP_HEAD_CORE_RADIUS_CELLS = 1.1;
 export const WISP_HEAD_HALO_ALPHA = 0.35;
 
 // Ember, drawn as a bright core + halo circle (~2x2 cells across) with a
@@ -440,9 +1022,10 @@ export const TOUCH_CONTROLS_OPACITY = 0.55;
 // *encoding* of a stored replay changed" (e.g. the RLE byte layout below) —
 // independent of whether the rules themselves changed, so an old row can
 // stay visible on the ranking (its score is still valid) while its replay
-// becomes unplayable until re-encoded. Both start at 1 for the
-// initial release.
-export const RULESET_VERSION = 1;
+// becomes unplayable until re-encoded. Both started at 1 for the
+// initial release. Ruleset 2: the per-stage table, big claims, close calls,
+// the split reward by the smaller side and the shorter post-miss wait.
+export const RULESET_VERSION = 2;
 export const REPLAY_FORMAT_VERSION = 1;
 
 // Replay viewing: how long a cleared stage stays on screen, with its
@@ -486,3 +1069,17 @@ export const MAX_INPUT_SAMPLES = TIME_LIMIT_TICKS;
 // real play approaches. Raised from 100 before launch, while scores was empty
 // (no season bump needed); see the runbook for the post-launch procedure.
 export const MAX_VERIFIED_CLAIMS = 300;
+
+// How many rows the ranking board keeps (the TOP 10). The client reads it for
+// the HUD's goal slot (src/hudGoal.ts) and the submission offer's
+// provisional in-range check (src/ui/ranking.ts).
+export const RANKING_BOARD_SIZE = 10;
+
+// The on-device play log (src/playLog/, src/storage/playLog.ts): the finished
+// normal runs kept in localStorage for the debug panel's PLAY LOG summary.
+// Nothing leaves the device. The newest PLAY_LOG_MAX_RUNS runs are kept; older
+// ones are dropped as new ones come in.
+export const PLAY_LOG_MAX_RUNS = 50;
+// The debug panel's `STREAK ≤ ST<n>`: how many of the newest runs in a row
+// ended on this stage or earlier.
+export const PLAY_LOG_STREAK_STAGE = 2;

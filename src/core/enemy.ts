@@ -48,10 +48,9 @@ export class Wisp {
    *   should inject a deterministic function.
    * @param initialAngle Optional fixed starting heading in radians. Useful
    *   for deterministic tests that also want a deterministic first move.
-   * @param speedMultiplier Scales WISP_SPEED (docs/plan.md §12.7 stage
-   *   progression: interpolates from x1.0 at stage 1 up to
-   *   WISP_SPEED_MULTIPLIER_MAX at stage STAGE_MAX_DIFFICULTY).
-   *   Defaults to 1 (the M1-M3 baseline speed).
+   * @param speedMultiplier Scales WISP_SPEED (each stage's own value,
+   *   config.ts's STAGE_TABLE: x1.0 to x3.0). Defaults to 1 (the baseline
+   *   speed).
    */
   constructor(start: Point, rng: Rng = Math.random, initialAngle?: number, speedMultiplier = 1) {
     this.pos = { x: start.x, y: start.y };

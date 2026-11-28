@@ -95,6 +95,11 @@ function recordRealReplay(seed: number): { rle: Uint8Array; score: number; stage
   const samples: InputSample[] = [];
   let guard = 0;
   while (session.getStatus() !== 'gameover' && guard < 20000) {
+    if (session.getStatus() === 'stageclear') {
+      // A replay confirms a StageClear without a sample (core/replayEngine.ts).
+      session.update({ dx: 0, dy: 0, drawHeld: false, confirm: true });
+      continue;
+    }
     const input: InputSample = { dx: 0, dy: 1, drawHeld: true, slow: false };
     session.update({ ...input, confirm: false });
     samples.push(input);

@@ -9,7 +9,58 @@
 // as it was before M10.
 import { GameSession } from '../core/session';
 import type { DebugOverrides, EffectiveDebugParams } from '../core/game';
-import { TICK_RATE } from '../config';
+import type { ClaimFeedback, MissFeedback } from '../core/feedback';
+import type { LineSpeed } from '../core/claim';
+import type { Point } from '../core/field';
+import type { FxDirector } from '../fx/director';
+import type { HitStop } from '../fx/hitStop';
+import type { FxParams } from '../fx/params';
+import { resetSfxLevels, type SfxLevels } from '../audio/sfxLevels';
+import {
+  TICK_RATE,
+  SPLIT_MULTIPLIER_CAP,
+  EMBER_FIRST_SPAWN_SEC,
+  LATE_STAGE_WISP_COUNT_MAX,
+  WISP_SURGE_FIRST_STAGE,
+  BIG_CLAIM_SHARE,
+  PLAY_LOG_MAX_RUNS,
+  PLAY_LOG_STREAK_STAGE,
+  BGM_GAIN_TENSE,
+  BGM_GAIN_ACID,
+  BGM_GAIN_HUNT,
+} from '../config';
+import { t } from '../i18n';
+import type { PlayLogFile } from '../playLog/record';
+import { summarizePlayLog, trailingRunsAtOrBelow } from '../playLog/summary';
+
+/**
+ * What the panel's PLAY LOG section works on: the on-device play log
+ * (src/storage/playLog.ts). Reading or clearing it never touches the
+ * GameSession, so it never counts as a debug override.
+ */
+export interface DebugPlayLogHooks {
+  /** The kept runs as stored, `{ v: 1, runs }`. */
+  getFile: () => PlayLogFile;
+  /** Forgets every kept run. */
+  clear: () => void;
+  /** `listener` is called whenever a run is kept or the log is cleared. */
+  onChange: (listener: () => void) => void;
+}
+
+/**
+ * What the panel's FX section works on: the live fxParams it tunes, and the
+ * director, hit stop and sounds its TEST buttons fire directly. Nothing in
+ * the FX section touches the GameSession, so using it never counts as a
+ * debug override (the run stays eligible for high-score saving and ranking).
+ */
+export interface DebugFxHooks {
+  params: FxParams;
+  fx: FxDirector;
+  hitStop: HitStop;
+  playClaim: (claim: { share: number; speed: LineSpeed; chain: number }) => void;
+  playSplitImpact: () => void;
+  playMiss: () => void;
+}
 
 /**
  * Slider ranges per docs/plan.md §12.4's "調整項目（初期セット）" list.
@@ -20,7 +71,7 @@ import { TICK_RATE } from '../config';
  * upper clamp of its own, so these panel-side maxes are the only limit.
  *
  * wispCount/wispSpeedMultiplier/emberCount/requiredOccupancyPercent's upper
- * bounds were widened again to 3x their stage-10 (STAGE_MAX_DIFFICULTY)
+ * bounds were widened again to 3x their earlier stage-10
  * values (2026-07-11 feedback: wispCount 10->30, wispSpeedMultiplier
  * 5.0->15.0, emberCount 10->30, requiredOccupancyPercent 90->99 — 99 rather
  * than a literal 3x270 since occupancy is a percentage and 100% is the
@@ -49,6 +100,15 @@ const RANGES = {
   // use case. 5s step keeps the slider's range of motion manageable at
   // either end.
   timeLimitSec: { min: 5, max: 600, step: 5 },
+  // The scoring and miss rules (config.ts BIG_CLAIM_*, NEAR_MISS_*, MISS_*,
+  // EMBER_FIRST_SPAWN_SEC): wide enough to try them well past their defaults.
+  bigClaimSharePercent: { min: 1, max: 100, step: 1 },
+  bigClaimMultiplier: { min: 1, max: 5, step: 0.05 },
+  nearMissDistanceCells: { min: 0, max: 20, step: 1 },
+  nearMissBonus: { min: 0, max: 2000, step: 10 },
+  missGraceTicks: { min: 0, max: 300, step: 1 },
+  missLineLockTicks: { min: 0, max: 300, step: 1 },
+  firstEmberSec: { min: 1, max: 60, step: 1 },
 } as const;
 
 interface SliderField {
@@ -128,6 +188,69 @@ const FIELDS: SliderField[] = [
     fromSlider: (v) => v / 100,
     format: (v) => `${Math.round(v * 100)}%`,
   },
+  {
+    key: 'bigClaimShare',
+    overrideKey: 'bigClaimShare',
+    label: 'Big claim from (share)',
+    range: RANGES.bigClaimSharePercent,
+    toSlider: (v) => Math.round(v * 100),
+    fromSlider: (v) => v / 100,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'bigClaimMultiplier',
+    overrideKey: 'bigClaimMultiplier',
+    label: 'Big claim x',
+    range: RANGES.bigClaimMultiplier,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => v.toFixed(2),
+  },
+  {
+    key: 'nearMissDistanceCells',
+    overrideKey: 'nearMissDistanceCells',
+    label: 'Close call distance (cells)',
+    range: RANGES.nearMissDistanceCells,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'nearMissBonus',
+    overrideKey: 'nearMissBonus',
+    label: 'Close call bonus',
+    range: RANGES.nearMissBonus,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missGraceTicks',
+    overrideKey: 'missGraceTicks',
+    label: 'Miss invincibility (t)',
+    range: RANGES.missGraceTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'missLineLockTicks',
+    overrideKey: 'missLineLockTicks',
+    label: 'Miss line lock (t)',
+    range: RANGES.missLineLockTicks,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => String(v),
+  },
+  {
+    key: 'firstEmberSec',
+    overrideKey: 'firstEmberSec',
+    label: 'First Ember (s, next stage)',
+    range: RANGES.firstEmberSec,
+    toSlider: (v) => v,
+    fromSlider: (v) => v,
+    format: (v) => `${v}s`,
+  },
 ];
 
 /**
@@ -146,9 +269,23 @@ const FIELDS: SliderField[] = [
  * same EXPORT payload, under the exact `TIME_LIMIT_TICKS` name, so the
  * existing EXPORT-JSON -> config.ts tuning workflow picks it up like every
  * other slider here.
+ *
+ * `stage` is the stage being played when EXPORT is pressed, written as
+ * `STAGE` so the stage-dependent values above can be told apart by the
+ * STAGE_TABLE row they came from. It is not a config.ts constant.
  */
-function buildExportPayload(params: EffectiveDebugParams, timeLimitTicks: number): Record<string, unknown> {
+export function buildExportPayload(
+  params: EffectiveDebugParams,
+  timeLimitTicks: number,
+  fxParams?: FxParams,
+  sound?: Record<string, number | string>,
+  overrides: DebugOverrides = {},
+  stage?: number
+): Record<string, unknown> {
   return {
+    ...(fxParams ? buildFxExportPayload(fxParams) : {}),
+    ...(sound ?? {}),
+    ...(stage === undefined ? {} : { STAGE: stage }),
     WISP_COUNT: params.wispCount,
     WISP_SPEED_MULTIPLIER: params.wispSpeedMultiplier,
     EMBER_COUNT: params.emberCount,
@@ -157,19 +294,549 @@ function buildExportPayload(params: EffectiveDebugParams, timeLimitTicks: number
     EMBER_BRANCH_CHASE_PROBABILITY: params.emberBranchChaseProbability,
     DEFAULT_REQUIRED_OCCUPANCY: params.requiredOccupancy,
     TIME_LIMIT_TICKS: timeLimitTicks,
+    BIG_CLAIM_SHARE: params.bigClaimShare,
+    BIG_CLAIM_MULTIPLIER: params.bigClaimMultiplier,
+    NEAR_MISS_DISTANCE_CELLS: params.nearMissDistanceCells,
+    NEAR_MISS_BONUS: params.nearMissBonus,
+    MISS_GRACE_TICKS: params.missGraceTicks,
+    MISS_LINE_LOCK_TICKS: params.missLineLockTicks,
+    // Stage 1's own wait unless overridden: the slider shows the current
+    // stage's wait, which is not this constant on other stages.
+    EMBER_FIRST_SPAWN_SEC: overrides.firstEmberSec ?? EMBER_FIRST_SPAWN_SEC,
     _notes: {
-      WISP_COUNT:
-        'Number of Wisps this stage. config.ts has no single constant for this — docs/plan.md §12.7 defines it as the stage number itself (stage n = n Wisps), capped at STAGE_MAX_DIFFICULTY.',
-      WISP_SPEED_MULTIPLIER:
-        'Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from 1.0 (stage 1) to WISP_SPEED_MULTIPLIER_MAX (stage STAGE_MAX_DIFFICULTY).',
+      ...(stage === undefined
+        ? {}
+        : {
+            STAGE:
+              "The stage being played when EXPORT was pressed (1 = the first; STAGE_TABLE row STAGE - 1, the last row from stage 15, with more Wisps from stage 16 — see WISP_COUNT). Not a config.ts constant: it says which stage these values belong to — WISP_COUNT, WISP_SPEED_MULTIPLIER, EMBER_MOVE_TICKS, EMBER_SPAWN_INTERVAL_SEC, EMBER_BRANCH_CHASE_PROBABILITY and DEFAULT_REQUIRED_OCCUPANCY are this stage's, and EMBER_COUNT is the Embers alive on it. EMBER_FIRST_SPAWN_SEC is not this stage's: whatever STAGE is, it is stage 1's wait for its first Ember pair, or the panel's override when there is one.",
+          }),
+      EMBER_FIRST_SPAWN_SEC:
+        "Stage 1's wait (s) for its first Ember pair. Overridden from the panel, the value is every stage's wait, read as each stage starts.",
+      WISP_COUNT: `Number of Wisps this stage. config.ts has no single constant for this — through stage 15 it is the current stage's wispCount in STAGE_TABLE. From stage 16 on it is not in the table: it is the last row's wispCount plus one for each stage past 15, held at LATE_STAGE_WISP_COUNT_MAX (${LATE_STAGE_WISP_COUNT_MAX}).`,
+      WISP_SPEED_MULTIPLIER: `Effective multiplier on WISP_SPEED for the current stage. config.ts has no single constant for this — it is the current stage's wispSpeedMultiplier in STAGE_TABLE. On NORMAL from stage ${WISP_SURGE_FIRST_STAGE} (WISP_SURGE_FIRST_STAGE) on, the Wisps actually move at this times WISP_SURGE_MULTIPLIERS' entry for the stage's surge level (past WISP_SURGE_FIRST_RATIO of the goal, then within WISP_SURGE_FINAL_MARGIN of it); this value is before that.`,
       EMBER_COUNT:
-        'Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the stage-dependent maxConcurrentEmbers (docs/plan.md §12.7: EMBER_MAX_CONCURRENT_STAGE1 at stage 1 up to EMBER_MAX_CONCURRENT_MAX at stage STAGE_MAX_DIFFICULTY) rather than a fixed config constant.',
+        "Current live Ember count. Embers spawn dynamically in pairs (see EMBER_SPAWN_INTERVAL_SEC), capped by the current stage's maxConcurrentEmbers in STAGE_TABLE rather than a fixed config constant.",
       DEFAULT_REQUIRED_OCCUPANCY:
-        'Effective required occupancy for the current stage. config.ts has no single constant for this — docs/plan.md §12.7 linearly interpolates it from DEFAULT_REQUIRED_OCCUPANCY (stage 1) up to REQUIRED_OCCUPANCY_MAX (stage STAGE_MAX_DIFFICULTY).',
+        "Effective required occupancy for the current stage. config.ts has no single constant for this — it is the current stage's requiredOccupancy in STAGE_TABLE (DEFAULT_REQUIRED_OCCUPANCY is stage 1's).",
       TIME_LIMIT_TICKS:
         "The run's current effective time budget, in ticks (60 tick = 1s at TICK_RATE) — matches config.ts's TIME_LIMIT_TICKS constant exactly (name and unit), unlike this payload's other stage-dependent keys. Reflects the time-limit slider above, whether or not it's been touched from its config.ts default.",
     },
   };
+}
+
+/** The impact feedback numbers, keyed by their config.ts FX_* constant names. */
+function buildFxExportPayload(p: FxParams): Record<string, unknown> {
+  return {
+    FX_CLAIM_SHARE_MID: p.claimShareMid,
+    FX_CLAIM_SHARE_LARGE: p.claimShareLarge,
+    FX_HITSTOP_CLAIM_SMALL_TICKS: p.hitStopClaimSmallTicks,
+    FX_HITSTOP_CLAIM_MID_TICKS: p.hitStopClaimMidTicks,
+    FX_HITSTOP_CLAIM_LARGE_TICKS: p.hitStopClaimLargeTicks,
+    FX_HITSTOP_SPLIT_TICKS: p.hitStopSplitTicks,
+    FX_HITSTOP_MISS_TICKS: p.hitStopMissTicks,
+    FX_LINE_FLASH_TICKS: p.lineFlashTicks,
+    FX_FILL_REVEAL_TICKS: p.fillRevealTicks,
+    FX_POPUP_TICKS: p.popupTicks,
+    FX_SHAKE_SMALL: { ...p.shakeSmall },
+    FX_SHAKE_MEDIUM: { ...p.shakeMedium },
+    FX_SHAKE_LARGE: { ...p.shakeLarge },
+    FX_MISS_FLASH_TICKS: p.missFlashTicks,
+    FX_SHARD_TICKS: p.shardTicks,
+    FX_SPLIT_BANNER_TICKS: p.splitBannerTicks,
+    FX_SPLIT_FLASH_TICKS: p.splitFlashTicks,
+    FX_SPLIT_CONFIRM_LOCK_TICKS: p.splitConfirmLockTicks,
+    FX_MULTIPLIER_FLY_TICKS: p.multiplierFlyTicks,
+    FX_MULTIPLIER_HIGHLIGHT_TICKS: p.multiplierHighlightTicks,
+    FX_GAMEOVER_HOLD_TICKS: p.gameOverHoldTicks,
+    FX_CLAIM_SHARE_HUGE: p.claimShareHuge,
+    FX_TEXT_GLITCH_BANNER_TICKS: p.textGlitchBannerTicks,
+    FX_TEXT_GLITCH_POPUP_TICKS: p.textGlitchPopupTicks,
+    FX_POPUP_BOUNCE_SCALE: p.popupBounceScale,
+    FX_POPUP_BOUNCE_TICKS: p.popupBounceTicks,
+    FX_SPARK_MAX: p.sparkMax,
+    FX_SPARK_TICKS: p.sparkTicks,
+    FX_SPARK_DISTANCE_CELLS: p.sparkDistanceCells,
+    FX_CHAIN_WINDOW_TICKS: p.chainWindowTicks,
+    FX_CHAIN_PITCH_MAX_STEPS: p.chainPitchMaxSteps,
+    FX_SCORE_ROLL_TICKS: p.scoreRollTicks,
+    HUD_MULTIPLIER_EMPHASIS_TICKS: p.multiplierEmphasisTicks,
+    STAGE_RESULT_ROLL_TICKS: p.stageResultRollTicks,
+    RETRY_OFFER_WAIT_MAX_TICKS: p.retryOfferWaitMaxTicks,
+    RETRY_CONFIRM_GUARD_TICKS: p.retryConfirmGuardTicks,
+    FX_TEXT_MIN_DISPLAY_PX: p.fxTextMinDisplayPx,
+    FX_MISS_REASON_TICKS: p.missReasonTicks,
+    FX_MISS_REASON_MIN_DISPLAY_PX: p.missReasonMinDisplayPx,
+    FX_STAGE_TITLE_TICKS: p.stageTitleTicks,
+    FX_CLAIM_TAG_TICKS: p.claimTagTicks,
+    GAMEOVER_COUNT_TICKS: p.gameOverCountTicks,
+    GAMEOVER_POP_TICKS: p.gameOverPopTicks,
+    GAMEOVER_SPARK_TICKS: p.gameOverSparkTicks,
+    RANKING_OFFER_DELAY_TICKS: p.rankingOfferDelayTicks,
+  };
+}
+
+type FxNumberKey = {
+  [K in keyof FxParams]: FxParams[K] extends number ? K : never;
+}[keyof FxParams];
+type FxShakeKey = 'shakeSmall' | 'shakeMedium' | 'shakeLarge';
+
+const FX_TICKS_RANGE = { min: 0, max: 120, step: 1 } as const;
+const FX_NUMBER_FIELDS: ReadonlyArray<{ key: FxNumberKey; label: string; range: { min: number; max: number; step: number } }> = [
+  { key: 'claimShareMid', label: 'Claim mid from (share)', range: { min: 0, max: 1, step: 0.01 } },
+  { key: 'claimShareLarge', label: 'Claim large from (share)', range: { min: 0, max: 1, step: 0.01 } },
+  { key: 'hitStopClaimSmallTicks', label: 'Stop: claim S (t)', range: FX_TICKS_RANGE },
+  { key: 'hitStopClaimMidTicks', label: 'Stop: claim M (t)', range: FX_TICKS_RANGE },
+  { key: 'hitStopClaimLargeTicks', label: 'Stop: claim L (t)', range: FX_TICKS_RANGE },
+  { key: 'hitStopSplitTicks', label: 'Stop: split (t)', range: FX_TICKS_RANGE },
+  { key: 'hitStopMissTicks', label: 'Stop: miss (t)', range: FX_TICKS_RANGE },
+  { key: 'lineFlashTicks', label: 'Line flash (t)', range: FX_TICKS_RANGE },
+  { key: 'fillRevealTicks', label: 'Fill reveal (t)', range: FX_TICKS_RANGE },
+  { key: 'popupTicks', label: 'Popup (t)', range: FX_TICKS_RANGE },
+  { key: 'missFlashTicks', label: 'Miss flash (t)', range: FX_TICKS_RANGE },
+  { key: 'shardTicks', label: 'Shards (t)', range: FX_TICKS_RANGE },
+  { key: 'splitBannerTicks', label: 'SPLIT! banner (t)', range: FX_TICKS_RANGE },
+  { key: 'splitFlashTicks', label: 'Split flash (t)', range: FX_TICKS_RANGE },
+  { key: 'splitConfirmLockTicks', label: 'Split confirm lock (t)', range: FX_TICKS_RANGE },
+  { key: 'multiplierFlyTicks', label: 'Multiplier fly (t)', range: FX_TICKS_RANGE },
+  { key: 'multiplierHighlightTicks', label: 'Multiplier highlight (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverHoldTicks', label: 'GAME OVER hold (t)', range: FX_TICKS_RANGE },
+  { key: 'claimShareHuge', label: 'AWESOME! from (share)', range: { min: 0, max: 1, step: 0.01 } },
+  { key: 'textGlitchBannerTicks', label: 'SPLIT! glitch (t)', range: FX_TICKS_RANGE },
+  { key: 'textGlitchPopupTicks', label: 'Popup colour split (t)', range: FX_TICKS_RANGE },
+  { key: 'popupBounceScale', label: 'Popup bounce (x)', range: { min: 1, max: 3, step: 0.05 } },
+  { key: 'popupBounceTicks', label: 'Popup bounce (t)', range: FX_TICKS_RANGE },
+  { key: 'sparkMax', label: 'Sparks (max)', range: { min: 0, max: 100, step: 1 } },
+  { key: 'sparkTicks', label: 'Sparks (t)', range: FX_TICKS_RANGE },
+  { key: 'sparkDistanceCells', label: 'Sparks distance (cells)', range: { min: 0, max: 20, step: 0.5 } },
+  { key: 'chainWindowTicks', label: 'Chain window (t)', range: { min: 0, max: 600, step: 1 } },
+  { key: 'chainPitchMaxSteps', label: 'Chain pitch steps (max)', range: { min: 0, max: 12, step: 1 } },
+  { key: 'scoreRollTicks', label: 'HUD score count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'multiplierEmphasisTicks', label: 'HUD multiplier emphasis (t)', range: FX_TICKS_RANGE },
+  { key: 'stageResultRollTicks', label: 'Clear result count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'retryOfferWaitMaxTicks', label: 'Retry: ranking check wait (t)', range: { min: 0, max: 600, step: 1 } },
+  { key: 'retryConfirmGuardTicks', label: 'Retry: confirm guard (t)', range: FX_TICKS_RANGE },
+  { key: 'fxTextMinDisplayPx', label: 'Effect text min (CSS px)', range: { min: 0, max: 32, step: 1 } },
+  { key: 'missReasonTicks', label: 'Miss reason (t)', range: { min: 0, max: 300, step: 1 } },
+  { key: 'missReasonMinDisplayPx', label: 'Miss reason min (CSS px)', range: { min: 0, max: 32, step: 1 } },
+  { key: 'stageTitleTicks', label: 'Stage title (t)', range: { min: 0, max: 300, step: 1 } },
+  { key: 'claimTagTicks', label: 'BIG CLAIM / CLOSE CALL (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverCountTicks', label: 'GAME OVER count-up (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverPopTicks', label: 'GAME OVER pop (t)', range: FX_TICKS_RANGE },
+  { key: 'gameOverSparkTicks', label: 'GAME OVER sparks (t)', range: FX_TICKS_RANGE },
+  // Read when the next GAME OVER result starts.
+  { key: 'rankingOfferDelayTicks', label: 'GAME OVER ranking panel delay (t)', range: { min: 0, max: 600, step: 1 } },
+];
+const FX_SHAKE_FIELDS: ReadonlyArray<{ key: FxShakeKey; label: string }> = [
+  { key: 'shakeSmall', label: 'Shake S' },
+  { key: 'shakeMedium', label: 'Shake M' },
+  { key: 'shakeLarge', label: 'Shake L' },
+];
+
+/** A made-up line down the middle of the field, for the TEST buttons. */
+function testLine(session: GameSession, fromY = 1): Point[] {
+  const field = session.getGame().getField();
+  const x = Math.floor(field.getWidth() / 2);
+  const line: Point[] = [];
+  for (let y = fromY; y < field.getHeight() - 1; y++) line.push({ x, y });
+  return line;
+}
+
+/**
+ * The FX section: one slider per fxParams value (applied from the next
+ * effect) and TEST buttons that fire a claim (small / mid / large), a split
+ * or a miss straight into the director, the hit stop and the sounds, with
+ * made-up notices. The session is only read (for the field size, marker and
+ * multiplier), never changed.
+ */
+function buildFxSection(getSession: () => GameSession, hooks: DebugFxHooks): HTMLDivElement {
+  const section = document.createElement('div');
+  section.id = 'debug-fx-section';
+  section.style.marginTop = '10px';
+  section.style.paddingTop = '8px';
+  section.style.borderTop = '1px solid rgba(255, 224, 102, 0.4)';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'FX';
+  heading.style.fontWeight = 'bold';
+  heading.style.color = '#ffe066';
+  heading.style.marginBottom = '6px';
+  section.appendChild(heading);
+
+  const buttons = document.createElement('div');
+  buttons.style.display = 'flex';
+  buttons.style.flexWrap = 'wrap';
+  buttons.style.gap = '4px';
+  buttons.style.marginBottom = '8px';
+
+  const fireClaim = (share: number, areaScore: number): void => {
+    const session = getSession();
+    const notice: ClaimFeedback = {
+      claimedCells: 0,
+      occupancyBefore: 0,
+      occupancyAfter: share,
+      lineSpeed: 'fast',
+      areaScore,
+      // TEST CLAIM L is a big claim, so BIG CLAIM can be seen next to its score.
+      bigClaim: share >= BIG_CLAIM_SHARE,
+      nearMissBonus: 0,
+      stageClearBonus: 0,
+      multiplier: session.getMultiplier(),
+      split: false,
+      splitMultiplierGain: 0,
+      stageCleared: false,
+      closedLine: testLine(session),
+    };
+    // Pressed again within the chain window, the test claims chain like real
+    // ones: CHAIN xN under the popup and a rising claim sound.
+    const { hitStopTicks, chain } = hooks.fx.onClaim(notice, { nextMultiplier: session.getMultiplier() });
+    hooks.hitStop.request(hitStopTicks);
+    hooks.playClaim({ share, speed: 'fast', chain });
+  };
+  const addTest = (id: string, label: string, onClick: () => void): void => {
+    const button = buildButton(label, onClick);
+    button.id = id;
+    button.style.flex = '1 1 30%';
+    buttons.appendChild(button);
+  };
+  addTest('debug-fx-test-claim-s', 'TEST CLAIM S', () => fireClaim(0.02, 120));
+  addTest('debug-fx-test-claim-m', 'TEST CLAIM M', () => fireClaim(0.1, 600));
+  addTest('debug-fx-test-claim-l', 'TEST CLAIM L', () => fireClaim(0.3, 1800));
+  addTest('debug-fx-test-split', 'TEST SPLIT', () => {
+    const session = getSession();
+    const notice: ClaimFeedback = {
+      claimedCells: 0,
+      occupancyBefore: 0,
+      occupancyAfter: 0.05,
+      lineSpeed: 'fast',
+      areaScore: 0,
+      bigClaim: false,
+      nearMissBonus: 0,
+      stageClearBonus: 0,
+      multiplier: session.getMultiplier(),
+      split: true,
+      splitMultiplierGain: 1,
+      stageCleared: true,
+      closedLine: testLine(session),
+    };
+    const next = Math.min(session.getMultiplier() + 1, SPLIT_MULTIPLIER_CAP);
+    hooks.hitStop.request(hooks.fx.onClaim(notice, { nextMultiplier: next }).hitStopTicks);
+    hooks.playSplitImpact();
+  });
+  addTest('debug-fx-test-miss', 'TEST MISS', () => {
+    const session = getSession();
+    const line = testLine(session, 1).slice(0, 30);
+    const notice: MissFeedback = {
+      cause: 'wisp',
+      position: line.length > 0 ? line[line.length - 1] : session.getGame().getMarker().getPosition(),
+      line,
+    };
+    // With its reason, so the reason's length and size can be tuned from here.
+    hooks.hitStop.request(hooks.fx.onMiss(notice, { gameOver: false, reason: t('miss.wisp') }).hitStopTicks);
+    hooks.playMiss();
+  });
+  section.appendChild(buttons);
+
+  for (const field of FX_NUMBER_FIELDS) {
+    const format = (v: number): string => (field.range.step < 1 ? v.toFixed(2) : String(v));
+    const { row, input, readout } = buildRawSliderRow(field.label, field.range, format, (v) => {
+      hooks.params[field.key] = v;
+    });
+    input.id = `debug-fx-${field.key}`;
+    input.value = String(hooks.params[field.key]);
+    readout.textContent = format(hooks.params[field.key]);
+    section.appendChild(row);
+  }
+  for (const field of FX_SHAKE_FIELDS) {
+    const ticks = buildRawSliderRow(`${field.label} (t)`, FX_TICKS_RANGE, String, (v) => {
+      hooks.params[field.key] = { ...hooks.params[field.key], ticks: v };
+    });
+    ticks.input.id = `debug-fx-${field.key}-ticks`;
+    ticks.input.value = String(hooks.params[field.key].ticks);
+    ticks.readout.textContent = String(hooks.params[field.key].ticks);
+    section.appendChild(ticks.row);
+    const amplitude = buildRawSliderRow(`${field.label} (px, ${hooks.params[field.key].axes})`, { min: 0, max: 20, step: 0.5 }, String, (v) => {
+      hooks.params[field.key] = { ...hooks.params[field.key], amplitudePx: v };
+    });
+    amplitude.input.id = `debug-fx-${field.key}-amplitude`;
+    amplitude.input.value = String(hooks.params[field.key].amplitudePx);
+    amplitude.readout.textContent = String(hooks.params[field.key].amplitudePx);
+    section.appendChild(amplitude.row);
+  }
+  return section;
+}
+
+/** Groups `items` into lines of `perLine`, each joined by two spaces. */
+/** The SOUND TEST buttons, each playing one sound by itself (no effect). */
+export const SOUND_TEST_BUTTONS = [
+  { id: 'claim-small', label: 'CLAIM S' },
+  { id: 'claim-mid', label: 'CLAIM M' },
+  { id: 'claim-large', label: 'CLAIM L' },
+  { id: 'split', label: 'SPLIT' },
+  { id: 'miss', label: 'MISS' },
+  { id: 'stage-clear', label: 'STAGE CLEAR' },
+  { id: 'gameover-life', label: 'GAME OVER' },
+  { id: 'gameover-time', label: 'TIME UP' },
+  { id: 'count', label: 'COUNT' },
+  { id: 'new-record', label: 'NEW RECORD' },
+  { id: 'alarm', label: 'ALARM' },
+  { id: 'beep', label: 'BEEP' },
+  { id: 'beep-high', label: 'BEEP HI' },
+  { id: 'igniter-spawn', label: 'IGNITER' },
+  { id: 'igniter-approach', label: 'APPROACH' },
+  { id: 'ember-spawn', label: 'EMBER' },
+  { id: 'blaze-spawn', label: 'BLAZE' },
+  { id: 'ember-line', label: 'EMBER LINE' },
+  { id: 'ember-out', label: 'EMBER OUT' },
+  { id: 'draw', label: 'DRAW' },
+] as const;
+
+export type SoundTestId = (typeof SOUND_TEST_BUTTONS)[number]['id'];
+
+/**
+ * What the panel's SOUND section works on: the live sound levels it tunes
+ * and the sound test. None of it goes through the session's debug overrides,
+ * so using it never taints the run, never starts one and is never a game
+ * input.
+ */
+export interface DebugSoundHooks {
+  levels: SfxLevels;
+  /** Applies `levels.master` to the master gain at once. */
+  applyMaster: () => void;
+  /** Plays one sound by itself (nothing while muted). */
+  play: (id: SoundTestId) => void;
+  /**
+   * The music's switch and level (on, and 1, on every page load): the level
+   * is a factor on every tune's own gain (BGM_GAIN_TENSE / ACID / HUNT).
+   */
+  bgm?: {
+    isEnabled: () => boolean;
+    setEnabled: (on: boolean) => void;
+    getLevel: () => number;
+    setLevel: (level: number) => void;
+  };
+}
+
+const SOUND_LEVEL_FIELDS: ReadonlyArray<{ key: keyof SfxLevels; label: string; exportKey: string }> = [
+  { key: 'master', label: 'Master', exportKey: 'SFX_MASTER_GAIN' },
+  { key: 'split', label: 'Split', exportKey: 'SFX_LEVEL_SPLIT' },
+  { key: 'impact', label: 'Impact', exportKey: 'SFX_LEVEL_IMPACT' },
+  { key: 'warning', label: 'Warning', exportKey: 'SFX_LEVEL_WARNING' },
+  { key: 'enemy', label: 'Enemy', exportKey: 'SFX_LEVEL_ENEMY' },
+  { key: 'draw', label: 'Draw', exportKey: 'SFX_LEVEL_DRAW' },
+];
+const SOUND_LEVEL_RANGE = { min: 0, max: 0.5, step: 0.01 } as const;
+// The music's level: a factor on all three tunes' own gains.
+const BGM_LEVEL_RANGE = { min: 0, max: 3, step: 0.05 } as const;
+const BGM_LEVEL_DEFAULT = 1;
+const BGM_TRACK_GAIN_KEYS: ReadonlyArray<[string, number]> = [
+  ['BGM_GAIN_TENSE', BGM_GAIN_TENSE],
+  ['BGM_GAIN_ACID', BGM_GAIN_ACID],
+  ['BGM_GAIN_HUNT', BGM_GAIN_HUNT],
+];
+
+/**
+ * The SOUND section: a slider per sound level (the master applies at once,
+ * a tier from its next sound), the music's switch and level, and the
+ * SOUND TEST buttons. RESET puts the levels back; EXPORT adds them under
+ * their config.ts names.
+ */
+function buildSoundSection(hooks: DebugSoundHooks): {
+  section: HTMLDivElement;
+  reset: () => void;
+  exportPayload: () => Record<string, number>;
+} {
+  const section = document.createElement('div');
+  section.id = 'debug-sound-section';
+  section.style.marginTop = '10px';
+  section.style.paddingTop = '8px';
+  section.style.borderTop = '1px solid rgba(255, 224, 102, 0.4)';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'SOUND';
+  heading.style.fontWeight = 'bold';
+  heading.style.color = '#ffe066';
+  heading.style.marginBottom = '6px';
+  section.appendChild(heading);
+
+  const format = (v: number): string => v.toFixed(2);
+  const rows: Array<{ key: keyof SfxLevels; input: HTMLInputElement; readout: HTMLSpanElement }> = [];
+  for (const field of SOUND_LEVEL_FIELDS) {
+    const { row, input, readout } = buildRawSliderRow(field.label, SOUND_LEVEL_RANGE, format, (v) => {
+      hooks.levels[field.key] = v;
+      if (field.key === 'master') hooks.applyMaster();
+    });
+    input.id = `debug-sound-${field.key}`;
+    rows.push({ key: field.key, input, readout });
+    section.appendChild(row);
+  }
+  const sync = (): void => {
+    for (const row of rows) {
+      row.input.value = String(hooks.levels[row.key]);
+      row.readout.textContent = format(hooks.levels[row.key]);
+    }
+  };
+  sync();
+
+  // The music: a switch (to silence it alone while developing) and its level.
+  const bgm = hooks.bgm;
+  const bgmFormat = (v: number): string => `x${v.toFixed(2)}`;
+  let bgmLevel: { input: HTMLInputElement; readout: HTMLSpanElement } | null = null;
+  if (bgm) {
+    const label = document.createElement('label');
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '6px';
+    label.style.margin = '4px 0 6px';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.id = 'debug-bgm-enabled';
+    toggle.checked = bgm.isEnabled();
+    toggle.addEventListener('change', () => {
+      bgm.setEnabled(toggle.checked);
+      toggle.blur();
+    });
+    label.appendChild(toggle);
+    label.appendChild(document.createTextNode('BGM (not saved)'));
+    section.appendChild(label);
+    const { row, input, readout } = buildRawSliderRow('BGM', BGM_LEVEL_RANGE, bgmFormat, (v) => bgm.setLevel(v));
+    input.id = 'debug-sound-bgm';
+    input.value = String(bgm.getLevel());
+    readout.textContent = bgmFormat(bgm.getLevel());
+    bgmLevel = { input, readout };
+    section.appendChild(row);
+  }
+
+  const testHeading = document.createElement('div');
+  testHeading.textContent = 'SOUND TEST';
+  testHeading.style.color = '#ffe066';
+  testHeading.style.margin = '6px 0 4px';
+  section.appendChild(testHeading);
+  const buttons = document.createElement('div');
+  buttons.id = 'debug-sound-test';
+  buttons.style.display = 'flex';
+  buttons.style.flexWrap = 'wrap';
+  buttons.style.gap = '4px';
+  for (const test of SOUND_TEST_BUTTONS) {
+    // Blurred after the press, so a later Space / Enter meant for the game
+    // does not press it again.
+    const button = buildButton(test.label, () => {
+      hooks.play(test.id);
+      button.blur();
+    });
+    button.id = `debug-sound-test-${test.id}`;
+    button.style.flex = '1 1 30%';
+    buttons.appendChild(button);
+  }
+  section.appendChild(buttons);
+
+  return {
+    section,
+    reset: () => {
+      resetSfxLevels();
+      hooks.applyMaster();
+      sync();
+      if (bgm && bgmLevel) {
+        bgm.setLevel(BGM_LEVEL_DEFAULT);
+        bgmLevel.input.value = String(BGM_LEVEL_DEFAULT);
+        bgmLevel.readout.textContent = bgmFormat(BGM_LEVEL_DEFAULT);
+      }
+    },
+    // The tunes' gains with the factor applied, rounded off the float noise
+    // of the product (0.18 x 1.5 gives 0.27, not 0.27000000000000002).
+    exportPayload: () => ({
+      ...Object.fromEntries(SOUND_LEVEL_FIELDS.map((f) => [f.exportKey, hooks.levels[f.key]])),
+      ...(bgm ? Object.fromEntries(BGM_TRACK_GAIN_KEYS.map(([key, gain]) => [key, Number((gain * bgm.getLevel()).toFixed(4))])) : {}),
+    }),
+  };
+}
+
+function chunkLines(items: string[], perLine: number, indent: string): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < items.length; i += perLine) lines.push(indent + items.slice(i, i + perLine).join('  '));
+  return lines;
+}
+
+/** The PLAY LOG summary as fixed English text, one item per line or block. */
+export function playLogSummaryText(file: PlayLogFile): string {
+  const runs = file.runs;
+  if (runs.length === 0) return 'NO RUNS YET';
+  const s = summarizePlayLog(runs);
+  const lines = [
+    `RUNS ${s.runs} / ${PLAY_LOG_MAX_RUNS}`,
+    'END STAGE',
+    ...chunkLines(s.endByStage.map((e) => `ST${e.stage} ${e.runs}`), 4, '  '),
+    `END BY  LIFE ${s.endReasons.life}  TIME ${s.endReasons.time}`,
+    'MISSES',
+  ];
+  for (const m of s.missesByStage) {
+    lines.push(`  ST${m.stage}  (runs ${m.runs})`);
+    lines.push(`    WISP ${m.misses.wisp}  EMBER ${m.misses.ember}  IGNITER ${m.misses.igniter}`);
+  }
+  lines.push('SCORE', `  AVG ${s.score.average}  MED ${s.score.median}  MAX ${s.score.max}`);
+  lines.push('PER RUN', `  CLAIMS ${s.claimsPerRun.toFixed(1)}  SPLITS ${s.splitsPerRun.toFixed(1)}`);
+  lines.push(`STREAK ≤ ST${PLAY_LOG_STREAK_STAGE}  ${trailingRunsAtOrBelow(runs, PLAY_LOG_STREAK_STAGE)}`);
+  return lines.join('\n');
+}
+
+/**
+ * The PLAY LOG section: the summary of the runs kept on this device, EXPORT
+ * LOG (the stored `{ v: 1, runs }` as JSON, into the panel's output box and
+ * the clipboard) and CLEAR LOG (no confirmation: a dev panel). Returns the
+ * section and a function redrawing its summary.
+ */
+function buildPlayLogSection(hooks: DebugPlayLogHooks, exportOutput: HTMLTextAreaElement): { section: HTMLDivElement; render: () => void } {
+  const section = document.createElement('div');
+  section.id = 'debug-play-log';
+  section.style.marginTop = '10px';
+  section.style.paddingTop = '8px';
+  section.style.borderTop = '1px solid rgba(255, 224, 102, 0.4)';
+
+  const heading = document.createElement('div');
+  heading.textContent = 'PLAY LOG';
+  heading.style.fontWeight = 'bold';
+  heading.style.color = '#ffe066';
+  heading.style.marginBottom = '6px';
+  section.appendChild(heading);
+
+  const summary = document.createElement('div');
+  summary.id = 'debug-play-log-summary';
+  summary.style.font = '10px monospace';
+  summary.style.lineHeight = '1.4';
+  summary.style.color = '#00ff41';
+  summary.style.whiteSpace = 'pre-wrap';
+  summary.style.overflowWrap = 'anywhere';
+  summary.style.marginBottom = '8px';
+  section.appendChild(summary);
+
+  const render = (): void => {
+    summary.textContent = playLogSummaryText(hooks.getFile());
+  };
+
+  const buttons = document.createElement('div');
+  buttons.style.display = 'flex';
+  buttons.style.gap = '6px';
+  // Each blurs itself after a click, so a later Enter or Space for the game
+  // does not press it again.
+  const exportButton = buildButton('EXPORT LOG', () => {
+    const json = JSON.stringify(hooks.getFile(), null, 2);
+    exportOutput.value = json;
+    void copyToClipboard(json);
+    exportButton.blur();
+  });
+  exportButton.id = 'debug-play-log-export';
+  const clearButton = buildButton('CLEAR LOG', () => {
+    hooks.clear();
+    render();
+    clearButton.blur();
+  });
+  clearButton.id = 'debug-play-log-clear';
+  buttons.appendChild(exportButton);
+  buttons.appendChild(clearButton);
+  section.appendChild(buttons);
+
+  hooks.onChange(render);
+  render();
+  return { section, render };
 }
 
 /**
@@ -177,9 +844,9 @@ function buildExportPayload(params: EffectiveDebugParams, timeLimitTicks: number
  * sliders if it ever swaps the `GameSession` instance the `getSession`
  * getter passed to initDebugPanel() resolves to (P2 user-review fix,
  * 2026-08-11 — see initDebugPanel()'s doc comment for the full rationale).
- * No current caller does this (main.ts builds `session` once in init() and
- * never reconstructs it), so `refresh` currently goes unused, but the hook
- * stays correct for free if session-swapping is ever reintroduced.
+ * main.ts builds `session` once in init() and never swaps it; it calls
+ * `refresh` when the Title screen's MODE toggle rebuilds the run waiting on
+ * Title at the other difficulty, whose Wisp speed differs.
  */
 export interface DebugPanelHandle {
   /**
@@ -190,8 +857,8 @@ export interface DebugPanelHandle {
    * always affect whatever `getSession()` currently returns (see
    * initDebugPanel()'s doc comment), but the displayed positions would
    * otherwise still show the previous session's last values until the
-   * player touches a slider again. Currently unused, since no caller swaps
-   * sessions today.
+   * player touches a slider again. Also called after the session rebuilds
+   * its run at another difficulty (the same instance, new values).
    */
   refresh: () => void;
 }
@@ -224,7 +891,19 @@ export interface DebugPanelHandle {
  * as a getter anyway since it's harmless either way and stays correct for
  * free should session-swapping ever be reintroduced.
  */
-export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElement): DebugPanelHandle {
+export function initDebugPanel(
+  getSession: () => GameSession,
+  hudRow: HTMLElement,
+  fxHooks?: DebugFxHooks,
+  // RESET HINTS: forgets which in-play hints this device has seen (saved and
+  // in memory), so the next play shows them again. Display only — not a
+  // debug override, the run is untouched.
+  resetHints?: () => void,
+  // PLAY LOG: the runs kept on this device, summarized, exported and cleared.
+  playLogHooks?: DebugPlayLogHooks,
+  // SOUND: the sound levels and the sound test (and the music).
+  soundHooks?: DebugSoundHooks
+): DebugPanelHandle {
   // Collapsible (2026-07-07 feedback: the panel sat on top of the field and
   // got in the way of actually playing). The badge itself doubles as the
   // open/close toggle — one click re-opens a collapsed panel just as easily
@@ -240,10 +919,18 @@ export function initDebugPanel(getSession: () => GameSession, hudRow: HTMLElemen
     isOpen = open;
     panel.style.display = isOpen ? 'block' : 'none';
     badge.textContent = `DEBUG ${isOpen ? '▾' : '▸'}`; // open / closed caret
+    if (isOpen) renderPlayLog();
   };
 
   const badge = buildDebugBadge(() => setOpen(!isOpen));
-  const { panel, sync } = buildPanel(getSession, () => setOpen(false));
+  const { panel, sync, renderPlayLog } = buildPanel(
+    getSession,
+    () => setOpen(false),
+    fxHooks,
+    resetHints,
+    playLogHooks,
+    soundHooks
+  );
   hudRow.appendChild(badge);
   document.body.appendChild(panel);
   setOpen(true);
@@ -308,8 +995,14 @@ function buildDebugBadge(onToggle: () => void): HTMLButtonElement {
 
 function buildPanel(
   getSession: () => GameSession,
-  onClose: () => void
-): { panel: HTMLDivElement; sync: () => void } {
+  onClose: () => void,
+  fxHooks?: DebugFxHooks,
+  resetHints?: () => void,
+  playLogHooks?: DebugPlayLogHooks,
+  soundHooks?: DebugSoundHooks
+): { panel: HTMLDivElement; sync: () => void; renderPlayLog: () => void } {
+  // SOUND: built up front so RESET and EXPORT (above it on the panel) can reach it.
+  const soundSection = soundHooks ? buildSoundSection(soundHooks) : null;
   const panel = document.createElement('div');
   panel.id = 'debug-panel';
   panel.style.position = 'fixed';
@@ -367,13 +1060,12 @@ function buildPanel(
   // Reads from `getSession()` fresh every call (not a captured `session`)
   // so a session swap would be picked up automatically if one were ever
   // reintroduced — see initDebugPanel()'s doc comment. Exported as this
-  // panel's `sync` (DebugPanelHandle.refresh(), currently unused since no
-  // caller swaps sessions today — see that interface's doc comment), for a
-  // future caller to invoke right after swapping sessions so the sliders'
-  // *displayed* values would catch up to the new session's own (fresh,
-  // override-free) defaults immediately, rather than silently showing the
-  // discarded session's last values until the player happens to touch a
-  // slider again.
+  // panel's `sync` (DebugPanelHandle.refresh() — see that interface's doc
+  // comment), for a caller to invoke right after the session's values change
+  // under the panel (a run rebuilt at another difficulty, or a swapped
+  // session) so the sliders' *displayed* values catch up at once, rather
+  // than showing the old values until the player happens to touch a slider
+  // again.
   const syncFromEffectiveParams = (): void => {
     const params = getSession().getEffectiveDebugParams();
     for (const field of FIELDS) {
@@ -392,6 +1084,8 @@ function buildPanel(
       } as Partial<DebugOverrides>);
       readout.textContent = field.format(field.fromSlider(sliderValue));
     });
+    // For E2E coverage to find a slider by what it sets.
+    input.dataset.debugKey = field.key;
     rows.set(field.key, { input, readout });
     panel.appendChild(row);
   }
@@ -440,17 +1134,26 @@ function buildPanel(
   const resetButton = buildButton('RESET', () => {
     getSession().resetDebugOverrides();
     syncAll();
+    soundSection?.reset();
     exportOutput.value = '';
   });
   const exportButton = buildButton('EXPORT', () => {
     const session = getSession();
-    const payload = buildExportPayload(session.getEffectiveDebugParams(), session.getTimeLimitTicks());
+    const payload = buildExportPayload(
+      session.getEffectiveDebugParams(),
+      session.getTimeLimitTicks(),
+      fxHooks?.params,
+      soundSection?.exportPayload(),
+      session.getDebugOverrides(),
+      session.getStage()
+    );
     const json = JSON.stringify(payload, null, 2);
     exportOutput.value = json;
     void copyToClipboard(json);
   });
   buttonRow.appendChild(resetButton);
   buttonRow.appendChild(exportButton);
+  if (resetHints) buttonRow.appendChild(buildButton('RESET HINTS', resetHints));
   panel.appendChild(buttonRow);
 
   const exportOutput = document.createElement('textarea');
@@ -468,7 +1171,19 @@ function buildPanel(
   exportOutput.style.resize = 'vertical';
   panel.appendChild(exportOutput);
 
-  return { panel, sync: syncAll };
+  if (fxHooks) {
+    panel.appendChild(buildFxSection(getSession, fxHooks));
+  }
+  if (soundSection) panel.appendChild(soundSection.section);
+
+  let renderPlayLog = (): void => {};
+  if (playLogHooks) {
+    const playLogSection = buildPlayLogSection(playLogHooks, exportOutput);
+    panel.appendChild(playLogSection.section);
+    renderPlayLog = playLogSection.render;
+  }
+
+  return { panel, sync: syncAll, renderPlayLog };
 }
 
 function buildSliderRow(

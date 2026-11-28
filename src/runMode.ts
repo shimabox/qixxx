@@ -10,6 +10,8 @@
 // which is DOM-only orchestration with no dedicated test file — specifically
 // so this mode-selection logic has direct unit test coverage without
 // needing a jsdom environment.
+import { t } from './i18n';
+import type { Difficulty } from './core/difficulty';
 
 /**
  * - 'normal': an ordinary, unseeded run. Reads/writes `qixxx.highScore` normally.
@@ -23,11 +25,19 @@ export function shouldPersistHighScore(mode: RunMode): boolean {
 }
 
 /**
- * The HUD-line prefix identifying a non-'normal' run (main.ts's
- * updateHud()): `''` for 'normal' (byte-identical to before seeded-run
- * support existed), `SEED <n>  ` for 'seeded' — so a fixed/arbitrary-seed
- * board is never confused for the normal, day-to-day one.
+ * The HUD-line prefix identifying a run that is not the ordinary ranked one
+ * (main.ts's updateHud()): `''` for a 'normal' NORMAL-difficulty run
+ * (byte-identical to before seeded-run support existed), `SEED <n>  ` for
+ * 'seeded' — so a fixed/arbitrary-seed board is never confused for the
+ * normal, day-to-day one — led by `EASY  ` for an EASY run (src/core/difficulty.ts),
+ * both together for an EASY seeded run. `difficulty` is the difficulty of the
+ * session the HUD shows.
  */
-export function resolveHudModePrefix(mode: RunMode, params: { seededRunSeed: number | undefined }): string {
-  return mode === 'seeded' ? `SEED ${params.seededRunSeed}  ` : '';
+export function resolveHudModePrefix(
+  mode: RunMode,
+  params: { seededRunSeed: number | undefined; difficulty?: Difficulty }
+): string {
+  const easy = params.difficulty === 'easy' ? `${t('difficulty.easy')}  ` : '';
+  const seed = mode === 'seeded' ? `${t('hud.seed', params.seededRunSeed)}  ` : '';
+  return `${easy}${seed}`;
 }

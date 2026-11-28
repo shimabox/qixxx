@@ -1,7 +1,20 @@
 import { GameSession, SessionInput } from './core/session';
-import { InputRecorder } from './core/inputRecorder';
 import { ReplayEngine } from './core/replayEngine';
+import {
+  activeBoardSession,
+  boardFxFrame,
+  boardWispDraws,
+  BoardSources,
+  drawnBoardGame,
+  renderedFxFrame,
+  shownTitleDemoEngine as shownTitleDemoEngineOf,
+  stepReplayView,
+} from './replayView';
 import { Renderer } from './render/renderer';
+import type { FxAvoidBand, FxTextBox } from './render/fxLayer';
+import type { StartCueRing } from './render/startCueLayer';
+import type { SurgeCueRing } from './render/surgeCueLayer';
+import { getStageConfig } from './core/stage';
 import { KeyboardInput } from './input/keyboard';
 import {
   TouchControls,
@@ -12,14 +25,26 @@ import {
 } from './input/touch';
 import { SfxEngine } from './audio/sfx';
 import { loadHighScore, saveHighScore } from './storage/highscore';
-import { loadMuted, saveMuted } from './storage/settings';
+import { loadDifficulty, loadMuted, saveDifficulty, saveMuted } from './storage/settings';
+import { DifficultyToggle } from './ui/difficultyToggle';
 import { RunMode, shouldPersistHighScore, resolveHudModePrefix } from './runMode';
 import { parseSeedParam } from './seedParam';
 import { ReplayStageClearHold } from './replayStageClearHold';
 import { TimeWarningCueTracker } from './timeWarningCue';
 import { stageClearText } from './stageClearText';
+import { StageResultTally, StageResultCounter, stageResultScreen } from './stageResult';
 import { initGameOverModal, GameOverModal } from './ui/gameOverModal';
-import { initRankingUI, RankingUI } from './ui/ranking';
+import { base64ToBytes, initRankingUI, isReplayPayloadPlayable, RankingUI } from './ui/ranking';
+import { TitleDemo } from './titleDemo';
+import { FxDirector, FxFrame } from './fx/director';
+import { missReasonKey } from './fx/missReason';
+import type { MissFeedback } from './core/feedback';
+import { fxParams } from './fx/params';
+import { HitStop } from './fx/hitStop';
+import { acceptsModalAction, applyImpactNotices, beginLiveTick, GameOverConfirmGate, RetryHold } from './fx/liveTick';
+import { stepLiveSession, LiveRunTracker, freezeRunSnapshot, keepsInPlayLog } from './retryFlow';
+import { ScoreRoll } from './fx/scoreRoll';
+import { loadFxFonts } from './render/fxFonts';
 import {
   TICK_RATE,
   TICK_DURATION,
@@ -30,13 +55,74 @@ import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
   MISS_BLINK_INTERVAL_TICKS,
-  HUD_WORST_CASE_STATS_TEXT,
+  FX_START_CUE_MIN_LINE_DISPLAY_PX,
   HUD_TIME_WARNING_TICKS,
   HUD_TIME_WARNING_COLOR,
   RULESET_VERSION,
   REPLAY_FORMAT_VERSION,
   REPLAY_STAGE_CLEAR_HOLD_TICKS,
+  COLOR_FX_SPLIT,
+  COLOR_FX_NEON_CYAN,
+  COLOR_FX_NEON_MAGENTA,
+  FX_TEXT_FONT_FAMILY,
+  HUD_MULTIPLIER_BASE_SCALE,
+  HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE,
+  HUD_GAUGE_HEIGHT_PX,
+  HUD_GAUGE_NEAR_GOAL_POINTS,
+  HUD_GAUGE_TRACK_COLOR,
+  HUD_GAUGE_FILL_COLOR,
+  HUD_GAUGE_NEAR_COLOR,
+  HUD_GAUGE_GOAL_COLOR,
+  GAMEOVER_MODAL_COMPACT_BELOW_PX,
+  GAMEOVER_MODAL_TINY_BELOW_PX,
+  TITLE_DEMO_START_DELAY_TICKS,
+  TITLE_DEMO_END_HOLD_TICKS,
+  TITLE_DEMO_DIM_ALPHA,
+  TITLE_DEMO_LABEL_COMPACT_BELOW_PX,
+  TITLE_DEMO_LABEL_FONT_PX,
+  TITLE_DEMO_LABEL_FONT_COMPACT_PX,
+  TITLE_DEMO_LABEL_INSET_PX,
+  TITLE_DEMO_LABEL_INSET_COMPACT_PX,
+  TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX,
+  PAUSE_OVERLAY_COMPACT_BELOW_PX,
+  BGM_FADE_SEC,
+  BGM_GAMEOVER_FADE_SEC,
+  TOUCH_DPAD_HIT_MARGIN,
 } from './config';
+import { hudGoalText } from './hudGoal';
+import {
+  floorPercent,
+  hudLines,
+  hudWorstCaseStatsText,
+  livesText,
+  HUD_SCORE_SLOT,
+  HUD_LIVES_SLOT,
+  MultiplierEmphasis,
+} from './hudText';
+import { initialLivesFor, type Difficulty } from './core/difficulty';
+import { detectLocale, getLocale, setLocale, t } from './i18n';
+import { EMPTY_SCREEN_TEXT, ScreenText, screenTextString, titleScreenText } from './screenText';
+import { applySentenceFont, markEnglishOnly } from './ui/sentenceFont';
+import { HintDirector, type HintView } from './hints/director';
+import { HintSeenStore } from './storage/hints';
+import { PlayLogStore } from './storage/playLog';
+import { PlayLogRecorder } from './playLog/recorder';
+import { suggestsEasy } from './playLog/summary';
+import type { PlayRecord } from './playLog/record';
+import { HintBar } from './ui/hintBar';
+import { HowToPlayUI } from './ui/howToPlay';
+import { TitleMenu, type TitleMenuRect } from './ui/titleMenu';
+import { PauseControl, type PauseContext, type PauseToggle } from './pause';
+import { PauseOverlay } from './ui/pauseOverlay';
+import { hintArrowDirection, hintMarkShapes, type HintMarkShapes, type ResolvedHintMark } from './render/hintLayer';
+import type { Ember } from './core/patrol';
+import type { GameEvent } from './core/events';
+import type { ClaimFeedback } from './core/feedback';
+import { GameOverResult, GameOverRunTally, gameOverHighlightText, type GameOverCue } from './gameOverResult';
+import { sfxLevels } from './audio/sfxLevels';
+import type { DebugPanelHandle, SoundTestId } from './debug/panel';
+import { BgmPlayer, type BgmState, type BgmUpdate } from './audio/bgm';
+import { bgmTrackForStage } from './audio/bgmScore';
 
 // Debug hook (docs/plan.md §7.2: "window.__game__...を公開しておくとE2Eが
 // 安定する"). Populated once init() runs; only ever read by tests/devtools —
@@ -46,8 +132,75 @@ declare global {
     __game__?: {
       session: GameSession;
       sfx: SfxEngine;
+      /** Impact feedback director of the live run (src/fx/director.ts). */
+      fx: FxDirector;
+      /** The live run's hit stop (src/fx/hitStop.ts). */
+      hitStop: HitStop;
       /** Auto-advance transitions around replay skips — see replayAutoAdvanceLog. */
       getReplayAutoAdvanceLog: () => boolean[];
+      /** The in-play hint shown now (src/hints/), or null. */
+      getHint: () => { id: string; textKey: string; glow: string | null; age: number } | null;
+      /** The hint's ring / arrow handed to the renderer for the last frame, or null. */
+      getHintMarks: () => HintMarkShapes | null;
+      /** Where the last frame drew the stage title and BIG CLAIM / CLOSE CALL (logical canvas px). */
+      getFxTextBoxes: () => { stageTitle: FxTextBox | null; claimTags: FxTextBox[] };
+      /** The start cue's ring the last frame drew (logical canvas px), or null. */
+      getStartCue: () => (StartCueRing & { lineWidth: number }) | null;
+      /** Forgets every seen hint (the debug panel's RESET HINTS). */
+      resetHints: () => void;
+      /** The Title demo (src/titleDemo.ts): its state, and what the last frame drew. */
+      getTitleDemo: () => {
+        state: string;
+        /** The demo board is the one on screen. */
+        shown: boolean;
+        /** The demo session's played ticks and marker, while it is shown. */
+        ticks: number | null;
+        marker: { x: number; y: number } | null;
+        /** The veil's opacity on the last frame drawn (0 for none). */
+        veil: number;
+        /** The demo session's status and its stage's Wisp surge level, while it is shown. */
+        status: string | null;
+        surgeLevel: number | null;
+      };
+      /**
+       * What the last frame drew of the Wisp surge (logical canvas px): the
+       * cue's rings, and the head color of every Wisp drawn.
+       */
+      getWispSurgeDraw: () => { rings: SurgeCueRing[]; headColors: string[] };
+      /** The live run is paused (src/pause.ts). */
+      isPaused: () => boolean;
+      /** How many live ticks have passed the core a confirm, from the page load. */
+      getConfirmCount: () => number;
+      /** The on-device play log's runs, oldest first (src/storage/playLog.ts). */
+      getPlayLog: () => PlayRecord[];
+      /** The GAME OVER result as shown now (src/gameOverResult.ts). */
+      getGameOverResult: () => {
+        active: boolean;
+        /** Live ticks since the modal appeared (GameOverResult.step()), not the session's ticks. */
+        age: number;
+        /** The age the last line (the best line) is due at. */
+        lastLineAge: number;
+        /** The age from which the ranking submission panel may open. */
+        offerAge: number;
+        /** The score the modal shows now. */
+        score: number;
+        finished: boolean;
+        /** The highlight line's text once it shows, else null. */
+        highlight: string | null;
+        /** The EASY suggestion shows in the highlight's place. */
+        prompt: boolean;
+        /** Which best line shows: 'new-record', 'to-best', 'to-best-near', or null before it shows / for none. */
+        best: 'new-record' | 'to-best' | 'to-best-near' | null;
+      };
+      /**
+       * The GAME OVER ranking offer (src/ui/ranking.ts): the check is in
+       * flight, a panel it decided on waits to open, or a panel is open.
+       */
+      getRankingOffer: () => { checkPending: boolean; waiting: boolean; panelShown: boolean };
+      /** The names of the last 64 sounds played (src/audio/sfx.ts's getLog()). */
+      getSfxLog: () => string[];
+      /** The music (src/audio/bgm.ts): playing in live play while the sound is on. */
+      getBgmState: () => BgmState;
     };
   }
 }
@@ -218,13 +371,47 @@ function getScreenElement(wrap: HTMLDivElement): HTMLDivElement {
     screen.style.color = HUD_TEXT_COLOR;
     screen.style.font = HUD_FONT;
     screen.style.textAlign = 'center';
-    screen.style.whiteSpace = 'pre-line';
+    // pre-wrap, not pre-line: the STAGE CLEAR result's rows line up with
+    // runs of spaces (src/stageResult.ts).
+    screen.style.whiteSpace = 'pre-wrap';
     screen.style.textShadow = `0 0 10px ${HUD_ACCENT_COLOR}, 0 0 20px ${HUD_ACCENT_COLOR}`;
     screen.style.pointerEvents = 'none';
     screen.style.userSelect = 'none';
     wrap.appendChild(screen);
   }
   return screen;
+}
+
+// Get or create the Title demo's DEMO tag: small text pinned to the field's
+// bottom-left corner while the demo board is on screen (see `titleDemo`).
+// Never clickable, so a tap there still reaches the field and starts a run.
+// Its size and distance from the corner follow the field's size
+// (applyTitleDemoLabelSize()); it moves to the top-left corner while the
+// Title menu takes the field's bottom edge (placeTitleDemoLabel()).
+function getTitleDemoLabelElement(wrap: HTMLDivElement): HTMLDivElement {
+  let label = document.getElementById('title-demo-label') as HTMLDivElement | null;
+  if (!label) {
+    label = document.createElement('div');
+    label.id = 'title-demo-label';
+    label.textContent = t('titleDemo.label');
+    label.style.position = 'absolute';
+    label.style.left = `${TITLE_DEMO_LABEL_INSET_PX}px`;
+    label.style.bottom = `${TITLE_DEMO_LABEL_INSET_PX}px`;
+    label.style.font = HUD_FONT;
+    label.style.fontSize = `${TITLE_DEMO_LABEL_FONT_PX}px`;
+    // #canvas-wrap's line-height is 0; the tag needs a box of its own height.
+    label.style.lineHeight = '1';
+    label.style.letterSpacing = '0.1em';
+    label.style.color = HUD_TEXT_COLOR;
+    label.style.opacity = '0.7';
+    label.style.textShadow = `0 0 6px ${HUD_ACCENT_COLOR}`;
+    label.style.whiteSpace = 'nowrap';
+    label.style.pointerEvents = 'none';
+    label.style.userSelect = 'none';
+    label.style.display = 'none';
+    wrap.appendChild(label);
+  }
+  return label;
 }
 
 // Get or create the credit link (author attribution). It sits between #hud and
@@ -262,6 +449,9 @@ function getCreditLinkElement(row: HTMLDivElement): HTMLAnchorElement {
 // into the viewport's fixed top-right corner via #touch-actions-extra in side
 // mode. It remains outside #hud itself (which
 // has pointer-events: none), so it stays clickable/tappable in both locations.
+// The sound toggle's label size in the HUD row (CSS px).
+const SOUND_BUTTON_FONT_PX = 12;
+
 function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLButtonElement {
   let button = document.getElementById('mute-button') as HTMLButtonElement | null;
   if (!button) {
@@ -274,6 +464,9 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     button.style.color = HUD_ACCENT_COLOR;
     button.style.background = 'rgba(10, 14, 39, 0.7)';
     button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
+    // The glow while the sound is off on the live Title screen (index.html's
+    // #mute-button[data-attention='true'], see setMuteButtonAttention()).
+    button.style.setProperty('--sound-glow', HUD_ACCENT_COLOR);
     button.style.borderRadius = '4px';
     button.style.padding = '4px 10px';
     button.style.cursor = 'pointer';
@@ -289,23 +482,139 @@ function getMuteButtonElement(row: HTMLDivElement, onToggle: () => void): HTMLBu
     });
     row.appendChild(button);
 
-    // Reserve the width of the longer label ("UNMUTE") up front; toggleMute()/updateMuteButtonLabel() below
-    // swap this button's text between "MUTE" and "UNMUTE" without ever
+    // SOUND: OFF at the HUD's 16px would take width the HUD text needs (a
+    // narrow phone's long SEED line, a borderline single-line desktop row), so
+    // the label is set smaller and tighter, the button keeping the height
+    // the 16px label gave it so the row (and with it the field) keeps its
+    // size. Side mode sets its own size in the corner (index.html).
+    button.textContent = t('sound.off');
+    button.style.minHeight = `${button.getBoundingClientRect().height}px`;
+    button.style.fontSize = `${SOUND_BUTTON_FONT_PX}px`;
+    button.style.padding = '4px 4px';
+
+    // Reserve the width of the longer label ("SOUND: OFF") up front; toggleMute()/updateMuteButtonLabel() below
+    // swap this button's text between "SOUND: OFF" and "SOUND: ON" without ever
     // calling fitCanvasToViewport() again, so — before this fix — flipping
-    // to the wider "UNMUTE" label grew the button in place, silently
+    // to the wider label grew the button in place, silently
     // invalidating measureNonHudRowWidth()'s already-computed single-line
     // decision (a borderline viewport could clip only *after* the player
     // muted). Sizing the button to its widest possible content from the
     // start instead means neither label ever changes its rendered width, so
     // toggling can't move anything else in the row and needs no re-layout
     // of its own. Safe to measure here (rather than a hardcoded pixel
-    // guess): HUD_FONT is a fixed 16px monospace, not the HUD's own
+    // guess): its font is a fixed px size, not the HUD's own
     // vw-based clamp(), so this button's natural width never depends on
-    // window size either.
-    button.textContent = 'UNMUTE';
-    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+    // window size either. Measured again when the button moves into side
+    // mode's corner, whose font is smaller (updateTouchLayout()).
+    reserveMuteButtonWidth(button);
   }
   return button;
+}
+
+// Sets the sound toggle's min-width to its longer label's ("SOUND: OFF")
+// width at its current font, keeping whichever label it shows.
+function reserveMuteButtonWidth(button: HTMLButtonElement): void {
+  const label = button.textContent;
+  button.style.minWidth = '';
+  button.textContent = t('sound.off');
+  button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+  button.textContent = label;
+}
+
+// Get or create the travelling-multiplier element (see `multiplierFly`).
+// Fixed-positioned so it can cross from the canvas to the HUD row; moved
+// every rendered frame by renderMultiplierFx(). Neon like the canvas
+// effects' text: the bundled display face, white, with a cyan and a magenta
+// glow (renderMultiplierFx() sets the glow, split apart for its first ticks).
+function getMultiplierFlyElement(): HTMLDivElement {
+  let el = document.getElementById('fx-multiplier') as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fx-multiplier';
+    el.style.position = 'fixed';
+    el.style.left = '0';
+    el.style.top = '0';
+    el.style.display = 'none';
+    el.style.font = HUD_FONT;
+    el.style.fontFamily = FX_TEXT_FONT_FAMILY;
+    el.style.fontWeight = '700';
+    el.style.color = '#ffffff';
+    el.style.textShadow = multiplierFlyShadow(0);
+    el.style.pointerEvents = 'none';
+    el.style.userSelect = 'none';
+    el.style.whiteSpace = 'nowrap';
+    el.style.zIndex = '20';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+// The travelling multiplier's glow: cyan (6px) and magenta (14px), the cyan
+// moved `offsetPx` left and the magenta as far right.
+function multiplierFlyShadow(offsetPx: number): string {
+  const off = Math.round(offsetPx * 100) / 100;
+  return `${-off}px 0px 6px ${COLOR_FX_NEON_CYAN}, ${off}px 0px 14px ${COLOR_FX_NEON_MAGENTA}`;
+}
+
+// The HUD's SCORE number, as its own span so it can glow while it counts up
+// (see `hudScoreRoll`); the line's text is unchanged by it.
+function getHudScoreElement(): HTMLSpanElement {
+  let el = document.getElementById('hud-score') as HTMLSpanElement | null;
+  if (!el) {
+    el = document.createElement('span');
+    el.id = 'hud-score';
+  }
+  return el;
+}
+
+// Get or create the occupancy gauge: a HUD_GAUGE_HEIGHT_PX bar as wide as the
+// field, absolutely positioned in the HUD_GAP_PX gap just above it (anchored
+// to #canvas-wrap, whose box is the field's), so it adds nothing to the
+// layout's height. 100% is the field's full width; the goal mark is 2px wide
+// and reaches 3px past the bar above and below so it is easy to find on a
+// phone, where the bar stays 4px tall.
+function getGaugeElements(wrap: HTMLDivElement): { gauge: HTMLDivElement; fill: HTMLDivElement; goal: HTMLDivElement } {
+  let gauge = document.getElementById('hud-gauge') as HTMLDivElement | null;
+  if (!gauge) {
+    gauge = document.createElement('div');
+    gauge.id = 'hud-gauge';
+    gauge.style.position = 'absolute';
+    gauge.style.left = '0';
+    gauge.style.right = '0';
+    // Centered in the gap: (HUD_GAP_PX - height) / 2 above the field's top edge.
+    gauge.style.bottom = `calc(100% + ${(HUD_GAP_PX - HUD_GAUGE_HEIGHT_PX) / 2}px)`;
+    gauge.style.height = `${HUD_GAUGE_HEIGHT_PX}px`;
+    gauge.style.background = HUD_GAUGE_TRACK_COLOR;
+    gauge.style.pointerEvents = 'none';
+    gauge.style.userSelect = 'none';
+
+    const fill = document.createElement('div');
+    fill.id = 'hud-gauge-fill';
+    fill.style.position = 'absolute';
+    fill.style.left = '0';
+    fill.style.top = '0';
+    fill.style.bottom = '0';
+    fill.style.width = '0%';
+    fill.style.background = HUD_GAUGE_FILL_COLOR;
+    gauge.appendChild(fill);
+
+    const goal = document.createElement('div');
+    goal.id = 'hud-gauge-goal';
+    goal.style.position = 'absolute';
+    goal.style.top = '-3px';
+    goal.style.bottom = '-3px';
+    goal.style.width = '2px';
+    goal.style.left = 'calc(0% - 1px)';
+    goal.style.background = HUD_GAUGE_GOAL_COLOR;
+    gauge.appendChild(goal);
+
+    wrap.appendChild(gauge);
+  }
+  return {
+    gauge,
+    fill: document.getElementById('hud-gauge-fill') as HTMLDivElement,
+    goal: document.getElementById('hud-gauge-goal') as HTMLDivElement,
+  };
 }
 
 // Game state
@@ -327,8 +636,25 @@ let hudLine3: HTMLDivElement;
 let screen: HTMLDivElement;
 let gameOverModal: GameOverModal;
 let rankingUI: RankingUI;
+// The Title screen's HOW TO PLAY button and panel (src/ui/howToPlay.ts).
+let howToPlay: HowToPlayUI;
+// The Title screen's MODE: NORMAL / EASY toggle (src/ui/difficultyToggle.ts).
+let difficultyToggle: DifficultyToggle;
+// The row holding HOW TO PLAY, RANKING and MODE (src/ui/titleMenu.ts).
+let titleMenu: TitleMenu;
+// The `?debug` panel once it has mounted (dev builds only), else null.
+let debugPanel: DebugPanelHandle | null = null;
 let muteButton: HTMLButtonElement;
 let creditLink: HTMLAnchorElement;
+
+// THE PAUSE (src/pause.ts): P / Escape, the touch PAUSE button and the page
+// being hidden pause live play; while paused the fixed-step loop runs no
+// tick at all — no input read or recorded, no session step, no effect, hint
+// or sound — and the field is covered by the pause screen. Resuming carries
+// on from the very tick it stopped at.
+const pauseControl = new PauseControl();
+let pauseOverlay: PauseOverlay;
+let touchControlsUI: TouchControls;
 
 // REPLAY VIEWING isolates all live-run side effects. While
 // `viewMode === 'replay'`, update()/renderFrame()
@@ -349,8 +675,63 @@ const replayAutoAdvanceLog: boolean[] = [];
 // Keeps a cleared stage on screen for REPLAY_STAGE_CLEAR_HOLD_TICKS before
 // playback moves on — see update()'s replay branch.
 const replayStageClearHold = new ReplayStageClearHold(REPLAY_STAGE_CLEAR_HOLD_TICKS);
+// THE TITLE DEMO (src/titleDemo.ts): one of the board's best runs, replayed
+// on its own ReplayEngine behind the live Title screen. Only the board is
+// drawn from it (under a veil, with the DEMO tag); the HUD, the title text,
+// the sounds, the input and everything the live run keeps stay the live
+// run's. Stepped once per tick in update(), after the live tick, so the tick
+// that starts a run already draws the live board.
+let titleDemo: TitleDemo<ReplayEngine>;
+let titleDemoLabel: HTMLDivElement;
+let titleDemoWasShown = false;
+let titleDemoLabelShown = false;
 // TIME countdown warning sounds for the live run — see src/timeWarningCue.ts.
 const timeWarningCueTracker = new TimeWarningCueTracker();
+// Impact feedback of the live run (src/fx/): the hit stop that briefly
+// freezes the simulation on a claim, split or miss; the director that times
+// every visual effect and the confirm holds that go with them; and the gate
+// that keeps a GAME OVER confirm from reaching the core before the modal has
+// been drawn. Replay viewing uses none of them.
+const hitStop = new HitStop();
+let fx: FxDirector;
+const gameOverConfirmGate = new GameOverConfirmGate();
+// The HUD's `xN` multiplier, as its own span so the multiplier travelling in
+// after a split can land on it and highlight it (see renderMultiplierFx()).
+let hudMultiplier: HTMLSpanElement;
+// The next stage's multiplier travelling from the field center to the HUD.
+// The HUD sits outside the canvas, so this one effect is a DOM element.
+let multiplierFly: HTMLDivElement;
+let lastMultiplierFlyShadow = '';
+// The live run's HUD SCORE number counting up to the real score after
+// points are added (src/fx/scoreRoll.ts). Ticked next to the director, so it
+// keeps counting through a hit stop. Display only: the high score, the GAME
+// OVER modal, the X share and the ranking all read session.getScore().
+// Replay viewing shows the replay's score as it is.
+const hudScoreRoll = new ScoreRoll();
+// The live STAGE CLEAR result (src/stageResult.ts): the points the current
+// stage scored, from its claim notices, and the count-up shown on the clear
+// screen. Reset when the next stage or a new run starts.
+const stageResultTally = new StageResultTally();
+const stageResultCounter = new StageResultCounter();
+// True on a field small enough (a phone held sideways) that the clear
+// screen drops its blank lines to stay on it — see fitCanvasToViewport().
+let tinyField = false;
+// The field's on-screen width / CANVAS_WIDTH, for the effects' smallest
+// text size (Renderer.setFxTextMinFontPx()). Updated on every resize.
+let fieldDisplayScale = 1;
+// The field's on-screen width and height (CSS px), for the hint line's text size.
+let fieldCssWidth = CANVAS_WIDTH;
+let fieldCssHeight = CANVAS_HEIGHT;
+// The DEMO tag is the small one (applyTitleDemoLabelSize()), and sits in the
+// field's top-left corner rather than the bottom-left (placeTitleDemoLabel()).
+let titleDemoLabelCompact = false;
+let titleDemoLabelAtTop = false;
+let hudScore: HTMLSpanElement;
+// The HUD's lives marks. Line height 0: the marks come from a fallback font
+// whose taller metrics would otherwise make the HUD line 1px taller, and with
+// it shrink the field.
+let hudLives: HTMLSpanElement;
+let lastHudScoreRolling = false;
 let gameRoot: HTMLDivElement;
 let hudRow: HTMLDivElement;
 let canvas: HTMLCanvasElement;
@@ -373,20 +754,39 @@ let lastInput: SessionInput = { dx: 0, dy: 0, drawHeld: false, slow: false, conf
 // last-displayed values lets the (comparatively expensive) textContent write
 // be skipped whenever nothing changed, instead of re-serializing + reflowing
 // the same string 60 times a second.
-let lastHudStage = -1;
-let lastHudScore = -1;
-let lastHudHi = -1;
-let lastHudOccupancy = -1;
-let lastHudLives = -1;
-let lastHudMultiplier = -1;
-// TIME changes far more often than the fields above (roughly every 6 ticks,
-// a decisecond at TICK_RATE=60) — cached as a string (not raw ticks) so the
-// comparison above stays a single strict-equality check per field, same
-// shape as every other lastHud* cache.
-let lastHudTime = '';
-// Whether the last-30-seconds warning color was applied on the previous write — see updateHud()'s doc
-// comment for why this is tracked separately from lastHudTime.
-let lastHudTimeWarning = false;
+// Every displayed value joined into one string (TIME included, which changes
+// roughly every 6 ticks), so "nothing changed" is a single comparison. ''
+// forces the next write.
+let lastHudKey = '';
+// The occupancy gauge's last-written state, cached the same way.
+let lastGaugeKey = '';
+
+// In-play hints (src/hints/): which one shows, its line over the field
+// (src/ui/hintBar.ts) and its mark on the field (src/render/hintLayer.ts).
+// Live play only, and display only — they read what a tick did, never feed
+// anything back into the input, the run or the score.
+const hintSeen = new HintSeenStore();
+const hintDirector = new HintDirector<Ember>(hintSeen);
+let hintBar: HintBar;
+let lastHintMarks: HintMarkShapes | null = null;
+// The touch sentences and the button glow (src/input/touch.ts's check).
+let touchDevice = false;
+// prefers-reduced-motion: the hint's line, marks and glow hold still.
+let reducedMotion = false;
+
+// The player's best when the live run started. The live high score follows
+// the score during play, so the HUD's goal slot and the GAME OVER modal's NEW
+// RECORD compare against this instead. Set on page load and whenever a fresh
+// run begins (GAME OVER -> Title).
+let runBestAtStart = 0;
+// The HUD multiplier's emphasis after it rises or falls back to x1 (live
+// play only — see src/hudText.ts).
+const multiplierEmphasis = new MultiplierEmphasis();
+let lastMultiplierStyleKey = '';
+// The occupancy gauge between the HUD row and the field (see getGaugeElements()).
+let hudGauge: HTMLDivElement;
+let hudGaugeFill: HTMLDivElement;
+let hudGaugeGoal: HTMLDivElement;
 
 // Whether the HUD is currently rendering as two stacked lines (narrow
 // viewports, see HUD_TWO_LINE_MAX_VIEWPORT_WIDTH_PX) instead of one. Kept as
@@ -396,6 +796,9 @@ let lastHudTimeWarning = false;
 // frame right after a resize would wrongly skip rewriting the DOM into the
 // new line layout).
 let hudTwoLineMode = false;
+// The difficulty of the shown session the HUD's line count was last decided
+// for (syncHudDifficulty(), measureRequiredSingleLineWidth()), or null before init().
+let hudLayoutDifficulty: Difficulty | null = null;
 
 // Same idea for the Title/StageClear/GameOver overlay (docs/plan.md §13.3
 // P3): `null` is a sentinel distinct from any real screenText() result
@@ -425,28 +828,79 @@ let runMode: RunMode = 'normal';
 // (runMode.ts's resolveHudModePrefix()). Unused outside runMode === 'seeded'.
 let seededRunSeed: number | undefined;
 
-// RANKING: records every
-// PLAYING-tick input of the *current* run. Read exactly once per run, at the
-// gameover edge in renderFrame(), where its contents are frozen into a
-// RunSubmissionSnapshot handed to src/ui/ranking.ts — that module never
-// touches this recorder (or the live session) itself, so a submission can
-// never accidentally describe the *next* run. See update()'s own
-// seed-requeuing/recorder-reset comments below.
-const inputRecorder = new InputRecorder();
+// RANKING: the live run's recorded PLAYING-tick inputs, its successful area
+// claims and its per-run id (src/retryFlow.ts's LiveRunTracker). Read exactly
+// once per run, at the gameover edge in renderFrame(), where its contents are
+// frozen into a RunSubmissionSnapshot handed to src/ui/ranking.ts — that
+// module never touches the recorder (or the live session) itself, so a
+// submission can never accidentally describe the *next* run. The id moves on
+// at the one boundary where a brand-new run begins (GameOver -> Title), so an
+// /api/ranking response that arrives after the player has already moved on
+// is recognized as belonging to a run that no longer exists and discarded —
+// see src/ui/ranking.ts's decideSubmissionOffer().
+const runTracker = new LiveRunTracker();
 
-// Successful area claims in the live run so far. Reset together with the
-// recorder; frozen into the gameover snapshot so src/ui/ranking.ts can tell a
-// run that exceeds MAX_VERIFIED_CLAIMS (which the server's audit would only
-// reject days later, silently) before ever offering to submit it.
-let runClaims = 0;
+// What the GAME OVER modal's RETRY / TITLE button asked for. Passed to the
+// core as confirm on every live tick until the run leaves GAME OVER — past
+// the confirm holds the keyboard and the field are under, and past the
+// core's own release gate dropping the first ones.
+let modalAction: 'retry' | 'title' | null = null;
 
-// Monotonic per-run identifier. Bumped at the one boundary
-// where a brand-new run begins (GameOver -> Title, i.e. GameSession's own
-// resetToFreshRun()), so an /api/ranking response that arrives after the
-// player has already moved on can be recognized as belonging to a run that
-// no longer exists and discarded — see src/ui/ranking.ts's
-// decideSubmissionOffer().
-let runId = 1;
+// HOW TO PLAY's PLAY WITH HINTS asked for a run (src/ui/howToPlay.ts). Taken
+// by the next live tick as a confirm on the Title screen — the same path a
+// key or a tap there takes — past the wait HOW TO PLAY holds confirms for
+// after it closes.
+let titleStartRequested = false;
+
+// The live ticks that passed the core a confirm (window.__game__'s
+// getConfirmCount(), for the E2E suite: a held key must add none).
+let liveConfirmCount = 0;
+
+// THE PLAY LOG (src/playLog/, src/storage/playLog.ts): every live run that
+// plays on to GAME OVER is recorded tick by tick from the notices the impact
+// feedback drains, and kept on this device only if it is a normal run with
+// no debug override at any point — not an EASY run, a `?seed=` run, a ranking replay or
+// the Title demo, which never go through updateLive(). Read-only: it never
+// feeds anything back into the run, its inputs or its ranking submission.
+// A run left before GAME OVER (the page closed or reloaded) is not kept. The
+// debug panel's PLAY LOG section reads and clears it.
+const playLog = new PlayLogStore();
+const playLogRecorder = new PlayLogRecorder();
+const playLogListeners: Array<() => void> = [];
+
+// THE GAME OVER RESULT (src/gameOverResult.ts): what the live run did, from
+// its claim notices (reset where the play log starts a run), and the modal's
+// count-up, highlight and best line with their sounds, from the frame the
+// modal appears. Display and sound only: the retry, the share and the
+// ranking never read its counting score, and only the ranking submission
+// panel waits for it (opening after its last line). It stops as soon as
+// the run leaves GAME OVER or a replay opens, so no cue of it plays after.
+const gameOverTally = new GameOverRunTally();
+const gameOverResult = new GameOverResult();
+// THE EASY SUGGESTION: decided on the tick the live run reaches GAME OVER,
+// from the play log it was just kept in (src/playLog/summary.ts's
+// suggestsEasy()); shown in the highlight's place on the GAME OVER screen.
+// Taking TITLE from that screen once the suggestion is on it (easyPromptShown)
+// lights the Title screen's MODE toggle until it is pressed or a run starts;
+// TITLE before the suggestion appears, or RETRY, does nothing more.
+let easySuggested = false;
+// The suggestion has been seen on this GAME OVER screen: it appears a little
+// after the screen does (src/gameOverResult.ts), and TITLE works before that;
+// while the ranking submission form covers the modal, it is not seen yet.
+let easyPromptShown = false;
+
+// THE MUSIC (src/audio/bgm.ts): on every page, playing through the sound
+// effects' context and master gain, so the SOUND button turns both on and off
+// together (muted, it creates nothing). The debug panel's BGM switch (on on
+// every page load, never saved) can silence it alone while developing. It
+// follows the live run from renderFrame(): on through play and STAGE CLEAR,
+// off while paused, muted, on GAME OVER (fading under the close), Title, a
+// replay and the Title demo. Every way it stops also stops it at once from
+// where it happens (stopBgmIfUnwanted()), so it never waits for a frame — a
+// hidden page draws none. Each stage has its tune (bgmTrackForStage()): a
+// run starts the first stage's from the top, and the tick a later stage's
+// play starts from STAGE CLEAR switches to that stage's.
+let bgm: BgmPlayer | null = null;
 
 // Generates a fresh per-run seed for 'normal' mode with `crypto.getRandomValues()`, not
 // Math.random — a normal run's board should be unpredictable/unseedable by
@@ -479,9 +933,19 @@ function formatTicks(ticks: number): string {
 // an SPA embedded context but a full-page app. Should remounting become
 // necessary in the future, design and call explicit dispose() methods then.
 function init(): void {
+  // The page language, before any UI is built: `?lang=ja` / `?lang=en`, else
+  // the browser's first language (src/i18n/). Fixed for the page load.
+  setLocale(detectLocale(window.location.search, navigator.languages ?? []));
+  document.documentElement.lang = getLocale();
+
   explicitSeedParam = parseSeedParam(new URLSearchParams(window.location.search).get('seed'));
   const highScore = loadHighScore();
+  // The Title screen's last choice (NORMAL when none is saved or storage is
+  // unavailable): the first run is built at it, and every later one until
+  // the toggle picks another.
+  const difficulty = loadDifficulty();
   lastSavedHighScore = highScore;
+  runBestAtStart = highScore;
   if (explicitSeedParam !== undefined) {
     // `?seed=` pins the whole page load to a 'seeded' run — GameSession's
     // own internal reset (triggered by its 'gameover' case) reuses this
@@ -489,27 +953,77 @@ function init(): void {
     // so main.ts never needs to swap `session` mid-page-load.
     runMode = 'seeded';
     seededRunSeed = explicitSeedParam;
-    session = new GameSession({ seed: explicitSeedParam, highScore });
+    session = new GameSession({ seed: explicitSeedParam, highScore, captureFeedback: true, difficulty });
   } else {
     // Normal mode's initial Title board is seeded here, at construction —
     // stage 1's board is already fully built by the time Title is ever
     // shown (see GameSession's own module doc comment), so there's no later
     // "Title -> Playing" moment this could instead hook into.
-    session = new GameSession({ seed: generateNormalRunSeed(), highScore });
+    session = new GameSession({ seed: generateNormalRunSeed(), highScore, captureFeedback: true, difficulty });
   }
+  // captureFeedback only adds read-only claim/miss notices for the impact
+  // feedback below; the run itself (and so its replay) is unchanged.
+  // The page's first run; every later one starts in updateLive()'s onFreshRun.
+  playLogRecorder.startRun();
+  gameOverTally.reset();
+
+  // Reduced motion (the OS/browser setting): no shake and no flash. Read at
+  // start-up and followed when it changes.
+  const reducedMotionQuery =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  reducedMotion = reducedMotionQuery?.matches ?? false;
+  fx = new FxDirector(fxParams, { reducedMotion });
+  reducedMotionQuery?.addEventListener('change', (event) => {
+    reducedMotion = event.matches;
+    fx.setReducedMotion(event.matches);
+  });
+  touchDevice = isTouchCapableDevice();
 
   gameRoot = getGameRootElement();
   hudRow = getHudRowElement(gameRoot);
   const canvasWrap = getCanvasWrapElement(gameRoot);
   canvas = getCanvasElement(canvasWrap);
   renderer = new Renderer(canvas);
-  keyboard = new KeyboardInput();
+  // The pause keys, listened to before KeyboardInput below so that a press
+  // which pauses or resumes is already known to it as one to leave out.
+  window.addEventListener('keydown', (event) => {
+    applyPauseToggle(pauseControl.keyDown(event.code, event.repeat, pauseContext()));
+  });
+  window.addEventListener('keyup', (event) => pauseControl.keyUp(event.code));
+  window.addEventListener('blur', () => pauseControl.releaseKeys());
+  // A key pressed while HOW TO PLAY is open is not counted until it is
+  // released (src/ui/howToPlay.ts), so holding the key that closed it does
+  // not start a run. A pause key that pauses or resumes is not counted
+  // either: it never reaches the run as a press (src/pause.ts).
+  keyboard = new KeyboardInput(
+    window,
+    (event) =>
+      (howToPlay?.keepsKeyDown(event) ?? false) ||
+      pauseControl.consumesKey((event as KeyboardEvent).code, pauseContext())
+  );
   // Touch controls dispatch synthetic KeyboardEvents on `window` (their
   // default target), exactly matching KeyboardInput's own listening target
   // above — see input/touch.ts's module comment for how that's a complete
   // merge of the two input sources with no extra glue code.
-  new TouchControls(window, document.body);
+  touchControlsUI = new TouchControls(window, document.body, {
+    onPause: () => applyPauseToggle(pauseControl.toggle(pauseContext())),
+  });
+  // The page hidden (another tab, the app in the background) pauses a
+  // playing run; coming back leaves it paused. The draw tone and the
+  // music stop at once, whatever is on screen: no frame is drawn while the
+  // page is hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    if (pauseControl.requestPause(pauseContext())) applyPauseToggle('paused');
+    sfx.setDrawing(false, null);
+    stopBgmIfUnwanted();
+  });
   attachTapToConfirm(canvas);
+  // English-only text keeps the Latin monospace on a Japanese page, so the
+  // HUD and the field keep their size (src/ui/sentenceFont.ts).
+  markEnglishOnly(gameRoot);
+  const touchControls = document.getElementById('touch-controls');
+  if (touchControls) markEnglishOnly(touchControls);
 
   // Initially appended to #hud-row in this order (hud, creditLink, then
   // muteButton). Bottom mode retains that visual order; side mode fixes the
@@ -519,6 +1033,23 @@ function init(): void {
   hudLine1 = getHudLineElement(hud, 'hud-line1');
   hudLine2 = getHudLineElement(hud, 'hud-line2');
   hudLine3 = getHudLineElement(hud, 'hud-line3');
+  hudMultiplier = document.createElement('span');
+  hudMultiplier.id = 'hud-multiplier';
+  // Bold and drawn larger by a transform, so the line keeps its height.
+  hudMultiplier.style.display = 'inline-block';
+  hudMultiplier.style.fontWeight = 'bold';
+  hudMultiplier.style.transformOrigin = 'center';
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  ({ gauge: hudGauge, fill: hudGaugeFill, goal: hudGaugeGoal } = getGaugeElements(canvasWrap));
+  hudScore = getHudScoreElement();
+  hudLives = document.createElement('span');
+  hudLives.id = 'hud-lives';
+  hudLives.style.lineHeight = '0';
+  multiplierFly = getMultiplierFlyElement();
+  markEnglishOnly(multiplierFly);
+  // The effects' display face: requested now so it is ready by the first
+  // claim; the effects fall back to monospace until then (or if it fails).
+  loadFxFonts();
   // Matches `hudTwoLineMode`'s own `false` initial value (module scope)
   // until the real, geometry-based decision runs — see updateHudMode() —
   // from the fitCanvasToViewport() call below (which needs the credit
@@ -527,11 +1058,22 @@ function init(): void {
   hudLine2.style.display = 'none';
   hudLine3.style.display = 'none';
   screen = getScreenElement(canvasWrap);
-  gameOverModal = initGameOverModal(canvasWrap);
+  hintBar = new HintBar(canvasWrap);
+  pauseOverlay = new PauseOverlay({
+    anchor: canvasWrap,
+    touch: touchDevice,
+    onResume: () => {
+      if (pauseControl.requestResume()) applyPauseToggle('resumed');
+    },
+  });
+  gameOverModal = initGameOverModal(canvasWrap, {
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
+  });
   rankingUI = initRankingUI({
     anchor: canvasWrap,
     getSession: () => session,
-    getRunId: () => runId,
+    getRunId: () => runTracker.getRunId(),
     getRulesetVersion: () => RULESET_VERSION,
     getReplayFormatVersion: () => REPLAY_FORMAT_VERSION,
     onReplayStart: enterReplayMode,
@@ -550,10 +1092,87 @@ function init(): void {
       // Bounded so it can never grow without limit.
       if (replayAutoAdvanceLog.length < 20) replayAutoAdvanceLog.push(autoAdvance);
     },
+    // The submission panel covers the modal: its own RETRY / TITLE ask for
+    // the same transition as the modal's buttons.
+    onRetry: () => requestModalAction('retry'),
+    onTitle: () => requestModalAction('title'),
+    // The panel opens over the GAME OVER result once it has been read.
+    isSubmissionOfferDue: () => gameOverResult.isSubmissionOfferDue(),
+    // One panel at a time over the Title screen.
+    onListOpen: () => howToPlay.close(),
+    // While the list is open, the Title menu's buttons take no mouse or touch press.
+    onListShownChange: (shown) => titleMenu?.setPointerBlocked(shown),
   });
-  rankingUI.mountTitleButton();
+  titleMenu = new TitleMenu({
+    anchor: canvasWrap,
+    getScreen: () => screen,
+    getDemoLabel: () => titleDemoLabel,
+    placeDemoLabel: placeTitleDemoLabel,
+    // Under the field it must stay inside #game-root (which clips what
+    // overflows it) and on screen.
+    getVisibleRect: () => {
+      const root = gameRoot.getBoundingClientRect();
+      return {
+        left: Math.max(root.left, 0),
+        top: Math.max(root.top, 0),
+        right: Math.min(root.right, window.innerWidth),
+        bottom: Math.min(root.bottom, window.innerHeight),
+      };
+    },
+    getAvoidRects: titleMenuAvoidRects,
+  });
+  rankingUI.mountTitleButton(titleMenu.getElement());
+  howToPlay = new HowToPlayUI({
+    parent: titleMenu.getElement(),
+    touch: touchDevice,
+    onOpen: () => rankingUI.hideList(),
+    resetHints: resetSeenHints,
+    startRun: () => {
+      // A press of a button on the panel, a user gesture: the sound may
+      // start, as on a key or a tap on the Title screen.
+      sfx.resume();
+      titleStartRequested = true;
+    },
+  });
+  difficultyToggle = new DifficultyToggle({
+    parent: titleMenu.getElement(),
+    onToggle: toggleDifficulty,
+  });
+  difficultyToggle.setDifficulty(session.getNextDifficulty());
+  // Left to right, and in this order for Tab.
+  titleMenu.setButtons([howToPlay.getButton(), rankingUI.getTitleButton()!, difficultyToggle.getButton()], () =>
+    difficultyToggle.reserveWidth()
+  );
+  // The board's entry score for the HUD's goal slot: asked for once now, and
+  // refreshed by each GAME OVER's own ranking check — never during play. A
+  // seeded run's goal slot shows the high score, so it does not need it.
+  if (runMode === 'normal') rankingUI.loadRankInThreshold();
+  // The Title demo plays from that same board (no request of its own for it):
+  // each candidate's replay is fetched once and checked against this build's
+  // versions, like the ranking's REPLAY. Failures are silent: the Title
+  // screen simply keeps its still board.
+  titleDemoLabel = getTitleDemoLabelElement(canvasWrap);
+  titleDemo = new TitleDemo<ReplayEngine>({
+    fetchReplay: async (id) => {
+      const res = await fetch(`/api/ranking/${encodeURIComponent(id)}/replay`);
+      return res.ok ? ((await res.json()) as unknown) : null;
+    },
+    isPlayable: (payload): payload is { seed: number; rleBase64: string } =>
+      isReplayPayloadPlayable(payload, RULESET_VERSION, REPLAY_FORMAT_VERSION),
+    decode: base64ToBytes,
+    createEngine: (record, signal) => ReplayEngine.create(record.seed, record.rle, { signal }),
+    startDelayTicks: TITLE_DEMO_START_DELAY_TICKS,
+    endHoldTicks: TITLE_DEMO_END_HOLD_TICKS,
+    stageClearHoldTicks: REPLAY_STAGE_CLEAR_HOLD_TICKS,
+  });
 
   sfx = new SfxEngine(loadMuted());
+  // The music plays through the sound effects' context and master gain, so
+  // it follows the SOUND button; switched on from the start (only the debug
+  // panel's BGM switch turns it off).
+  const music = new BgmPlayer(() => sfx.getAudioGraph());
+  music.setEnabled(true);
+  bgm = music;
   creditLink = getCreditLinkElement(hudRow);
   muteButton = getMuteButtonElement(hudRow, toggleMute);
   updateMuteButtonLabel();
@@ -569,11 +1188,88 @@ function init(): void {
   window.addEventListener('pointerup', () => sfx.resume());
   window.addEventListener('touchend', () => sfx.resume());
 
+  hudLayoutDifficulty = session.getDifficulty();
   fitCanvasToViewport();
   window.addEventListener('resize', fitCanvasToViewport);
   window.addEventListener('orientationchange', fitCanvasToViewport);
 
-  window.__game__ = { session, sfx, getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog] };
+  window.__game__ = {
+    session,
+    sfx,
+    fx,
+    hitStop,
+    getReplayAutoAdvanceLog: () => [...replayAutoAdvanceLog],
+    getHint: () => {
+      const view = viewMode === 'live' ? hintDirector.current() : null;
+      return view ? { id: view.id, textKey: view.textKey, glow: view.glow, age: view.age } : null;
+    },
+    getHintMarks: () => lastHintMarks,
+    getFxTextBoxes: () => renderer.getLastFxTextBoxes(),
+    getStartCue: () => renderer.getLastStartCue(),
+    resetHints: resetSeenHints,
+    getTitleDemo: () => {
+      const demoSession = shownTitleDemoEngine()?.getSession() ?? null;
+      const marker = demoSession?.getGame().getMarker().getPosition() ?? null;
+      return {
+        state: titleDemo.getState(),
+        shown: demoSession !== null,
+        ticks: demoSession?.getTotalTicks() ?? null,
+        marker: marker ? { x: marker.x, y: marker.y } : null,
+        veil: renderer.getLastVeilAlpha(),
+        status: demoSession?.getStatus() ?? null,
+        surgeLevel: demoSession?.getGame().getWispSurgeLevel() ?? null,
+      };
+    },
+    getWispSurgeDraw: () => ({ rings: renderer.getLastSurgeRings(), headColors: renderer.getLastWispHeadColors() }),
+    isPaused: () => pauseControl.isPaused(),
+    getConfirmCount: () => liveConfirmCount,
+    getPlayLog: () => playLog.list(),
+    getGameOverResult: () => {
+      const view = gameOverResult.view();
+      const best = view.bestLine;
+      return {
+        active: view.active,
+        age: gameOverResult.getAge(),
+        lastLineAge: gameOverResult.lastLineAge(),
+        offerAge: gameOverResult.submissionOfferAge(),
+        score: view.score,
+        finished: view.finished,
+        highlight: view.highlight && view.highlightShown ? gameOverHighlightText(view.highlight) : null,
+        prompt: view.prompt && view.promptShown,
+        best:
+          !best || !view.bestLineShown
+            ? null
+            : best.kind === 'new-record'
+              ? 'new-record'
+              : best.near
+                ? 'to-best-near'
+                : 'to-best',
+      };
+    },
+    getRankingOffer: () => {
+      const checkPending = rankingUI.isSubmissionCheckPending();
+      return {
+        checkPending,
+        waiting: rankingUI.isSubmissionOfferWaiting(),
+        panelShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
+      };
+    },
+    getSfxLog: () => sfx.getLog(),
+    getBgmState: () =>
+      bgm?.state() ?? {
+        enabled: false,
+        playing: false,
+        generation: 0,
+        track: bgmTrackForStage(1),
+        intensity: 0,
+        bpm: 0,
+        scheduled: 0,
+        step: 0,
+        liveNodes: 0,
+        lastBatch: null,
+        lastStop: null,
+      },
+  };
 
   // Debug panel (docs/plan.md §6 M10 / §12.4): dev-tuning only, never
   // shipped to players. The `import.meta.env.DEV` check is a compile-time
@@ -583,7 +1279,31 @@ function init(): void {
   // src/debug/panel.ts and the "no debug code in dist/" build check.
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('debug')) {
     void import('./debug/panel').then(({ initDebugPanel }) => {
-      initDebugPanel(() => session, hudRow);
+      debugPanel = initDebugPanel(() => session, hudRow, {
+        params: fxParams,
+        fx,
+        hitStop,
+        playClaim: (claim) => sfx.playClaim(claim),
+        playSplitImpact: () => sfx.playSplitImpact(),
+        playMiss: () => sfx.handleEvents(['miss']),
+      }, resetSeenHints, {
+        getFile: () => playLog.toFile(),
+        clear: () => {
+          playLog.clear();
+          notifyPlayLogChanged();
+        },
+        onChange: (listener) => playLogListeners.push(listener),
+      }, {
+        levels: sfxLevels,
+        applyMaster: () => sfx.applyMasterLevel(),
+        play: playSoundTest,
+        bgm: {
+          isEnabled: () => music.isEnabled(),
+          setEnabled: (on) => music.setEnabled(on),
+          getLevel: () => music.getLevel(),
+          setLevel: (level) => music.setLevel(level),
+        },
+      });
       // The DEBUG badge initDebugPanel() just mounted into hudRow is
       // another non-#hud sibling measureNonHudRowWidth() now has to account
       // for. It mounts asynchronously,
@@ -599,14 +1319,146 @@ function init(): void {
   renderFrame();
 }
 
+// The debug panel's SOUND TEST: one sound by itself, straight to the engine —
+// no effect, no notice, nothing the run or its input sees. Silent while
+// muted: the panel never unmutes.
+function playSoundTest(id: SoundTestId): void {
+  switch (id) {
+    case 'claim-small':
+      return sfx.playClaim({ share: 0.02, speed: 'fast' });
+    case 'claim-mid':
+      return sfx.playClaim({ share: 0.1, speed: 'fast' });
+    case 'claim-large':
+      return sfx.playClaim({ share: 0.3, speed: 'fast' });
+    case 'split':
+      return sfx.playSplitImpact();
+    case 'miss':
+      return sfx.handleEvents(['miss']);
+    case 'stage-clear':
+      return sfx.handleEvents(['stage-clear']);
+    case 'gameover-life':
+      return sfx.playGameOver('life');
+    case 'gameover-time':
+      return sfx.playGameOver('time');
+    case 'count':
+      return sfx.playCountSample();
+    case 'new-record':
+      return sfx.playNewRecord();
+    case 'alarm':
+    case 'beep':
+    case 'beep-high':
+      return sfx.playTimeWarning(id);
+    case 'igniter-spawn':
+      return sfx.handleEvents(['igniter-spawned']);
+    case 'igniter-approach':
+      return sfx.handleEvents(['igniter-approaching']);
+    case 'ember-spawn':
+      return sfx.handleEvents(['ember-spawned']);
+    case 'blaze-spawn':
+      return sfx.handleEvents(['ember-blaze-spawned']);
+    case 'ember-line':
+      return sfx.handleEvents(['ember-entered-line']);
+    case 'ember-out':
+      return sfx.handleEvents(['ember-despawned']);
+    case 'draw':
+      return sfx.playDrawSample();
+  }
+}
+
+// Forgets every seen hint, saved and in memory — the store hintDirector
+// itself reads — so each shows again as on a first play (the debug panel's
+// RESET HINTS, HOW TO PLAY's PLAY WITH HINTS). The director's own counts
+// start over with the run (stepHints()'s 'run').
+function resetSeenHints(): void {
+  hintSeen.reset();
+}
+
+// The live run just reached GAME OVER (see `playLog`): its record is closed,
+// and kept if the run may be (a normal NORMAL-difficulty run no debug
+// override touched — src/retryFlow.ts's keepsInPlayLog()). Called on the tick
+// the status turns 'gameover', not when the modal appears after the
+// game-ending miss. True when the run was kept.
+function finishPlayLogRun(): boolean {
+  const record = playLogRecorder.finish({
+    stage: session.getStage(),
+    score: session.getScore(),
+    end: session.getGameOverReason() ?? 'life',
+    endedAt: Date.now(),
+  });
+  if (!record || !keepsInPlayLog(session, runMode)) return false;
+  playLog.append(record);
+  notifyPlayLogChanged();
+  return true;
+}
+
+function notifyPlayLogChanged(): void {
+  for (const listener of playLogListeners) listener();
+}
+
+// The Title screen's MODE toggle was pressed: the other difficulty is picked
+// and saved, and the run waiting on Title is built again at it, on the same
+// seed — its lives, its Wisps' speed, the HUD and the board all follow at
+// once, and starting then plays what is shown. Only on the live Title screen
+// (the toggle shows nowhere else); a Title demo playing behind it carries on.
+function toggleDifficulty(): void {
+  if (viewMode !== 'live' || replayEngine !== null || session.getStatus() !== 'title') return;
+  const next: Difficulty = session.getNextDifficulty() === 'easy' ? 'normal' : 'easy';
+  saveDifficulty(next);
+  session.setNextDifficulty(next);
+  session.rebuildTitleRun();
+  // The `?debug` panel shows the rebuilt run's values (its Wisp speed is the
+  // new difficulty's).
+  debugPanel?.refresh();
+  difficultyToggle.setDifficulty(next);
+  difficultyToggle.setAttention(false);
+  // The board is a new one: the fill reveal must not compare it with the last.
+  renderer.resetBoard();
+  lastHudKey = '';
+}
+
 function toggleMute(): void {
   const muted = sfx.toggleMuted();
   saveMuted(muted);
   updateMuteButtonLabel();
+  stopBgmIfUnwanted();
 }
 
+// What decides whether the live run may be paused now (src/pause.ts): live
+// play only — never Title (or its demo), STAGE CLEAR, GAME OVER or a replay.
+function pauseContext(): PauseContext {
+  return { live: viewMode === 'live' && replayEngine === null, status: session.getStatus() };
+}
+
+// The run was just paused or resumed (a key, the PAUSE button, the page
+// hidden). Pausing stops the draw tone and the music at once.
+// Resuming lines the loop's clock up with now and drops the leftover
+// fraction of a tick, so the time spent paused never turns into ticks: the
+// run carries on from the tick it stopped at. The pause screen, the PAUSE
+// button and the music starting again follow in renderFrame().
+function applyPauseToggle(change: PauseToggle | null): void {
+  if (change === 'paused') {
+    sfx.setDrawing(false, null);
+    stopBgmIfUnwanted();
+  } else if (change === 'resumed') {
+    lastTime = performance.now();
+    accumulator = 0;
+  }
+}
+
+// The sound toggle reads the current state: SOUND: OFF while muted, SOUND: ON
+// otherwise.
 function updateMuteButtonLabel(): void {
-  muteButton.textContent = sfx.isMuted() ? 'UNMUTE' : 'MUTE';
+  muteButton.textContent = sfx.isMuted() ? t('sound.off') : t('sound.on');
+}
+
+// data-attention="true" makes index.html's CSS pulse a glow around the sound
+// toggle (a steady glow under prefers-reduced-motion: reduce). A box-shadow
+// only, so the button's box and the HUD row never move. A no-op unless it
+// changes.
+function setMuteButtonAttention(on: boolean): void {
+  if ((muteButton.dataset.attention === 'true') === on) return;
+  if (on) muteButton.dataset.attention = 'true';
+  else delete muteButton.dataset.attention;
 }
 
 function updateTouchLayout(): void {
@@ -639,11 +1491,42 @@ function updateTouchLayout(): void {
     hudRow.appendChild(creditLink);
     hudRow.appendChild(muteButton);
   }
+  // Side mode sets a smaller font on the button (index.html), so its reserved
+  // width is measured again for where it now is.
+  reserveMuteButtonWidth(muteButton);
+}
+
+// The modal's buttons: only meaningful while the live run is on GAME OVER.
+// RETRY is dropped (not kept for later) while a submission panel waits to
+// open (acceptsModalAction()).
+function requestModalAction(action: 'retry' | 'title'): void {
+  if (viewMode !== 'live' || session.getStatus() !== 'gameover') return;
+  if (!acceptsModalAction(action, currentRetryHold())) return;
+  modalAction = action;
+}
+
+// What holds a GAME OVER confirm from the keyboard, the field and the touch
+// buttons this tick (src/fx/liveTick.ts's GameOverConfirmGate): the guard
+// after the modal appears and the ranking offer for the run that just ended.
+function currentRetryHold(): RetryHold {
+  const checkPending = rankingUI.isSubmissionCheckPending();
+  return {
+    guardTicks: fxParams.retryConfirmGuardTicks,
+    checkPending,
+    checkWaitMaxTicks: fxParams.retryOfferWaitMaxTicks,
+    formShown: !checkPending && rankingUI.isSubmissionBlockingRetry(),
+    offerWaiting: rankingUI.isSubmissionOfferWaiting(),
+  };
+}
+
+/** What decides the board on screen now (src/replayView.ts's BoardSources). */
+function boardSources(): BoardSources {
+  return { viewMode, live: session, replay: replayEngine, titleDemo };
 }
 
 /** The GameSession the render/HUD layer should currently read from — the live `session`, or (while viewing a replay) `replayEngine`'s own session. */
 function currentSession(): GameSession {
-  return viewMode === 'replay' && replayEngine ? replayEngine.getSession() : session;
+  return activeBoardSession(boardSources());
 }
 
 // REPLAY VIEWING mode switches (see `viewMode`'s module doc comment).
@@ -651,17 +1534,35 @@ function enterReplayMode(engine: ReplayEngine): void {
   viewMode = 'replay';
   replayEngine = engine;
   replayAutoAdvance = true;
+  // A run asked for by PLAY WITH HINTS does not start behind the replay.
+  titleStartRequested = false;
   replayStageClearHold.reset();
   timeWarningCueTracker.reset();
   // Replays are silent, so stop any in-progress
   // continuous draw tone left over from live play — otherwise the live
   // run's audio state leaks into playback.
   sfx.setDrawing(false, null);
+  // The music too, at once.
+  stopBgmIfUnwanted();
   gameOverModal.hide();
   gameOverModalShown = false;
+  gameOverResult.stop();
+  // The live run's impact feedback does not carry into the replay.
+  hitStop.clear();
+  fx.reset();
+  gameOverConfirmGate.reset();
+  renderer.resetBoard();
+  multiplierEmphasis.reset();
+  renderMultiplierFx(null);
+  // No hints over a replay; what the live run has seen stays as it is.
+  hintDirector.reset();
+  hintBar.hide();
+  lastHintMarks = null;
+  renderer.setHintMarks(null);
   // Force the next renderFrame() to rewrite the HUD/screen text (they were
   // last written for the live session and must not be left stale).
-  lastHudStage = -1;
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -672,7 +1573,11 @@ function exitReplayMode(): void {
   replayStageClearHold.reset();
   // The live run's countdown is tracked afresh after a replay.
   timeWarningCueTracker.reset();
-  lastHudStage = -1;
+  // The live board is back on screen: the fill reveal must not compare it
+  // with the replay's last frame.
+  renderer.resetBoard();
+  lastHudKey = '';
+  lastGaugeKey = '';
   lastScreenText = null;
 }
 
@@ -729,14 +1634,25 @@ function measureNonHudRowWidth(): number {
 // value: a 'seeded' run's `SEED <n>  ` can be measured exactly here rather
 // than guessed at some hypothetical worst case, since unlike SCORE/HI it can
 // never change again once `?seed=` is parsed in init().
+//
+// The HUD's difficulty is that of the session it shows (currentSession()):
+// an EASY run adds its `EASY  ` lead and two more lives marks
+// (hudWorstCaseStatsText()); a NORMAL one measures exactly as before.
+// renderFrame() decides again whenever the shown difficulty changes
+// (syncHudDifficulty()).
 function measureRequiredSingleLineWidth(): number {
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
+  const difficulty = currentSession().getDifficulty();
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
   const probe = document.createElement('span');
   probe.style.position = 'absolute';
   probe.style.visibility = 'hidden';
   probe.style.whiteSpace = 'nowrap';
   probe.style.font = window.getComputedStyle(hud).font;
-  probe.textContent = `${modePrefix}${HUD_WORST_CASE_STATS_TEXT}`;
+  probe.textContent = `${modePrefix}${hudWorstCaseStatsText(initialLivesFor(difficulty))}`;
+  // Measured in the HUD's own language: on a Japanese page, <body> would hand
+  // the probe `lang="ja"`, whose generic monospace may be another face with
+  // another width than the HUD's (src/ui/sentenceFont.ts).
+  markEnglishOnly(probe);
   document.body.appendChild(probe);
   const width = probe.getBoundingClientRect().width;
   document.body.removeChild(probe);
@@ -806,12 +1722,7 @@ function updateHudMode(): void {
   hudTwoLineMode = twoLine;
   hudLine2.style.display = twoLine ? 'block' : 'none';
   hudLine3.style.display = twoLine ? 'block' : 'none';
-  lastHudStage = -1;
-  lastHudScore = -1;
-  lastHudHi = -1;
-  lastHudOccupancy = -1;
-  lastHudLives = -1;
-  lastHudMultiplier = -1;
+  lastHudKey = '';
   updateHud();
 }
 
@@ -823,9 +1734,12 @@ function updateHudMode(): void {
 function updateHud(): void {
   const activeSession = currentSession();
   const game = activeSession.getGame();
-  const occupancyPercent = Math.min(100, Math.floor(game.getOccupancy() * 100));
+  const occupancyPercent = floorPercent(game.getOccupancy());
+  const goalPercent = floorPercent(game.getRequiredOccupancy());
   const stage = activeSession.getStage();
-  const score = activeSession.getScore();
+  // Live play shows the counting-up value; a replay shows its score as is.
+  const score = viewMode === 'replay' ? activeSession.getScore() : hudScoreRoll.value();
+  const scoreRolling = viewMode !== 'replay' && hudScoreRoll.isRolling();
   const hi = activeSession.getHighScore();
   const lives = activeSession.getLives();
   const multiplier = activeSession.getMultiplier();
@@ -833,58 +1747,155 @@ function updateHud(): void {
   // GameSession.getTimeLimitTicks() to 0 — a run-wide countdown, not a per-stage elapsed count.
   const remainingTicks = activeSession.getRemainingTicks();
   const timeStr = formatTicks(remainingTicks);
-  // Last-30-seconds warning: tracked
-  // as its own boolean, separately from `timeStr === lastHudTime` below,
-  // because the crossing tick doesn't always land on a decisecond-bucket
-  // boundary (formatTicks() only changes its displayed string once every 6
-  // ticks) — without this, the color flip could lag up to 5 ticks behind
-  // the instant remainingTicks actually crosses the threshold.
+  // Last-30-seconds warning: part of the cache key on its own, because the
+  // crossing tick doesn't always land on a decisecond-bucket boundary
+  // (formatTicks() only changes its displayed string once every 6 ticks) —
+  // without it, the color flip could lag up to 5 ticks behind the instant
+  // remainingTicks actually crosses the threshold.
   const timeWarning = remainingTicks <= HUD_TIME_WARNING_TICKS;
+  // The goal slot (src/hudGoal.ts): the high score for a seeded run and a
+  // replay, otherwise the next target, worked out from the REAL score (not
+  // the counting-up display value).
+  // A first play has no best to chase until its first point: plain HI then.
+  const noBestYet = runBestAtStart === 0 && activeSession.getScore() === 0;
+  // The difficulty of the session shown: a ranking replay's is NORMAL even
+  // while EASY is picked. An EASY run chases nothing: its score is never a
+  // best or a ranking entry, so the slot shows the NORMAL high score.
+  const difficulty = activeSession.getDifficulty();
+  const goalIsHiScore = viewMode === 'replay' || runMode === 'seeded' || difficulty === 'easy' || noBestYet;
+  const goal = hudGoalText({
+    mode: goalIsHiScore ? 'hi' : 'chase',
+    score: activeSession.getScore(),
+    hiScore: hi,
+    bestAtStart: runBestAtStart,
+    rankInThreshold: rankingUI.getRankInThreshold(),
+  });
 
-  if (
-    stage === lastHudStage &&
-    score === lastHudScore &&
-    hi === lastHudHi &&
-    occupancyPercent === lastHudOccupancy &&
-    lives === lastHudLives &&
-    multiplier === lastHudMultiplier &&
-    timeStr === lastHudTime &&
-    timeWarning === lastHudTimeWarning
-  ) {
-    return;
+  // The SCORE number glows cyan while it counts up. A text-shadow only, so
+  // the HUD's line height and width stay as they are.
+  if (scoreRolling !== lastHudScoreRolling) {
+    lastHudScoreRolling = scoreRolling;
+    hudScore.style.textShadow = scoreRolling ? `0 0 6px ${COLOR_FX_NEON_CYAN}, 0 0 12px ${COLOR_FX_NEON_CYAN}` : '';
   }
-  lastHudStage = stage;
-  lastHudScore = score;
-  lastHudHi = hi;
-  lastHudOccupancy = occupancyPercent;
-  lastHudLives = lives;
-  lastHudMultiplier = multiplier;
-  lastHudTime = timeStr;
-  lastHudTimeWarning = timeWarning;
 
-  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal'
-  // (byte-identical to before seeded-run support existed, including in
-  // two-line mode's lines 1-2 — never touched here at all — which the
-  // mobile-viewport E2E test asserts stays unclipped), `SEED <n>` for a
-  // `?seed=` run.
-  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed });
-  // Reset every line's color to its inherited default first, then apply the warning color only to
-  // whichever line actually carries TIME this frame — necessary because a
-  // HUD-mode flip (updateHudMode()) can move TIME from hudLine1 to hudLine3
-  // (or back) between one write and the next, and a stale inline color left
-  // on the line that *used* to carry TIME would otherwise persist.
+  updateGauge(occupancyPercent, goalPercent);
+
+  const key = [stage, score, hi, goal, occupancyPercent, goalPercent, lives, multiplier, timeStr, timeWarning, hudTwoLineMode, difficulty].join('|');
+  if (key === lastHudKey) return;
+  lastHudKey = key;
+
+  // Mode prefix (runMode.ts's resolveHudModePrefix()): '' for 'normal',
+  // `SEED <n>  ` for a `?seed=` run, led by `EASY  ` for an EASY one.
+  const modePrefix = resolveHudModePrefix(runMode, { seededRunSeed, difficulty });
+  const { lines, timeLine } = hudLines(
+    {
+      modePrefix,
+      stage,
+      hiScore: hi,
+      goal,
+      goalIsHiScore,
+      time: timeStr,
+      occupancyPercent,
+      goalPercent,
+    },
+    hudTwoLineMode
+  );
+  // The `xN` multiplier and the SCORE number are their own spans (see
+  // `hudMultiplier` / `hudScore`); the lines' text is unchanged by them.
+  hudMultiplier.textContent = t('hud.multiplier', multiplier);
+  hudScore.textContent = String(score);
+  // One slot per life the shown run started with: five for an EASY run.
+  hudLives.textContent = livesText(lives, initialLivesFor(difficulty));
+  const lineElements = hudTwoLineMode ? [hudLine1, hudLine2, hudLine3] : [hudLine1];
+  lineElements.forEach((el, index) => {
+    el.textContent = '';
+    for (const part of lines[index]) {
+      if (typeof part === 'string') el.append(part);
+      else el.append(part === HUD_SCORE_SLOT ? hudScore : part === HUD_LIVES_SLOT ? hudLives : hudMultiplier);
+    }
+  });
+  // Every line's color is reset first, then the warning color goes only on
+  // whichever line carries TIME this frame — a HUD-mode flip
+  // (updateHudMode()) can move TIME between lines, and a stale inline color
+  // left on the line that *used* to carry it would otherwise persist.
   hudLine1.style.color = '';
   hudLine3.style.color = '';
-  if (hudTwoLineMode) {
-    hudLine1.textContent = `STAGE ${stage}  SCORE: ${score}  HI: ${hi}`;
-    hudLine2.textContent = `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
-    hudLine3.textContent = `${modePrefix}TIME ${timeStr}`;
-    if (timeWarning) hudLine3.style.color = HUD_TIME_WARNING_COLOR;
+  if (timeWarning) lineElements[timeLine].style.color = HUD_TIME_WARNING_COLOR;
+}
+
+// The occupancy gauge: filled to the current share, with a white mark at the
+// goal; the fill turns brighter once HUD_GAUGE_NEAR_GOAL_POINTS or fewer
+// points are left. Shown for replays too (it is the board's state, not an
+// effect).
+function updateGauge(occupancyPercent: number, goalPercent: number): void {
+  const near = goalPercent - occupancyPercent <= HUD_GAUGE_NEAR_GOAL_POINTS;
+  const key = `${occupancyPercent}|${goalPercent}|${near}`;
+  if (key === lastGaugeKey) return;
+  lastGaugeKey = key;
+  hudGaugeFill.style.width = `${occupancyPercent}%`;
+  hudGaugeFill.style.background = near ? HUD_GAUGE_NEAR_COLOR : HUD_GAUGE_FILL_COLOR;
+  hudGaugeFill.style.boxShadow = near ? `0 0 6px ${HUD_GAUGE_NEAR_COLOR}` : 'none';
+  hudGaugeGoal.style.left = `calc(${goalPercent}% - 1px)`;
+  hudGauge.dataset.near = near ? 'true' : 'false';
+}
+
+// Moves the travelling multiplier (after a split) from the canvas center to
+// the HUD's `xN`, then highlights that `xN` — both driven by the director's
+// tick-based progress, so the timing does not depend on the frame rate.
+function renderMultiplierFx(frame: FxFrame | null): void {
+  const fly = frame?.multiplierFly ?? null;
+  if (!fly) {
+    if (multiplierFly.style.display !== 'none') multiplierFly.style.display = 'none';
   } else {
-    hudLine1.textContent =
-      `${modePrefix}STAGE ${stage}  SCORE: ${score}  HI: ${hi}  TIME ${timeStr}  ` +
-      `OCCUPANCY: ${occupancyPercent}%  LIVES: ${lives}  x${multiplier}`;
-    if (timeWarning) hudLine1.style.color = HUD_TIME_WARNING_COLOR;
+    const from = canvas.getBoundingClientRect();
+    const toRect = hudMultiplier.isConnected ? hudMultiplier.getBoundingClientRect() : hud.getBoundingClientRect();
+    const fromX = from.left + from.width / 2;
+    const fromY = from.top + from.height / 2;
+    const toX = toRect.left + toRect.width / 2;
+    const toY = toRect.top + toRect.height / 2;
+    const t = 1 - Math.pow(1 - fly.progress, 3); // ease out
+    const scale = 2.5 - 1.5 * t;
+    multiplierFly.textContent = fly.text;
+    multiplierFly.style.display = 'block';
+    // Its glow splits apart for its first ticks (none with reduced motion).
+    const fontPx = parseFloat(multiplierFly.style.fontSize) || 16;
+    const shadow = multiplierFlyShadow(fly.channelOffset * fontPx);
+    if (shadow !== lastMultiplierFlyShadow) {
+      lastMultiplierFlyShadow = shadow;
+      multiplierFly.style.textShadow = shadow;
+    }
+    multiplierFly.style.transform =
+      `translate(${fromX + (toX - fromX) * t}px, ${fromY + (toY - fromY) * t}px) translate(-50%, -50%) scale(${scale})`;
+  }
+
+  // The HUD multiplier's emphasis (src/hudText.ts's MultiplierEmphasis):
+  // cyan after it rises, the warning colour after it falls back to x1, larger
+  // at first and easing back over HUD_MULTIPLIER_EMPHASIS_TICKS. A rise after
+  // a split starts as the travelling multiplier lands, which is when the
+  // director's own highlight starts too — the emphasis takes its place, so
+  // the two are never shown together. Live play only.
+  const emphasis = frame ? multiplierEmphasis.frame() : null;
+  const highlight = frame?.multiplierHighlight ?? 0;
+  const styleKey = emphasis ? `${emphasis.kind}|${emphasis.strength}` : `h|${highlight}`;
+  if (styleKey === lastMultiplierStyleKey) return;
+  lastMultiplierStyleKey = styleKey;
+  if (emphasis) {
+    const color = emphasis.kind === 'up' ? COLOR_FX_NEON_CYAN : HUD_TIME_WARNING_COLOR;
+    hudMultiplier.dataset.emphasis = emphasis.kind;
+    hudMultiplier.style.color = color;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * emphasis.strength)}px ${color}`;
+    const scale = HUD_MULTIPLIER_BASE_SCALE + HUD_MULTIPLIER_EMPHASIS_EXTRA_SCALE * emphasis.strength;
+    hudMultiplier.style.transform = `scale(${Math.round(scale * 1000) / 1000})`;
+    return;
+  }
+  delete hudMultiplier.dataset.emphasis;
+  hudMultiplier.style.transform = `scale(${HUD_MULTIPLIER_BASE_SCALE})`;
+  if (highlight > 0) {
+    hudMultiplier.style.color = COLOR_FX_SPLIT;
+    hudMultiplier.style.textShadow = `0 0 ${Math.round(4 + 10 * highlight)}px ${COLOR_FX_SPLIT}`;
+  } else {
+    hudMultiplier.style.color = '';
+    hudMultiplier.style.textShadow = '';
   }
 }
 
@@ -921,18 +1932,67 @@ function fitCanvasToViewport(): void {
   const cssHeight = Math.max(1, Math.floor(CANVAS_HEIGHT * scale));
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+  fieldDisplayScale = cssWidth / CANVAS_WIDTH;
+  fieldCssWidth = cssWidth;
+  fieldCssHeight = cssHeight;
+  // A small field gets the GAME OVER modal's tighter spacing, so the whole
+  // modal stays on the field.
+  tinyField = cssHeight < GAMEOVER_MODAL_TINY_BELOW_PX;
+  gameOverModal.setDensity(
+    tinyField ? 'tiny' : cssHeight < GAMEOVER_MODAL_COMPACT_BELOW_PX ? 'compact' : 'normal'
+  );
+  // The ranking submission panel, over the modal, packs tighter on the same
+  // small fields.
+  rankingUI.setSubmitPanelCompact(tinyField);
+  // The pause screen's heading, RESUME and hint stay on a small field.
+  pauseOverlay.setCompact(cssHeight < PAUSE_OVERLAY_COMPACT_BELOW_PX);
+  // The DEMO tag is smaller on a small field.
+  applyTitleDemoLabelSize();
 
   // Keep the HUD row exactly as wide as the canvas's on-screen box
   // (docs/plan.md §12.1: "HUDはフィールドと同じ幅・真上に配置").
   hudRow.style.width = `${cssWidth}px`;
+  // The Title menu is placed last, against the field and the page as they now are.
+  titleMenu?.layout();
 }
 
 // Update logic (fixed timestep)
 function update(): void {
-  // Polled exactly once per tick regardless of mode (KeyboardInput.getInput()
-  // consumes the edge-triggered `confirm` pulse on read — calling it twice
-  // in the same tick would silently swallow a real confirm press).
-  const input = keyboard.getInput();
+  if (viewMode !== 'replay') updateLive();
+  else updateReplay();
+  stepTitleDemo();
+}
+
+// The Title demo's engine whose board is on screen now, or null
+// (src/replayView.ts's shownTitleDemoEngine()).
+function shownTitleDemoEngine(): ReplayEngine | null {
+  return shownTitleDemoEngineOf(boardSources());
+}
+
+// One Title demo tick (see `titleDemo`), after the live tick: it plays only
+// while the live run is on Title with no ranking replay open, and not at all
+// with reduced motion or on a `?seed=` page, which is kept quiet for checks.
+function stepTitleDemo(): void {
+  titleDemo.step({
+    onTitle: viewMode === 'live' && replayEngine === null && session.getStatus() === 'title',
+    allowed: runMode === 'normal' && !reducedMotion,
+    candidates: rankingUI.getDemoCandidateIds(),
+  });
+  // The board on screen switched between the demo's and the live one's: the
+  // fill reveal must not compare the two.
+  const shown = shownTitleDemoEngine() !== null;
+  if (shown !== titleDemoWasShown) {
+    titleDemoWasShown = shown;
+    renderer.resetBoard();
+  }
+}
+
+// One replay-viewing tick.
+function updateReplay(): void {
+  // Polled exactly once per tick (KeyboardInput.getInput() consumes the
+  // edge-triggered `confirm` pulse on read — calling it twice in the same
+  // tick would silently swallow a real confirm press).
+  keyboard.getInput();
 
   // REPLAY VIEWING uses an entirely separate path to isolate side effects.
   // Keyboard input is polled
@@ -940,36 +2000,72 @@ function update(): void {
   // once the player exits back to live play) but never read into core,
   // InputRecorder never observes, highscore is never persisted, sfx never
   // plays.
-  if (viewMode === 'replay') {
-    if (replayEngine && replayAutoAdvance) {
-      const replaySession = replayEngine.getSession();
-      // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
-      // the next stage's first tick in one call, so calling it every tick
-      // replaces a cleared stage before a single frame can show it. While the
-      // hold lasts the replay session is simply left alone — not even a
-      // no-op update() — so its tick count (and with it the HUD's TIME),
-      // score, RNG state and position in the recorded input all stand still,
-      // and the tick that ends the hold makes the very same stepTick() call
-      // an unheld playback would have made. Never reached while a skip is in
-      // charge of the engine (replayAutoAdvance is false then), so the hold
-      // can't count down behind a skip either.
-      const holding = replayStageClearHold.shouldHold({
-        status: replaySession.getStatus(),
-        finished: replayEngine.isFinished(),
-      });
-      if (holding) return;
-      const advanced = replayEngine.stepTick();
-      // Drain (not forward anywhere) every tick, same as a live run —
-      // GameSession's own doc comments warn these queues grow unbounded
-      // otherwise.
-      replaySession.drainEvents();
-      replaySession.drainDespawnedEmberPositions();
-      if (!advanced) replayAutoAdvance = false;
-    }
+  if (replayEngine && replayAutoAdvance) {
+    // STAGE CLEAR hold: stepTick() confirms a pending StageClear and plays
+    // the next stage's first tick in one call, so calling it every tick
+    // replaces a cleared stage before a single frame can show it. While the
+    // hold lasts the replay session is simply left alone — not even a
+    // no-op update() — so its tick count (and with it the HUD's TIME),
+    // score, RNG state and position in the recorded input all stand still,
+    // and the tick that ends the hold makes the very same stepTick() call
+    // an unheld playback would have made. Never reached while a skip is in
+    // charge of the engine (replayAutoAdvance is false then), so the hold
+    // can't count down behind a skip either. (src/replayView.ts)
+    if (!stepReplayView(replayEngine, replayStageClearHold)) replayAutoAdvance = false;
+  }
+}
+
+// One live-play tick.
+function updateLive(): void {
+  // Impact feedback first (src/fx/liveTick.ts): the effects age even while
+  // a hit stop holds the run, and a stopped tick ends right here — no input
+  // poll (so a confirm pressed meanwhile is read once, on the first tick
+  // after the stop), no session.update(), no input recording and no time
+  // warning, so the run's tick count and recorded samples stand still. The
+  // HUD score's count-up keeps going through a stop, like the effects.
+  hudScoreRoll.tick();
+  multiplierEmphasis.tick();
+  // The clear screen's count-up runs from the tick it is on screen (once
+  // SPLIT! has gone), through hit stops like the other display effects.
+  stageResultCounter.step(session.getStatus() === 'stageclear', !fx.isSplitBannerActive(), fxParams.stageResultRollTicks);
+  stepGameOverResult();
+  const polled = beginLiveTick({
+    fx,
+    hitStop,
+    gate: gameOverConfirmGate,
+    status: session.getStatus(),
+    readInput: () => keyboard.getInput(),
+    retryHold: currentRetryHold,
+  });
+  if (!polled) {
+    // A hit-stopped tick: the hints' time runs on, like the effects'.
+    stepHints(null, [], [], false);
     return;
   }
 
+  const statusBeforeThisTick = session.getStatus();
+  // The modal's RETRY / TITLE request reaches the core as confirm on every
+  // GAME OVER tick until the run leaves it (see `modalAction`).
+  if (statusBeforeThisTick !== 'gameover') modalAction = null;
+  let input = modalAction !== null && !polled.confirm ? { ...polled, confirm: true } : polled;
+  // While HOW TO PLAY is open and for a few ticks after it closes, a confirm
+  // is dropped (not kept for later), so the key or tap that closed it does
+  // not also start a run. Counted every tick.
+  if (howToPlay.dropsConfirm() && input.confirm) input = { ...input, confirm: false };
+  // PLAY WITH HINTS: a confirm on the Title screen, as if pressed there.
+  if (titleStartRequested) {
+    titleStartRequested = false;
+    if (statusBeforeThisTick === 'title') input = { ...input, confirm: true };
+  }
+  // On STAGE CLEAR a confirm first completes the result's count-up (or, under
+  // SPLIT!, has it appear complete); only the next one starts the next stage.
+  if (statusBeforeThisTick === 'stageclear' && input.confirm && stageResultCounter.isCounting()) {
+    stageResultCounter.finish();
+    input = { ...input, confirm: false };
+  }
+
   lastInput = input;
+  if (input.confirm) liveConfirmCount++;
 
   // Seed lifecycle: queue a fresh seed for the gameover-to-title reset.
   // It takes effect whenever
@@ -980,33 +2076,103 @@ function update(): void {
   // times while the GAME OVER screen sits idle is cheap. Never touches a
   // 'seeded' (`?seed=`) run, whose fixed seed must keep reproducing the same
   // board on every retry, exactly as before this feature existed.
-  const statusBeforeThisTick = session.getStatus();
   if (runMode === 'normal' && statusBeforeThisTick === 'gameover') {
     session.setNextSeed(generateNormalRunSeed());
   }
 
-  session.update(input);
-
-  // InputRecorder: reset the
-  // instant a fresh run actually starts (gameover -> title, i.e.
-  // resetToFreshRun() just fired inside the update() call above) — without
-  // this, the recorder's own "have we already seen this totalTicks value"
-  // guard would silently refuse to record the new run's early ticks (their
-  // totalTicks values are smaller than the previous run's final one).
-  // observe() itself is always safe to call unconditionally afterward: it's
-  // a no-op on any tick that didn't actually advance a *new* playing tick
-  // (title/stageclear/gameover ticks, or this same reset tick).
-  if (statusBeforeThisTick === 'gameover' && session.getStatus() === 'title') {
-    inputRecorder.reset();
-    runClaims = 0;
-    // A brand-new run starts here — see `runId`'s own comment.
-    runId++;
+  const stageBeforeThisTick = session.getStage();
+  // One session update — or, when this confirm ends GAME OVER with anything
+  // but the TITLE button, two in a row: GAME OVER -> Title -> stage 1, so
+  // the Title screen is never drawn (src/retryFlow.ts).
+  const step = stepLiveSession(session, input, {
+    retry: modalAction !== 'title',
+    // A fresh run begins (GAME OVER -> Title, resetToFreshRun() just ran):
+    // the recorder, claims and run id (see `runTracker`), every impact effect
+    // and hold, and the best this run is chasing (the high score already
+    // includes the run that just ended).
+    onFreshRun: () => {
+      runTracker.startFreshRun();
+      playLogRecorder.startRun();
+      gameOverTally.reset();
+      gameOverResult.stop();
+      hitStop.clear();
+      fx.reset();
+      renderer.resetBoard();
+      multiplierEmphasis.reset();
+      stageResultTally.reset();
+      stageResultCounter.clear();
+      runBestAtStart = session.getHighScore();
+    },
+  });
+  if (step.freshRun) {
+    modalAction = null;
+    // Back on the Title screen from a GAME OVER that showed the EASY
+    // suggestion: the MODE toggle is lit. A retry went straight into a run,
+    // and a GAME OVER left before the suggestion appeared never showed it:
+    // nothing.
+    difficultyToggle.setAttention(easyPromptShown && !step.retried);
+    easySuggested = false;
+    easyPromptShown = false;
+  } else if (statusBeforeThisTick === 'stageclear' && session.getStage() !== stageBeforeThisTick) {
+    // The next stage's board replaces this one: drop the effects tied to the
+    // old board. SPLIT! and the travelling multiplier keep running.
+    hitStop.clear();
+    fx.resetBoard();
+    renderer.resetBoard();
+    stageResultTally.reset();
   }
-  inputRecorder.observe(session, input);
+
+  // A run started: the MODE toggle is no longer lit.
+  if (session.getStatus() !== 'title') difficultyToggle.setAttention(false);
 
   const events = session.drainEvents();
-  for (const ev of events) if (ev === 'area-claimed') runClaims++;
+  // Records this tick's input if it played a tick (a no-op on title,
+  // stageclear and gameover ticks, and on the fresh-run tick itself) and
+  // counts its claims.
+  runTracker.observe(session, input, events);
   sfx.handleEvents(events);
+
+  // This tick's claim/miss notices -> effects, hit stop, claim/split sounds,
+  // and a miss's reason, told apart by the Embers of this same tick (a Blaze
+  // or a plain Ember on the contact cell).
+  const missReason = (notice: MissFeedback) => t(missReasonKey(notice, session.getGame().getEmbers()));
+  const { claims, misses } = applyImpactNotices(session, fx, hitStop, sfx, missReason);
+  for (const notice of claims) {
+    stageResultTally.add(notice);
+    gameOverTally.add(notice);
+  }
+  // The play log counts this tick for the stage it started on, and closes
+  // the run on the tick it reaches GAME OVER.
+  playLogRecorder.observeTick({ stageBefore: stageBeforeThisTick, statusBefore: statusBeforeThisTick, claims, misses });
+  if (statusBeforeThisTick !== 'gameover' && session.getStatus() === 'gameover') {
+    const kept = finishPlayLogRun();
+    easySuggested = suggestsEasy(playLog.list(), kept);
+  }
+  // The hints read what this tick did. A stage's play starts when the status
+  // turns 'playing': a new run's from Title or GAME OVER, a later stage's
+  // from STAGE CLEAR.
+  const startedPlaying = statusBeforeThisTick !== 'playing' && session.getStatus() === 'playing';
+  const stageStart = !startedPlaying ? null : statusBeforeThisTick === 'stageclear' && !step.freshRun ? 'stage' : 'run';
+  stepHints(stageStart, claims, events, true);
+  // Each stage's play opens with its title over the field (live play only:
+  // a replay never comes through here). Play does not wait for it.
+  if (stageStart !== null) {
+    const stage = session.getStage();
+    fx.onStageStart(t('fx.stageHeading', stage), t(`stageTitle.${getStageConfig(stage).titleId}`));
+  }
+  // A new run (from Title, PLAY WITH HINTS or a retry): the first stage's
+  // tune from the top. A later stage's play, from STAGE CLEAR: that stage's
+  // tune, from its top (the one playing stops right here). Through STAGE
+  // CLEAR the cleared stage's tune plays on.
+  if (stageStart === 'run') bgm?.restart(bgmTrackForStage(session.getStage()));
+  else if (stageStart === 'stage') bgm?.setTrack(bgmTrackForStage(session.getStage()));
+  // The tick that reaches GAME OVER (or Title) stops the music right here.
+  stopBgmIfUnwanted();
+  // The HUD's SCORE number follows the real score: counting up after points
+  // are added, at once when it falls back to 0 for a new run.
+  hudScoreRoll.setTarget(session.getScore(), fxParams.scoreRollTicks);
+  // After the notices: a split has just started the travelling multiplier.
+  multiplierEmphasis.observe(session.getMultiplier(), fx.isMultiplierFlying(), fxParams.multiplierEmphasisTicks);
   // TIME countdown warning: decided here, once per live tick, from the
   // remaining time this tick's session.update() left behind. The replay
   // branch above returns before reaching this, which is what keeps replays
@@ -1027,6 +2193,9 @@ function update(): void {
   // board isn't the standard one. Skips the write entirely while any debug
   // override is active, mirroring the pre-existing highscore guard
   // (docs/plan.md §6 M10: "デバッグパネル使用中はハイスコアを保存しない").
+  // The session's high score never takes in an EASY run's score or a
+  // debug-tuned one's (GameSession.countsTowardHighScore()), so neither can
+  // be written here — not after a RESET, nor in the run after it.
   if (shouldPersistHighScore(runMode)) {
     const currentHighScore = session.getHighScore();
     if (currentHighScore > lastSavedHighScore && !session.hasActiveDebugOverrides()) {
@@ -1036,26 +2205,205 @@ function update(): void {
   }
 }
 
+// One live tick of the GAME OVER result, through hit stops like the other
+// display effects. Stopped first if the run has left GAME OVER on an
+// earlier tick of this frame, so a retried run never hears the last one's
+// count.
+function stepGameOverResult(): void {
+  if (!gameOverResult.isActive()) return;
+  if (session.getStatus() !== 'gameover') {
+    gameOverResult.stop();
+    return;
+  }
+  playGameOverCues(gameOverResult.step());
+}
+
+function playGameOverCues(cues: readonly GameOverCue[]): void {
+  for (const cue of cues) {
+    if (cue === 'count-tick') sfx.playCountTick();
+    else if (cue === 'count-end') sfx.playCountEnd();
+    else sfx.playNewRecord();
+  }
+}
+
+// The DEMO tag, small and nearer its corner on a field shown less than
+// TITLE_DEMO_LABEL_COMPACT_BELOW_PX tall.
+function applyTitleDemoLabelSize(): void {
+  titleDemoLabelCompact = fieldCssHeight < TITLE_DEMO_LABEL_COMPACT_BELOW_PX;
+  titleDemoLabel.style.fontSize = `${titleDemoLabelCompact ? TITLE_DEMO_LABEL_FONT_COMPACT_PX : TITLE_DEMO_LABEL_FONT_PX}px`;
+  titleDemoLabel.style.left = `${titleDemoLabelCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX}px`;
+  placeTitleDemoLabel(titleDemoLabelAtTop);
+}
+
+// The DEMO tag in the field's bottom-left corner, or in its top-left corner
+// while the Title menu takes the field's bottom edge (src/ui/titleMenu.ts).
+function placeTitleDemoLabel(atTop: boolean): void {
+  titleDemoLabelAtTop = atTop;
+  const side = titleDemoLabelCompact ? TITLE_DEMO_LABEL_INSET_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX;
+  const bottom = titleDemoLabelCompact ? TITLE_DEMO_LABEL_BOTTOM_COMPACT_PX : TITLE_DEMO_LABEL_INSET_PX;
+  titleDemoLabel.style.top = atTop ? `${side}px` : '';
+  titleDemoLabel.style.bottom = atTop ? '' : `${bottom}px`;
+}
+
+// What the Title menu must not cover: every shown touch control (the d-pad
+// with its wider hit area), the SOUND button and the credit.
+function titleMenuAvoidRects(): TitleMenuRect[] {
+  const rects: TitleMenuRect[] = [];
+  const add = (el: Element | null, grow = 0) => {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return;
+    rects.push({ left: r.left - grow, top: r.top - grow, right: r.right + grow, bottom: r.bottom + grow });
+  };
+  add(document.getElementById('touch-dpad'), TOUCH_DPAD_HIT_MARGIN);
+  for (const button of document.querySelectorAll('#touch-controls button')) add(button);
+  add(muteButton);
+  add(creditLink);
+  return rects;
+}
+
+// The hint line's rows of the field, in logical canvas pixels (with a little
+// room either side), while it is shown — the band the stage title and BIG
+// CLAIM / CLOSE CALL keep out of — or null.
+function hintBarAvoidBand(): FxAvoidBand | null {
+  const el = hintBar.getElement();
+  if (el.style.display === 'none') return null;
+  const bar = el.getBoundingClientRect();
+  const field = canvas.getBoundingClientRect();
+  if (bar.height <= 0 || field.height <= 0) return null;
+  const toLogical = CANVAS_HEIGHT / field.height;
+  const margin = 4;
+  return { top: (bar.top - field.top) * toLogical - margin, bottom: (bar.bottom - field.top) * toLogical + margin };
+}
+
+// Steps the in-play hints once per live tick (src/hints/director.ts).
+// `played` is false on a hit-stopped tick, which did nothing but let time run.
+function stepHints(
+  stageStart: 'run' | 'stage' | null,
+  claims: readonly ClaimFeedback[],
+  events: readonly GameEvent[],
+  played: boolean
+): void {
+  const game = session.getGame();
+  const spawned = played && events.some((e) => e === 'ember-spawned' || e === 'ember-blaze-spawned');
+  const embers = game.getEmbers();
+  hintDirector.step({
+    playing: viewMode === 'live' && session.getStatus() === 'playing',
+    stageStart,
+    wispCount: game.getWisps().length,
+    claims,
+    events,
+    spawnedEmber: spawned && embers.length > 0 ? embers[embers.length - 1] : null,
+    touch: touchDevice,
+  });
+}
+
+// The hint's mark resolved to cells on the live field: the arrow from the
+// marker (none while it draws a line, or when no step leads into the field),
+// or the ring's targets where they are now (an Ember that has gone, or an
+// Igniter that has gone, leaves no ring).
+function resolveHintMark(view: HintView<Ember> | null): ResolvedHintMark | null {
+  const mark = view?.mark ?? null;
+  if (mark === null) return null;
+  const game = session.getGame();
+  if (mark.kind === 'arrow') {
+    const marker = game.getMarker();
+    if (marker.isDrawing()) return null;
+    const from = marker.getPosition();
+    const dir = hintArrowDirection(game.getField(), from);
+    return dir ? { kind: 'arrow', from, dir } : null;
+  }
+  if (mark.target === 'wisps') return { kind: 'ring', centers: game.getWisps().map((wisp) => wisp.getPosition()) };
+  if (mark.target === 'igniter') {
+    const position = game.getIgniterPosition();
+    return position ? { kind: 'ring', centers: [position] } : null;
+  }
+  return game.getEmbers().includes(mark.ember) ? { kind: 'ring', centers: [mark.ember.getPosition()] } : null;
+}
+
+// The HUD's line count is decided for the difficulty of the session it shows
+// (measureRequiredSingleLineWidth()). Whenever that changes — the Title
+// screen's toggle, a new run built at another difficulty, a ranking replay
+// opening over an EASY pick or closing — the layout is decided again before
+// the HUD is written.
+function syncHudDifficulty(): void {
+  const difficulty = currentSession().getDifficulty();
+  if (difficulty === hudLayoutDifficulty) return;
+  hudLayoutDifficulty = difficulty;
+  fitCanvasToViewport();
+}
+
 // Render the current game state, including the HUD and any Title/StageClear/GameOver screen.
 function renderFrame(): void {
+  syncHudDifficulty();
   const activeSession = currentSession();
   const game = activeSession.getGame();
-  const graceTicks = game.getGraceTicks();
+  // The board drawn: the Title demo's while it plays, otherwise the active
+  // session's. Everything else below (HUD, overlay, sounds, hints) keeps
+  // reading `activeSession` / `game`.
+  const demoEngine = shownTitleDemoEngine();
+  const boardGame = drawnBoardGame(boardSources());
+  // The pause screen covers the field while paused; the touch PAUSE button
+  // shows wherever the run can be paused, and while it is.
+  const paused = pauseControl.isPaused();
+  pauseOverlay.setShown(paused);
+  touchControlsUI.setPauseButtonShown(paused || PauseControl.canPause(pauseContext()));
+  const graceTicks = boardGame.getGraceTicks();
   // Miss feedback (docs/plan.md §6 M5): blink the marker off every other
   // MISS_BLINK_INTERVAL_TICKS-tick window for as long as the post-miss grace
   // period lasts; otherwise always visible.
   const markerVisible = graceTicks <= 0 || Math.floor(graceTicks / MISS_BLINK_INTERVAL_TICKS) % 2 === 0;
+  // Impact feedback is live play only: a replay is drawn exactly as before.
+  const fxFrame = boardFxFrame(viewMode, fx);
+  // Read every frame, so the debug panel's value applies at once.
+  renderer.setFxTextMinFontPx(fxParams.fxTextMinDisplayPx / fieldDisplayScale);
+  renderer.setMissReasonMinFontPx(fxParams.missReasonMinDisplayPx / fieldDisplayScale);
+  renderer.setStartCueMinLineWidthPx(FX_START_CUE_MIN_LINE_DISPLAY_PX / fieldDisplayScale);
+  // The in-play hint: live play only.
+  const hintView = viewMode === 'replay' ? null : hintDirector.current();
+  lastHintMarks = hintView && !demoEngine ? hintMarkShapes(resolveHintMark(hintView), hintView.age, reducedMotion) : null;
+  renderer.setHintMarks(lastHintMarks);
+  // The demo board: no impact feedback, under the veil, with the DEMO tag.
+  renderer.setVeil(demoEngine ? TITLE_DEMO_DIM_ALPHA : 0);
+  if ((demoEngine !== null) !== titleDemoLabelShown) {
+    titleDemoLabelShown = demoEngine !== null;
+    titleDemoLabel.style.display = titleDemoLabelShown ? 'block' : 'none';
+  }
+  // The hint line first, so the stage title and BIG CLAIM / CLOSE CALL drawn
+  // on the field below can keep out of where it is this frame.
+  if (viewMode === 'replay') {
+    hintBar.hide();
+  } else {
+    hintBar.render(
+      {
+        view: hintView,
+        markerY: game.getMarker().getPosition().y,
+        fieldCssWidth,
+        fieldCssHeight,
+        reducedMotion,
+      },
+      (glow) => document.querySelector<HTMLElement>(`#touch-controls button[data-code="${glow === 'fast' ? 'Space' : 'KeyZ'}"]`)
+    );
+  }
+  renderer.setFxAvoidBand(fxFrame && (fxFrame.stageTitle || fxFrame.claimTags.length > 0) ? hintBarAvoidBand() : null);
 
   renderer.render(
-    game.getField(),
-    game.getMarker().getPosition(),
-    game.getWisps().map((wisp) => wisp.getTrailRef()),
-    game.getEmbers(),
-    game.getIgniterPosition(),
-    markerVisible
+    boardGame.getField(),
+    boardGame.getMarker().getPosition(),
+    // Each Wisp's own speed sets its trail's color, and the stage's surge
+    // level its head's, on whichever board is drawn.
+    boardWispDraws(boardGame),
+    boardGame.getEmbers(),
+    boardGame.getIgniterPosition(),
+    markerVisible,
+    renderedFxFrame(fxFrame, demoEngine !== null)
   );
+  // The travelling multiplier crosses the field outside #canvas-wrap, so the
+  // pause screen does not cover it: it is not drawn while paused.
+  renderMultiplierFx(paused && fxFrame ? { ...fxFrame, multiplierFly: null } : fxFrame);
 
   const status = activeSession.getStatus();
+  updateBgm();
 
   // RANKING button/list availability: browsing the ranking
   // — and therefore starting a replay, which suspends the live session
@@ -1065,6 +2413,16 @@ function renderFrame(): void {
   // timer of its own) so it tracks the same status this frame is rendering;
   // the call is a no-op unless that availability actually flipped.
   rankingUI.syncAvailability();
+  // HOW TO PLAY is offered exactly where RANKING is: the live Title screen.
+  const liveTitle = viewMode === 'live' && replayEngine === null && status === 'title';
+  howToPlay.syncAvailability(liveTitle);
+  // So is the MODE toggle — and like them it stays up under an open panel.
+  // The Title menu holding the three is shown and placed once the title
+  // text has been written below (titleMenu.sync()).
+  difficultyToggle.setShown(liveTitle);
+  // While the sound is off on the live Title screen, the sound toggle glows
+  // so it is noticed before a run starts.
+  setMuteButtonAttention(liveTitle && sfx.isMuted());
 
   if (viewMode === 'replay') {
     // No sound effects and no GAME OVER modal/ranking-submission UI: that
@@ -1090,7 +2448,7 @@ function renderFrame(): void {
     const finalStage = replayEngine?.getResult().stage ?? activeSession.getStage();
     let text = '';
     if (status === 'gameover') {
-      text = `GAME OVER - REPLAY END\n\nSCORE ${activeSession.getScore()}\nSTAGE ${activeSession.getStage()} / ${finalStage} (FINAL STAGE)`;
+      text = `${t('replay.endHeading')}\n\n${t('replay.endScore', activeSession.getScore())}\n${t('replay.endStage', activeSession.getStage(), finalStage)}`;
     } else if (status === 'stageclear' && replayAutoAdvance && replayEngine && !replayEngine.isFinished()) {
       // Shown for as long as update() holds the cleared stage, with no
       // "press any key" line: playback moves on by itself. The extra
@@ -1098,62 +2456,112 @@ function renderFrame(): void {
       // since anywhere else it would only flash for a single frame: a skip
       // (replayAutoAdvance false) can yield between chunks on a StageClear,
       // and a recording whose input stops on one is never held.
-      text = stageClearText(activeSession, { withPrompt: false });
+      text = stageClearText(activeSession, { withPrompt: false, withSplitNote: true });
     }
     if (text !== lastScreenText) {
       lastScreenText = text;
       screen.textContent = text;
     }
+    titleMenu.sync(lastScreenText);
     return;
   }
 
   // Continuous line-drawing drone (docs/plan.md §3.8): driven off the
   // marker's actual drawing state plus whichever speed button the most
-  // recent tick's merged input held.
-  sfx.setDrawing(game.getMarker().isDrawing(), game.getMarker().isDrawing() ? (lastInput.slow ? 'slow' : 'fast') : null);
+  // recent tick's merged input held. Silent while paused.
+  const drawToneOn = !paused && game.getMarker().isDrawing();
+  sfx.setDrawing(drawToneOn, drawToneOn ? (lastInput.slow ? 'slow' : 'fast') : null);
 
   updateHud();
 
   // GAME OVER modal edge trigger (docs/plan-cloudflare-x-share.md Phase 1):
   // show it exactly once on the frame `status` first becomes 'gameover',
-  // hide it exactly once when it stops being 'gameover' (e.g. "BACK TO
-  // TITLE"/any-key resets the run to 'title'). Re-read here (rather than
-  // reused from updateHud()'s internals) since that call may have skipped
-  // its own re-read via the lastHud* cache when nothing displayed changed.
+  // hide it exactly once when it stops being 'gameover' (RETRY, TITLE, or a
+  // key / a tap starting the next run).
+  //
+  // After a game-ending miss the modal waits FX_GAMEOVER_HOLD_TICKS so the
+  // miss itself is seen first, then appears on the first frame after that.
+  // GameOverConfirmGate (src/fx/liveTick.ts) drops every confirm from the
+  // keyboard and the field until this frame has shown it and for
+  // RETRY_CONFIRM_GUARD_TICKS after, so nothing can skip the modal.
   if (status === 'gameover') {
-    if (!gameOverModalShown) {
+    if (!gameOverModalShown && !fx.isGameOverHeld()) {
       gameOverModalShown = true;
+      gameOverConfirmGate.markModalShown();
+      const score = session.getScore();
+      // NEW RECORD and the distance to the best: only for a run that may save
+      // its high score (a NORMAL, non-`?seed=` run with no debug override at
+      // any point), against the best it started from.
+      const recordsHighScore = shouldPersistHighScore(runMode) && session.countsTowardHighScore();
+      const reason = session.getGameOverReason() ?? 'life';
+      // The result counts up from this frame: the close plays now, the rest
+      // on the live ticks that follow (stepGameOverResult()).
+      const cues = gameOverResult.start({
+        score,
+        stage: session.getStage(),
+        bestAtStart: runBestAtStart,
+        recordsHighScore,
+        easyPrompt: easySuggested,
+        tally: gameOverTally.snapshot(),
+        reducedMotion,
+        timing: {
+          countTicks: fxParams.gameOverCountTicks,
+          popTicks: fxParams.gameOverPopTicks,
+          sparkTicks: fxParams.gameOverSparkTicks,
+          offerDelayTicks: fxParams.rankingOfferDelayTicks,
+        },
+      });
+      const view = gameOverResult.view();
       gameOverModal.show({
-        score: activeSession.getScore(),
-        stage: activeSession.getStage(),
-        hiScore: activeSession.getHighScore(),
+        score,
+        stage: session.getStage(),
+        hiScore: session.getHighScore(),
         // TIME UP!: distinguishes a
         // time-budget-expired gameover from an ordinary life-loss one — see
         // GameSession.getGameOverReason()'s doc comment for the two causes.
-        reason: activeSession.getGameOverReason() ?? undefined,
+        reason: session.getGameOverReason() ?? undefined,
+        highlight: view.highlight,
+        bestLine: view.bestLine,
+        // An EASY run is tagged, and not shared, as it is not ranked.
+        share: session.getDifficulty() === 'normal',
+        easy: session.getDifficulty() === 'easy',
+        easyPrompt: view.prompt,
       });
+      sfx.playGameOver(reason);
+      playGameOverCues(cues);
       // Ranking submission offer: a no-op if this run isn't POST-eligible
       // (`?seed=`/tainted, see
       // src/ui/ranking.ts's isSnapshotEligible()) or isn't provisionally in
       // range. Everything the offer/POST may ever read about the run is
       // frozen here, synchronously, on the single frame the run ends —
       // `session` (not `activeSession`) deliberately, to make it explicit
-      // this is the *live* run's final state and never a replay's.
-      rankingUI.offerSubmission({
-        runId,
-        seed: session.getSeed(),
-        rle: inputRecorder.encode(),
-        score: session.getScore(),
-        stage: session.getStage(),
-        runMode,
-        tainted: session.isRunTainted(),
-        claims: runClaims,
-      });
+      // this is the *live* run's final state and never a replay's. Asked
+      // now, so the reply is usually in by the time the panel may open
+      // (gameOverResult.submissionOfferAge()).
+      rankingUI.offerSubmission(freezeRunSnapshot(session, runTracker, runMode));
     }
-  } else if (gameOverModalShown) {
-    gameOverModalShown = false;
-    gameOverModal.hide();
-    rankingUI.hideAll();
+    // The hint says what the keys do: retry, or wait for the submission panel
+    // to be closed. While the panel is about to open it is kept, unseen.
+    if (gameOverModalShown) {
+      // A panel the ranking reply decided on opens on the first frame the
+      // result has been read by (a later reply opens it as it lands).
+      rankingUI.syncSubmissionOffer();
+      const { formShown, offerWaiting } = currentRetryHold();
+      gameOverModal.setSubmissionHold(formShown ? 'panel' : offerWaiting === true ? 'waiting' : 'none');
+      const resultView = gameOverResult.view();
+      gameOverModal.renderResult(resultView);
+      // Seen only once it is on screen with no ranking submission form over
+      // the modal: drawn behind the form, it has not been seen yet.
+      if (resultView.promptShown && !formShown) easyPromptShown = true;
+    }
+  } else {
+    gameOverConfirmGate.reset();
+    gameOverResult.stop();
+    if (gameOverModalShown) {
+      gameOverModalShown = false;
+      gameOverModal.hide();
+      rankingUI.hideAll();
+    }
   }
 
   if (status === 'playing') {
@@ -1165,19 +2573,93 @@ function renderFrame(): void {
     }
   } else {
     const text = screenText(status);
-    if (text !== lastScreenText) {
-      lastScreenText = text;
-      screen.textContent = text;
+    const key = screenTextString(text);
+    if (key !== lastScreenText) {
+      lastScreenText = key;
+      writeScreen(text);
     }
   }
+  // The Title menu under the title text as now written.
+  titleMenu.sync(lastScreenText);
 }
 
-function screenText(status: ReturnType<GameSession['getStatus']>): string {
+// The music, once per frame (see `bgm`): wanted through the live run's
+// play and STAGE CLEAR, unless paused or muted. Nothing is scheduled while the
+// page is hidden.
+function updateBgm(): void {
+  bgm?.update(bgmUpdate());
+}
+
+// Stops the music at once, without waiting for a frame (a hidden page
+// draws none): when it is no longer wanted (paused, GAME OVER, muted, a
+// replay, Title), or when the page is hidden. Starting again is left to the
+// next frame's updateBgm().
+function stopBgmIfUnwanted(): void {
+  if (!bgm) return;
+  const u = bgmUpdate();
+  if (!u.want) bgm.stop(u.fadeSec);
+  else if (!u.visible) bgm.hide();
+}
+
+function bgmUpdate(): BgmUpdate {
+  const liveStatus = session.getStatus();
+  const live = viewMode === 'live' && replayEngine === null;
+  return {
+    want:
+      live &&
+      !pauseControl.isPaused() &&
+      !sfx.isMuted() &&
+      (liveStatus === 'playing' || liveStatus === 'stageclear'),
+    visible: document.visibilityState !== 'hidden',
+    remainingSec: session.getRemainingTicks() / TICK_RATE,
+    // The live stage's: on STAGE CLEAR still the cleared stage's.
+    track: bgmTrackForStage(session.getStage()),
+    fadeSec: live && liveStatus === 'gameover' ? BGM_GAMEOVER_FADE_SEC : BGM_FADE_SEC,
+  };
+}
+
+// Writes the Title / STAGE CLEAR overlay. English: one text, exactly
+// `body + hint`. Japanese: the hint (a sentence) gets its own span in the
+// device's Japanese font, a little smaller since each letter is wider, so the
+// result rows above it stay in the monospace face and keep lining up; the
+// overlay's whole text still reads `body + hint`.
+function writeScreen(text: ScreenText): void {
+  if (getLocale() === 'en' || text.hint === '') {
+    screen.textContent = screenTextString(text);
+    return;
+  }
+  screen.textContent = text.body;
+  const hint = document.createElement('span');
+  hint.id = 'screen-hint';
+  hint.textContent = text.hint;
+  hint.style.fontSize = '0.85em';
+  applySentenceFont(hint);
+  screen.appendChild(hint);
+}
+
+function screenText(status: ReturnType<GameSession['getStatus']>): ScreenText {
   switch (status) {
     case 'title':
-      return `QIXXX\n\nHI SCORE: ${session.getHighScore()}\n\nPRESS ANY KEY OR TAP TO START`;
+      return titleScreenText(session.getHighScore());
     case 'stageclear':
-      return stageClearText(session, { withPrompt: true });
+      // While SPLIT! is on the field the clear text waits, so the two never
+      // overlap; the split itself is announced by the banner, not by a
+      // (SPLIT CLEAR!) line.
+      if (fx.isSplitBannerActive()) return EMPTY_SCREEN_TEXT;
+      // What the stage scored, counted up (src/stageResult.ts). The cleared
+      // stage's Game is still the session's, so its multiplier is the one
+      // the stage was played at; the session's is already the next stage's.
+      return stageResultScreen({
+        stage: session.getStage(),
+        values: stageResultCounter.values({
+          area: stageResultTally.getArea(),
+          bonus: stageResultTally.getBonus(),
+          total: stageResultTally.getTotal(),
+        }),
+        multiplierBefore: session.getGame().getMultiplier(),
+        multiplierNext: session.getMultiplier(),
+        tight: tinyField,
+      });
     case 'gameover':
       // Score info + the "press any key" hint both live inside the
       // GameOverModal now (docs/plan-cloudflare-x-share.md Phase 1) — it's
@@ -1185,24 +2667,31 @@ function screenText(status: ReturnType<GameSession['getStatus']>): string {
       // too would just sit invisibly behind it. Returning '' avoids that
       // dead/duplicate node entirely (see the module comment in
       // src/ui/gameOverModal.ts's hint line).
-      return '';
+      return EMPTY_SCREEN_TEXT;
     case 'playing':
-      return '';
+      return EMPTY_SCREEN_TEXT;
   }
 }
 
 // Game loop with fixed timestep (accumulator pattern)
 function gameLoop(currentTime: number): void {
   // Clamp delta so returning from an inactive tab doesn't trigger
-  // thousands of catch-up updates (spiral of death)
-  const deltaTime = Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA);
+  // thousands of catch-up updates (spiral of death). Never negative: a
+  // resume sets lastTime to now, which may be later than this frame's own
+  // timestamp.
+  const deltaTime = Math.max(0, Math.min((currentTime - lastTime) / 1000, MAX_FRAME_DELTA));
   lastTime = currentTime;
 
-  // Accumulate time and run fixed updates
-  accumulator += deltaTime;
-  while (accumulator >= TICK_DURATION) {
-    update();
-    accumulator -= TICK_DURATION;
+  // Accumulate time and run fixed updates — none while paused, when no time
+  // is kept for later either (see applyPauseToggle()).
+  if (pauseControl.shouldStep()) {
+    accumulator += deltaTime;
+    while (accumulator >= TICK_DURATION) {
+      update();
+      accumulator -= TICK_DURATION;
+    }
+  } else {
+    accumulator = 0;
   }
 
   // Render

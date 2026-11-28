@@ -12,8 +12,18 @@ import { GameSession, SessionStatus } from '../core/session';
 import { ReplayEngine, ReplayAbortedError } from '../core/replayEngine';
 import { MAX_NAME_LENGTH } from '../core/rankingLimits';
 import { RunMode } from '../runMode';
-import { HUD_FONT, HUD_TEXT_COLOR, HUD_ACCENT_COLOR, MAX_VERIFIED_CLAIMS } from '../config';
+import type { Difficulty } from '../core/difficulty';
+import {
+  HUD_FONT,
+  HUD_TEXT_COLOR,
+  HUD_ACCENT_COLOR,
+  MAX_VERIFIED_CLAIMS,
+  RANKING_BOARD_SIZE,
+  TITLE_DEMO_MAX_CANDIDATES,
+} from '../config';
 import { getOrCreateSubmitterToken } from './submitterToken';
+import { t } from '../i18n';
+import { applySentenceFont } from './sentenceFont';
 
 export interface RankingEntry {
   id: string;
@@ -43,7 +53,7 @@ export function limitRankingName(value: string): string {
  * and deliberately NOT rendered: the public board
  * treats pending and verified rows as one real-time ranking. Verification
  * is disclosed once, as a rule of the board, by the static notice under the
- * list (BOARD_NOTICE: "entries found invalid may be removed") rather than by
+ * list (boardNotice(): "entries found invalid may be removed") rather than by
  * marking individual rows as suspect. The X handle is linked either way —
  * the audit verifies the SCORE, never handle ownership, so a row's audit
  * state was never a reason to withhold the link (the self-reported-handles
@@ -61,9 +71,12 @@ export interface DisplayRankingEntry extends RankingEntry {
  * The board-wide notice under the ranking list. Neutral about the audit on
  * purpose: the server may store scores for a later audit or, with
  * RANKING_AUDIT_MODE=disabled, rank them as submitted, and GET /api/ranking
- * does not say which — so the notice has to be true either way.
+ * does not say which — so the notice has to be true either way. In the page
+ * language (the text table's `ranking.notice`).
  */
-export const BOARD_NOTICE = 'X handles are self-reported — ownership is not verified. Scores may be checked after posting, and entries found invalid may be removed.';
+export function boardNotice(): string {
+  return t('ranking.notice');
+}
 
 /**
  * The submission form's line for an accepted POST, chosen from the `status`
@@ -73,7 +86,7 @@ export const BOARD_NOTICE = 'X handles are self-reported — ownership is not ve
  * the audit.
  */
 export function acceptedSubmissionText(status: unknown): string {
-  return status === 'verified' ? 'SUBMITTED.' : 'SUBMITTED — PENDING VERIFICATION.';
+  return status === 'verified' ? t('submit.accepted') : t('submit.acceptedPending');
 }
 
 /**
@@ -104,6 +117,8 @@ export interface RunSubmissionSnapshot {
   stage: number;
   runMode: RunMode;
   tainted: boolean;
+  /** The run's own difficulty, as it ended: only a NORMAL run is ranked. */
+  difficulty: Difficulty;
   /**
    * Successful area claims over the whole run. The server's audit refuses a
    * replay past MAX_VERIFIED_CLAIMS outright (functions/_lib/ranking/
@@ -150,9 +165,68 @@ export type SubmissionOfferDecision =
   /** In range, but with more area claims than the audit will verify — shown as an explanation, never as a form. */
   | 'over-claim-cap';
 
-/** A run may be submitted only if it is a normal (non-`?seed=`) run, untainted by debug overrides, and actually seeded. Derived purely from the snapshot — never from live session state. */
+/**
+ * The score a run has to beat to enter the board, from GET /api/ranking's
+ * verified `entries` (best first): 0 while the board has a free row (any
+ * score gets in), otherwise the lowest row's score — a tie sorts behind the
+ * incumbent (see decideSubmissionOffer()).
+ */
+export function rankInThresholdFrom(entries: RankingEntry[]): number {
+  if (entries.length < RANKING_BOARD_SIZE) return 0;
+  return entries[entries.length - 1].score;
+}
+
+/**
+ * The board's entry score (rankInThresholdFrom()) as of the newest
+ * GET /api/ranking that succeeded. Several of those can be in flight at once
+ * (the page-load one and each GAME OVER's), and their replies can land out of
+ * order: each request takes a generation number from begin(), and a reply
+ * only writes when no newer generation has written already. A failed reply
+ * (`null`) writes nothing, so it never clears a known value.
+ */
+export class RankInThresholdTracker {
+  private nextGeneration = 0;
+  private writtenGeneration = -1;
+  private value: number | null = null;
+
+  /** Call as a GET /api/ranking goes out; pass the result to settle(). */
+  begin(): number {
+    return this.nextGeneration++;
+  }
+
+  /** Records the reply of request `generation`: its verified entries, or null when it failed. */
+  settle(generation: number, entries: RankingEntry[] | null): void {
+    if (entries === null || generation < this.writtenGeneration) return;
+    this.writtenGeneration = generation;
+    this.value = rankInThresholdFrom(entries);
+  }
+
+  get(): number | null {
+    return this.value;
+  }
+}
+
+/**
+ * The records the Title screen's demo may play, from GET /api/ranking's
+ * verified `entries` (best first): the ids of the first `max` rows whose
+ * replay can be fetched, in board order.
+ */
+export function demoCandidateIdsFrom(entries: readonly Pick<RankingEntry, 'id' | 'replayAvailable'>[], max: number): string[] {
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (ids.length >= max) break;
+    if (entry.replayAvailable === true && typeof entry.id === 'string' && entry.id !== '') ids.push(entry.id);
+  }
+  return ids;
+}
+
+/**
+ * A run may be submitted only if it is a normal (non-`?seed=`) NORMAL-difficulty
+ * run, untainted by debug overrides, and actually seeded. Derived purely from
+ * the snapshot — never from live session state.
+ */
 export function isSnapshotEligible(snapshot: RunSubmissionSnapshot): boolean {
-  return snapshot.runMode === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
+  return snapshot.runMode === 'normal' && snapshot.difficulty === 'normal' && !snapshot.tainted && snapshot.seed !== undefined;
 }
 
 /**
@@ -190,7 +264,7 @@ export function decideSubmissionOffer(args: {
   // deleted by POST's own trim step. Offering the name field in that case
   // would promise a slot that cannot exist. Below 10 entries there is a free
   // slot regardless of the score, so no comparison applies.
-  const inRange = entries.length < 10 || snapshot.score > entries[entries.length - 1].score;
+  const inRange = entries.length < RANKING_BOARD_SIZE || snapshot.score > rankInThresholdFrom(entries);
   if (!inRange) return 'out-of-range';
   // Checked after the range test on purpose: a run that would not be offered
   // anyway needs no explanation, and a run that WOULD be deserves to hear
@@ -229,6 +303,84 @@ export interface RankingUIOptions {
    * boundary the skip is seeking.
    */
   onReplayAutoAdvanceChange: (autoAdvance: boolean) => void;
+  /**
+   * The submission panel's own RETRY: asks for exactly what the GAME OVER
+   * modal's RETRY button asks for. The panel sits on top of the modal, so
+   * without these two the modal's buttons could not be reached while it is
+   * up. The panel closes through hideAll() once the run leaves GAME OVER.
+   */
+  onRetry: () => void;
+  /** The submission panel's own TITLE: same as the GAME OVER modal's TITLE button (see onRetry). */
+  onTitle: () => void;
+  /** Called when the ranking list opens (main.ts closes HOW TO PLAY). */
+  onListOpen?: () => void;
+  /** Called with true when the ranking list shows and false when it is hidden (again). */
+  onListShownChange?: (shown: boolean) => void;
+  /**
+   * The GAME OVER result has been on screen long enough for the submission
+   * panel to open over it (src/gameOverResult.ts's isSubmissionOfferDue()).
+   * A panel the ranking reply has decided on waits for this (see
+   * DeferredSubmissionOffer). Always due when omitted.
+   */
+  isSubmissionOfferDue?: () => boolean;
+}
+
+/**
+ * The submission panel the ranking reply has decided to open, held until the
+ * GAME OVER result has been read (`isDue`): a reply that comes in time opens
+ * it on the first sync() that finds it due, one that comes later opens it at
+ * once. cancel() drops it for good — the run left GAME OVER, or a new offer
+ * replaced it. While it waits, isWaiting() holds every confirm (keys, field
+ * taps and the modal's RETRY), so a stray press cannot skip a run that may be
+ * posted; it ends by itself when it is due, so it has no upper bound of its own.
+ */
+export class DeferredSubmissionOffer {
+  private pendingOpen: (() => void) | null = null;
+
+  constructor(private readonly isDue: () => boolean) {}
+
+  /** The reply decided to open the panel with `open`. */
+  decide(open: () => void): void {
+    this.pendingOpen = null;
+    if (this.isDue()) {
+      open();
+      return;
+    }
+    this.pendingOpen = open;
+  }
+
+  /** Once per rendered frame: opens a waiting panel that has come due. */
+  sync(): void {
+    const open = this.pendingOpen;
+    if (!open || !this.isDue()) return;
+    this.pendingOpen = null;
+    open();
+  }
+
+  cancel(): void {
+    this.pendingOpen = null;
+  }
+
+  isWaiting(): boolean {
+    return this.pendingOpen !== null;
+  }
+}
+
+/**
+ * Which panel a reply's decision opens, through `offer` so both wait for the
+ * same time: the form for 'show', the explanation-only notice for
+ * 'over-claim-cap', nothing (and no wait) for any other. Returns whether one
+ * was decided on.
+ */
+export function scheduleSubmissionPanel(
+  decision: SubmissionOfferDecision,
+  offer: DeferredSubmissionOffer,
+  open: { form: () => void; overClaimCap: () => void }
+): boolean {
+  if (decision === 'show') offer.decide(open.form);
+  else if (decision === 'over-claim-cap') offer.decide(open.overClaimCap);
+  else return false;
+  return true;
 }
 
 /**
@@ -249,7 +401,7 @@ export function formatRankingDate(iso: string): string {
   return `${year}-${month}-${day}`;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
+export function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -373,8 +525,8 @@ function styledButton(label: string): HTMLButtonElement {
 }
 
 export interface RankingUI {
-  /** Mounts the RANKING button (canvas-wrap's top-right corner — see mountTitleButton()'s own comment for why not the HUD row). Shown only on the Title screen; see syncAvailability(). */
-  mountTitleButton(): void;
+  /** Mounts the RANKING button into `parent`, the Title menu's row (see mountTitleButton()'s own comment for why not the HUD row). Shown only on the Title screen; see syncAvailability(). */
+  mountTitleButton(parent: HTMLElement): void;
   /**
    * Shows/hides the RANKING button to match the live session's status, and
    * force-closes the list if browsing is no longer allowed. Call once per
@@ -389,10 +541,62 @@ export interface RankingUI {
    * a no-op otherwise, and cheap when nothing changed.
    */
   syncReplayStatus(): void;
-  /** Offers ranking submission for the just-finished run, if eligible and provisionally in range. No-op (shows nothing) otherwise. */
+  /**
+   * Offers ranking submission for the just-finished run, if eligible and
+   * provisionally in range — the panel opens once the GAME OVER result has
+   * been read (isSubmissionOfferDue). No-op (shows nothing) otherwise.
+   */
   offerSubmission(snapshot: RunSubmissionSnapshot): void;
   /** Hides any open submission UI and drops the pending submission snapshot — call whenever GAME OVER's own modal is hidden. */
   hideAll(): void;
+  /** Closes the ranking list if it is open (HOW TO PLAY opening). */
+  hideList(): void;
+  /** The RANKING button, once mounted. */
+  getTitleButton(): HTMLButtonElement | null;
+  /**
+   * Packs the submission panel tighter (smaller text, less padding and
+   * spacing) for a field too small to hold its roomy layout — a phone held
+   * sideways — so the whole panel, its RETRY / TITLE row included, stays on
+   * screen without scrolling. main.ts calls it whenever the field is resized.
+   */
+  setSubmitPanelCompact(compact: boolean): void;
+  /**
+   * Fetches GET /api/ranking once to learn the board's entry score (see
+   * getRankInThreshold()). main.ts calls it on page load; a failure is
+   * silent and leaves the score unknown.
+   */
+  loadRankInThreshold(): void;
+  /**
+   * The score a run has to beat to enter the board, as of the last
+   * successful GET /api/ranking (the page-load one or a GAME OVER offer's):
+   * 0 while the board has a free row, null until one succeeded.
+   */
+  getRankInThreshold(): number | null;
+  /**
+   * The records the Title screen's demo may play (demoCandidateIdsFrom()),
+   * from loadRankInThreshold()'s page-load GET /api/ranking only: empty
+   * until it succeeds, and empty for good if it fails. No request of its own.
+   */
+  getDemoCandidateIds(): readonly string[];
+  /**
+   * True while the ranking offer for the just-finished run must keep the
+   * keyboard and the field from starting the next run: while asking
+   * /api/ranking whether it can be posted, and while the submission panel
+   * (the form, its result or the over-the-cap notice) is on screen. False
+   * once that panel is closed (SKIP / OK) and once the run turns out not to
+   * be offered.
+   */
+  isSubmissionBlockingRetry(): boolean;
+  /** True only for the first half of isSubmissionBlockingRetry(): the /api/ranking check is still in flight. */
+  isSubmissionCheckPending(): boolean;
+  /**
+   * The check has decided to open the submission panel (the form or the
+   * over-the-cap notice), which waits until isSubmissionOfferDue() holds.
+   * Every confirm, the modal's RETRY included, is held meanwhile (main.ts).
+   */
+  isSubmissionOfferWaiting(): boolean;
+  /** Once per rendered GAME OVER frame: opens the waiting panel once it is due. */
+  syncSubmissionOffer(): void;
 }
 
 export function initRankingUI(options: RankingUIOptions): RankingUI {
@@ -414,7 +618,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // ---- Top-10 list overlay ----
   const listOverlay = styledOverlay();
   const listHeading = document.createElement('div');
-  listHeading.textContent = 'RANKING';
+  listHeading.textContent = t('ranking.heading');
   listHeading.style.fontSize = '1.2em';
   listHeading.style.fontWeight = 'bold';
   listOverlay.appendChild(listHeading);
@@ -427,7 +631,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // (RANKING_AUDIT_MODE): the board never says which, by design.
   // Appended BELOW the list (see the end of this block), as a footnote: up
   // between the heading and the rows it read as the panel's headline.
-  disclaimer.textContent = BOARD_NOTICE;
+  disclaimer.textContent = boardNotice();
+  applySentenceFont(disclaimer);
   disclaimer.style.fontSize = '0.65em';
   disclaimer.style.opacity = '0.7';
   disclaimer.style.maxWidth = '260px';
@@ -444,7 +649,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   listBody.style.width = '100%';
   listOverlay.appendChild(listBody);
   listOverlay.appendChild(disclaimer);
-  const listCloseButton = styledButton('CLOSE');
+  const listCloseButton = styledButton(t('ranking.close'));
   listCloseButton.addEventListener('click', () => hideList());
   listOverlay.appendChild(listCloseButton);
   anchor.appendChild(listOverlay);
@@ -482,6 +687,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function hideList(): void {
     listOverlay.style.display = 'none';
+    options.onListShownChange?.(false);
     browsingGeneration++;
     abortReplayWork();
   }
@@ -491,6 +697,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     listBody.textContent = '';
     const line = document.createElement('div');
     line.textContent = text;
+    applySentenceFont(line);
     listBody.appendChild(line);
   }
 
@@ -500,10 +707,12 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   async function showList(): Promise<void> {
     if (!browsingAllowed()) return;
+    options.onListOpen?.();
     browsingGeneration++;
     const requestGeneration = browsingGeneration;
-    showListStatus('LOADING...');
+    showListStatus(t('ranking.loading'));
     listOverlay.style.display = 'flex';
+    options.onListShownChange?.(true);
 
     let entries: DisplayRankingEntry[] | null = null;
     try {
@@ -526,14 +735,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     if (entries === null) {
-      showListStatus('FAILED TO LOAD RANKING');
+      showListStatus(t('ranking.loadFailed'));
       return;
     }
 
     listBody.textContent = '';
     if (entries.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'NO ENTRIES YET';
+      empty.textContent = t('ranking.empty');
+      applySentenceFont(empty);
       listBody.appendChild(empty);
       return;
     }
@@ -557,7 +767,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // trusted literal/number, or appended as its own text node below
       // (entry.name) — never concatenated into one interpolated string that
       // could blur the line between "our text" and "their text".
-      rankLine.textContent = `#${index + 1}  ${entry.score}  STAGE ${entry.stage}  `;
+      rankLine.textContent = t('ranking.row', index + 1, entry.score, entry.stage);
       // A handle-only row puts the handle in the name slot — as the link
       // itself, so the profile stays one click away and the handle is not
       // printed twice (the meta line below then carries only the date).
@@ -602,7 +812,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       right.style.gap = '6px';
       right.style.flex = '0 0 auto';
 
-      const replayButton = styledButton('REPLAY');
+      const replayButton = styledButton(t('ranking.replay'));
       replayButton.disabled = !entry.replayAvailable;
       if (!entry.replayAvailable) {
         replayButton.style.opacity = '0.4';
@@ -643,7 +853,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     if (!browsingAllowed() || browsingGeneration !== requestGeneration) return;
 
     if (gone) {
-      showTransientMessage('THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.');
+      showTransientMessage(t('replay.unsupported'));
       return;
     }
     if (!payload || !isReplayPayloadPlayable(payload, options.getRulesetVersion(), options.getReplayFormatVersion())) {
@@ -652,7 +862,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       // otherwise resimulate a new-ruleset replay with its old core and
       // silently render a wrong run. Checked here rather than trusting the
       // server's filter alone, because the stale party is this bundle.
-      showTransientMessage(payload ? 'THIS RECORD CANNOT BE REPLAYED ON THE CURRENT VERSION.' : 'FAILED TO LOAD REPLAY.');
+      showTransientMessage(payload ? t('replay.unsupported') : t('replay.loadFailed'));
       return;
     }
 
@@ -660,7 +870,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // that don't decode used to throw out of this handler as an unhandled
     // rejection, leaving the player staring at an unchanged list.
     let engine: ReplayEngine;
-    showListStatus('LOADING REPLAY...');
+    showListStatus(t('replay.loading'));
     const signal = beginReplayWork();
     try {
       engine = await ReplayEngine.create(payload.seed, base64ToBytes(payload.rleBase64), { signal });
@@ -671,7 +881,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       if (err instanceof ReplayAbortedError) return;
       clearListStatus();
       if (browsingAllowed() && browsingGeneration === requestGeneration) {
-        showTransientMessage('THIS REPLAY COULD NOT BE PLAYED BACK.');
+        showTransientMessage(t('replay.playbackFailed'));
       }
       return;
     }
@@ -691,8 +901,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   // ---- Transient message (network/replay-unavailable errors) ----
   const messageOverlay = styledOverlay();
   const messageText = document.createElement('div');
+  applySentenceFont(messageText);
   messageOverlay.appendChild(messageText);
-  const messageCloseButton = styledButton('OK');
+  const messageCloseButton = styledButton(t('ranking.ok'));
   messageCloseButton.addEventListener('click', () => hideTransientMessage());
   messageOverlay.appendChild(messageCloseButton);
   anchor.appendChild(messageOverlay);
@@ -708,15 +919,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   // ---- GAME OVER submission flow ----
   const submitOverlay = styledOverlay();
+  submitOverlay.id = 'ranking-submit-panel';
   const submitHeading = document.createElement('div');
-  submitHeading.textContent = 'YOU MADE THE TOP 10!';
+  submitHeading.textContent = t('submit.heading');
   submitHeading.style.fontSize = '1em';
   submitHeading.style.fontWeight = 'bold';
   submitOverlay.appendChild(submitHeading);
 
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
-  nameInput.placeholder = 'NAME';
+  nameInput.placeholder = t('submit.namePlaceholder');
   nameInput.style.font = HUD_FONT;
   nameInput.style.fontSize = '0.8em';
   nameInput.style.padding = '4px 8px';
@@ -741,14 +953,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   handleCheckbox.type = 'checkbox';
   stopKeyPropagation(handleCheckbox);
   const handleLabelText = document.createElement('span');
-  handleLabelText.textContent = 'USE X HANDLE INSTEAD';
+  handleLabelText.textContent = t('submit.useHandle');
+  applySentenceFont(handleLabelText);
   handleRow.appendChild(handleCheckbox);
   handleRow.appendChild(handleLabelText);
   submitOverlay.appendChild(handleRow);
 
   const handleInput = document.createElement('input');
   handleInput.type = 'text';
-  handleInput.placeholder = '@handle';
+  handleInput.placeholder = t('submit.handlePlaceholder');
   handleInput.maxLength = 16;
   handleInput.style.font = HUD_FONT;
   handleInput.style.fontSize = '0.8em';
@@ -777,6 +990,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   retainedValueHint.style.maxWidth = '100%';
   retainedValueHint.style.overflowWrap = 'anywhere';
   retainedValueHint.style.display = 'none';
+  applySentenceFont(retainedValueHint);
   submitOverlay.appendChild(retainedValueHint);
 
   /**
@@ -788,14 +1002,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
    * back to the screen.
    */
   function syncRetainedValueHint(): void {
-    const hidden = handleCheckbox.checked ? { label: 'NAME', value: nameInput.value } : { label: 'X HANDLE', value: handleInput.value };
+    const hidden = handleCheckbox.checked
+      ? { label: t('submit.nameLabel'), value: nameInput.value }
+      : { label: t('submit.handleLabel'), value: handleInput.value };
     const active = handleCheckbox.checked ? handleInput.value : nameInput.value;
     if (hidden.value === '' || hidden.value === active) {
       retainedValueHint.style.display = 'none';
       retainedValueHint.textContent = '';
       return;
     }
-    retainedValueHint.textContent = `${hidden.label} KEPT: ${hidden.value}`;
+    retainedValueHint.textContent = t('submit.kept', hidden.label, hidden.value);
     retainedValueHint.style.display = 'block';
   }
 
@@ -839,17 +1055,67 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   const submitStatus = document.createElement('div');
   submitStatus.style.fontSize = '0.75em';
   submitStatus.style.minHeight = '1.2em';
+  applySentenceFont(submitStatus);
   submitOverlay.appendChild(submitStatus);
 
   const submitButtonRow = document.createElement('div');
   submitButtonRow.style.display = 'flex';
   submitButtonRow.style.gap = '10px';
-  const skipButton = styledButton('SKIP');
-  const postButton = styledButton('SUBMIT');
+  const skipButton = styledButton(t('submit.skip'));
+  const postButton = styledButton(t('submit.submit'));
   submitButtonRow.appendChild(skipButton);
   submitButtonRow.appendChild(postButton);
   submitOverlay.appendChild(submitButtonRow);
+
+  // RETRY / TITLE, smaller than the row above: the panel covers the GAME OVER
+  // modal, whose own RETRY / TITLE buttons are the way on while the keys and
+  // the field are held, so the panel carries the same two requests.
+  const submitNavRow = document.createElement('div');
+  submitNavRow.style.display = 'flex';
+  submitNavRow.style.gap = '10px';
+  const submitRetryButton = styledButton(t('submit.retry'));
+  submitRetryButton.id = 'ranking-submit-retry-button';
+  const submitTitleButton = styledButton(t('submit.title'));
+  submitTitleButton.id = 'ranking-submit-title-button';
+  for (const button of [submitRetryButton, submitTitleButton]) {
+    button.style.fontSize = '0.7em';
+    button.style.padding = '4px 10px';
+  }
+  submitNavRow.appendChild(submitRetryButton);
+  submitNavRow.appendChild(submitTitleButton);
+  submitOverlay.appendChild(submitNavRow);
   anchor.appendChild(submitOverlay);
+
+  /** True while this panel's own run has a POST in flight. */
+  function isPostInFlight(): boolean {
+    return submittingFor !== null && submittingFor === activeSubmission;
+  }
+
+  /**
+   * RETRY / TITLE are off while the POST is in flight — leaving the run then
+   * would drop it with its submission still unanswered — and on otherwise
+   * (the form, the over-the-cap notice and a finished POST's result).
+   */
+  function syncSubmitNavButtons(): void {
+    const disabled = isPostInFlight();
+    submitRetryButton.disabled = disabled;
+    submitTitleButton.disabled = disabled;
+    submitRetryButton.style.opacity = disabled ? '0.4' : '1';
+    submitTitleButton.style.opacity = disabled ? '0.4' : '1';
+    submitRetryButton.style.cursor = disabled ? 'default' : 'pointer';
+    submitTitleButton.style.cursor = disabled ? 'default' : 'pointer';
+  }
+
+  submitRetryButton.addEventListener('click', () => {
+    if (isPostInFlight()) return;
+    options.onRetry();
+    submitRetryButton.blur();
+  });
+  submitTitleButton.addEventListener('click', () => {
+    if (isPostInFlight()) return;
+    options.onTitle();
+    submitTitleButton.blur();
+  });
 
   skipButton.addEventListener('click', () => {
     submitOverlay.style.display = 'none';
@@ -878,9 +1144,9 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // No snapshot means the run this form belonged to is already gone (the
     // player returned to Title mid-form) — never fall back to live state.
     if (!snapshot || snapshot.seed === undefined) {
-      submitStatus.textContent = 'THIS RUN IS NO LONGER AVAILABLE TO SUBMIT.';
+      submitStatus.textContent = t('submit.unavailable');
       postButton.style.display = 'none';
-      skipButton.textContent = 'OK';
+      skipButton.textContent = t('submit.ok');
       return;
     }
     const seed = snapshot.seed;
@@ -890,13 +1156,14 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     const name = usingHandle ? '' : nameInput.value;
     const xHandle = usingHandle ? handleInput.value : '';
     if (!name.trim() && !xHandle.trim()) {
-      submitStatus.textContent = 'ENTER A NAME OR X HANDLE.';
+      submitStatus.textContent = t('submit.needName');
       return;
     }
 
     submittingFor = snapshot;
     postButton.disabled = true;
-    submitStatus.textContent = 'SUBMITTING...';
+    syncSubmitNavButtons();
+    submitStatus.textContent = t('submit.submitting');
 
     /**
      * True once this POST's reply no longer belongs to whatever the form is
@@ -965,19 +1232,16 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
       if (data.accepted) {
         submitStatus.textContent = acceptedSubmissionText(data.status);
       } else if (data.reason === 'out-of-range') {
-        submitStatus.textContent = 'NOT CURRENTLY IN CONTENTION FOR THE TOP 10 — NOT SAVED.';
+        submitStatus.textContent = t('submit.notInContention');
       } else if (retryLater) {
         // A 429 means one of two temporary queues is full: the verification
         // backlog (the server answers `accepted:false` for that one) or the
         // per-IP submission rate limit (which answers with an error and no
         // `accepted` field at all). The backlog may clear quickly, while the
         // fixed rate-limit window can take up to an hour to reset.
-        submitStatus.textContent =
-          data.accepted === false
-            ? 'VERIFICATION QUEUE IS FULL RIGHT NOW — WAIT A MOMENT, THEN SUBMIT AGAIN.'
-            : 'TOO MANY SUBMISSIONS THIS HOUR — WAIT FOR THE RATE LIMIT TO RESET, THEN SUBMIT AGAIN.';
+        submitStatus.textContent = data.accepted === false ? t('submit.queueFull') : t('submit.rateLimited');
       } else {
-        submitStatus.textContent = data.error ? `NOT ACCEPTED (${data.error}).` : 'NOT ACCEPTED.';
+        submitStatus.textContent = data.error ? t('submit.notAcceptedWith', data.error) : t('submit.notAccepted');
       }
       // Retryable outcomes leave SUBMIT exactly where it is.
       //
@@ -995,34 +1259,79 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         return;
       }
       postButton.style.display = 'none';
-      skipButton.textContent = 'OK';
+      skipButton.textContent = t('submit.ok');
     } catch {
       if (responseIsStale()) return;
-      submitStatus.textContent = 'SUBMIT FAILED — YOU CAN TRY AGAIN.';
+      submitStatus.textContent = t('submit.failed');
       postButton.disabled = false;
     } finally {
       // Only release the in-flight marker if it is still ours: a newer
       // submission may already have claimed it.
       if (submittingFor === snapshot) submittingFor = null;
+      syncSubmitNavButtons();
     }
   }
+
+  // The board's entry score (getRankInThreshold()), from the newest
+  // successful GET /api/ranking that carried verified `entries`.
+  const rankInThreshold = new RankInThresholdTracker();
+
+  async function fetchVerifiedEntries(): Promise<RankingEntry[] | null> {
+    const generation = rankInThreshold.begin();
+    let entries: RankingEntry[] | null = null;
+    try {
+      const res = await fetch('/api/ranking');
+      if (res.ok) {
+        const data = (await res.json()) as { entries: RankingEntry[] };
+        entries = data.entries ?? [];
+      }
+    } catch {
+      entries = null;
+    }
+    rankInThreshold.settle(generation, entries);
+    return entries;
+  }
+
+  // The Title demo's candidates, from the page-load GET /api/ranking (see
+  // getDemoCandidateIds()). Only the ids are kept, never names or ranks.
+  let demoCandidateIds: readonly string[] = [];
+
+  function loadRankInThreshold(): void {
+    void fetchVerifiedEntries().then((entries) => {
+      if (entries !== null && Array.isArray(entries)) {
+        demoCandidateIds = demoCandidateIdsFrom(entries, TITLE_DEMO_MAX_CANDIDATES);
+      }
+    });
+  }
+
+  // The snapshot whose /api/ranking check is still in flight (see
+  // isSubmissionCheckPending()). Identity-keyed like `submittingFor`, so an
+  // older run's late reply cannot clear a newer run's check.
+  let checkingFor: RunSubmissionSnapshot | null = null;
+
+  function isSubmissionCheckPending(): boolean {
+    return checkingFor !== null;
+  }
+
+  function isSubmissionBlockingRetry(): boolean {
+    return checkingFor !== null || submitOverlay.style.display !== 'none';
+  }
+
+  // The panel a reply has decided on, until the GAME OVER result has been
+  // read (see DeferredSubmissionOffer).
+  const deferredOffer = new DeferredSubmissionOffer(options.isSubmissionOfferDue ?? (() => true));
 
   function offerSubmission(snapshot: RunSubmissionSnapshot): void {
     submitOverlay.style.display = 'none';
     activeSubmission = null;
+    checkingFor = null;
+    deferredOffer.cancel();
     if (!isSnapshotEligible(snapshot)) return;
     activeSubmission = snapshot;
+    checkingFor = snapshot;
     void (async () => {
-      let entries: RankingEntry[] | null = null;
-      try {
-        const res = await fetch('/api/ranking');
-        if (res.ok) {
-          const data = (await res.json()) as { entries: RankingEntry[] };
-          entries = data.entries ?? [];
-        }
-      } catch {
-        entries = null;
-      }
+      const entries = await fetchVerifiedEntries();
+      if (checkingFor === snapshot) checkingFor = null;
 
       // Everything below re-checks the world as it looks *now*, not as it
       // looked when the request went out — see decideSubmissionOffer()'s doc
@@ -1038,39 +1347,48 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
         // Explanation only: no name field, no SUBMIT. The snapshot is dropped
         // right away — there is nothing a retry could change about it.
         activeSubmission = null;
-        nameInput.style.display = 'none';
-        handleRow.style.display = 'none';
-        handleInput.style.display = 'none';
-        submitStatus.textContent = `TOO MANY AREA CLAIMS TO VERIFY (${snapshot.claims} > ${MAX_VERIFIED_CLAIMS}) — THIS RUN CANNOT BE RANKED.`;
-        postButton.style.display = 'none';
-        skipButton.textContent = 'OK';
-        submitOverlay.style.display = 'flex';
-        return;
-      }
-      if (decision !== 'show') {
+      } else if (decision !== 'show') {
         // Drop the snapshot for anything except a live, still-current run
         // whose score simply didn't make the cut — in the latter case a
         // 'superseded' offer already owns `activeSubmission` and must not be
         // cleared out from under it.
         if (decision !== 'superseded' && activeSubmission === snapshot) activeSubmission = null;
-        return;
       }
-
-      // Per-run reset (unchanged): a fresh offer starts from an empty form,
-      // both values included.
-      nameInput.value = '';
-      handleInput.value = '';
-      handleCheckbox.checked = false;
-      handleInput.style.display = 'none';
-      handleRow.style.display = 'flex';
-      nameInput.style.display = 'block';
-      syncRetainedValueHint(); // both empty now -> hides itself
-      submitStatus.textContent = '';
-      postButton.style.display = 'inline-block';
-      postButton.disabled = false;
-      skipButton.textContent = 'SKIP';
-      submitOverlay.style.display = 'flex';
+      // Either panel opens once the GAME OVER result has been read.
+      scheduleSubmissionPanel(decision, deferredOffer, {
+        form: openSubmissionForm,
+        overClaimCap: () => openOverClaimCapNotice(snapshot),
+      });
     })();
+  }
+
+  function openOverClaimCapNotice(snapshot: RunSubmissionSnapshot): void {
+    nameInput.style.display = 'none';
+    handleRow.style.display = 'none';
+    handleInput.style.display = 'none';
+    submitStatus.textContent = t('submit.tooManyClaims', snapshot.claims, MAX_VERIFIED_CLAIMS);
+    postButton.style.display = 'none';
+    skipButton.textContent = t('submit.ok');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
+  }
+
+  function openSubmissionForm(): void {
+    // Per-run reset (unchanged): a fresh offer starts from an empty form,
+    // both values included.
+    nameInput.value = '';
+    handleInput.value = '';
+    handleCheckbox.checked = false;
+    handleInput.style.display = 'none';
+    handleRow.style.display = 'flex';
+    nameInput.style.display = 'block';
+    syncRetainedValueHint(); // both empty now -> hides itself
+    submitStatus.textContent = '';
+    postButton.style.display = 'inline-block';
+    postButton.disabled = false;
+    skipButton.textContent = t('submit.skip');
+    syncSubmitNavButtons();
+    submitOverlay.style.display = 'flex';
   }
 
   // ---- Replay-viewer control bar ----
@@ -1125,8 +1443,8 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   replayButtonRow.style.display = 'flex';
   replayButtonRow.style.gap = '8px';
   replayButtonRow.style.pointerEvents = 'auto'; // the bar itself is click-transparent (see replayControls)
-  const skipToFinalButton = styledButton('SKIP TO FINAL STAGE');
-  const exitReplayButton = styledButton('EXIT');
+  const skipToFinalButton = styledButton(t('replay.skipToFinal'));
+  const exitReplayButton = styledButton(t('replay.exit'));
   replayButtonRow.appendChild(skipToFinalButton);
   replayButtonRow.appendChild(exitReplayButton);
   replayControls.appendChild(replayStageLabel);
@@ -1146,15 +1464,15 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function replayStageText(engine: ReplayEngine): string {
     const finalStage = engine.getResult().stage;
     const currentStage = Math.min(engine.getSession().getStage(), finalStage);
-    const counter = `STAGE ${currentStage} / ${finalStage}`;
+    const counter = t('replay.counter', currentStage, finalStage);
     // "(GAME OVER HERE)" is claimed ONLY on a real gameover. A replay whose
     // recorded input simply runs out mid-play (a truncated or
     // differently-configured recording — main.ts's own end-of-replay overlay
     // has always had to allow for it) also stops here, but nobody died: it
     // gets the neutral end wording instead.
-    if (engine.getSession().getStatus() === 'gameover') return `REPLAY END - ${counter} (GAME OVER HERE)`;
-    if (engine.isFinished()) return `REPLAY END - ${counter}`;
-    return currentStage >= finalStage ? `REPLAY - ${counter} (FINAL STAGE)` : `REPLAY - ${counter}`;
+    if (engine.getSession().getStatus() === 'gameover') return t('replay.statusEndGameOver', counter);
+    if (engine.isFinished()) return t('replay.statusEnd', counter);
+    return currentStage >= finalStage ? t('replay.statusFinal', counter) : t('replay.status', counter);
   }
 
   /**
@@ -1194,7 +1512,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
 
   function mountReplayControls(): void {
     lastReplayStageText = null;
-    replayStageLabel.textContent = 'REPLAY';
+    replayStageLabel.textContent = t('replay.label');
     // Starts hidden and is revealed by the first frame's sync if this replay
     // actually has a later stage to skip to — never flashed for a frame at a
     // single-stage run.
@@ -1224,7 +1542,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
   function endSkipUi(): void {
     skipping = false;
     skipToFinalButton.disabled = false;
-    skipToFinalButton.textContent = 'SKIP TO FINAL STAGE';
+    skipToFinalButton.textContent = t('replay.skipToFinal');
   }
 
   skipToFinalButton.addEventListener('click', () => {
@@ -1235,7 +1553,7 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // progress indicator, which only means anything because the skip now
     // yields to the event loop instead of blocking it.
     skipToFinalButton.disabled = true;
-    skipToFinalButton.textContent = 'SKIPPING...';
+    skipToFinalButton.textContent = t('replay.skipping');
     // Suspend normal playback for the duration. Both the skip loop and
     // main.ts's per-frame driver call stepTick() on the SAME engine, and the
     // skip yields between chunks — so without this they interleave and
@@ -1289,59 +1607,47 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     }
   }
 
-  function mountTitleButton(): void {
+  function mountTitleButton(parent: HTMLElement): void {
     const button = document.createElement('button');
     stopKeyPropagation(button);
     button.id = 'ranking-button';
     button.type = 'button';
-    button.textContent = 'RANKING';
-    // Mounted into `anchor` (canvas-wrap) and absolutely positioned to
-    // preserve the HUD row's single-line width budget, which main.ts
-    // calculates in measureNonHudRowWidth()/wouldSingleLineFit(). Adding a
-    // persistent HUD-row sibling reduces the available width and can clip
-    // text in narrow viewports. The canvas's top-right corner does not
-    // participate in that layout.
-    button.style.position = 'absolute';
-    button.style.top = '8px';
-    button.style.right = '8px';
-    button.style.font = HUD_FONT;
-    // BIGGER THAN MUTE, BUT STYLED EXACTLY LIKE IT. The original 0.75em
-    // thin outline
-    // read as a disabled caption and went unnoticed on the Title screen, but
-    // the glowing, bold, tinted answer to that was too loud. So the size
-    // stays (full HUD font size, generous padding — that is what makes it
-    // findable) while every decoration matches main.ts's MUTE button
-    // verbatim: same accent colour, same near-transparent fill, same 1px
-    // border and 4px radius, and no glow or weight of its own.
-    // `em`-relative sizing keeps it scaling with canvas-wrap exactly as
-    // before, so nothing here is pinned to a pixel viewport.
-    button.style.fontSize = '1em';
-    button.style.color = HUD_ACCENT_COLOR;
-    button.style.background = 'rgba(10, 14, 39, 0.7)';
-    button.style.border = `1px solid ${HUD_ACCENT_COLOR}`;
-    button.style.borderRadius = '4px';
-    button.style.padding = '8px 16px';
-    // Never let the button spill out of the canvas box on a narrow phone —
-    // it is absolutely positioned inside canvas-wrap, so without this a wide
-    // enough label could overhang the field. (At 390px the label measures
-    // ~135px against a ~390px-wide canvas, so this is a guard, not a
-    // constraint that currently binds.)
-    button.style.maxWidth = 'calc(100% - 16px)';
-    button.style.cursor = 'pointer';
-    button.style.pointerEvents = 'auto';
-    button.style.userSelect = 'none';
-    button.style.zIndex = '5';
+    button.textContent = t('ranking.button');
+    // Not in the HUD row, whose single-line width budget main.ts calculates
+    // in measureNonHudRowWidth()/wouldSingleLineFit(): a persistent HUD-row
+    // sibling would reduce the available width and could clip text in
+    // narrow viewports. Its look, size and place are the Title menu's
+    // (src/ui/titleMenu.ts).
     button.addEventListener('click', (event) => {
       void showList(); // itself gated on browsingAllowed(), against a click racing syncAvailability()
       (event.currentTarget as HTMLButtonElement).blur();
     });
-    anchor.appendChild(button);
+    parent.appendChild(button);
     titleButton = button;
     // Mounted during init(), before the first frame ever renders: start from
     // the real current state rather than flashing the button on a non-Title
     // screen for one frame.
     lastBrowsingAllowed = null;
     syncAvailability();
+  }
+
+  let submitPanelCompact = false;
+  function setSubmitPanelCompact(compact: boolean): void {
+    if (compact === submitPanelCompact) return;
+    submitPanelCompact = compact;
+    // The roomy values are styledOverlay()'s / styledButton()'s / the
+    // fields' own, restored when the field grows again.
+    submitOverlay.style.padding = compact ? '4px 8px' : '16px 20px';
+    submitOverlay.style.gap = compact ? '2px' : '8px';
+    submitOverlay.style.fontSize = compact ? '10px' : OVERLAY_FONT_SIZE;
+    // Explicit values, never '': clearing the longhand the `font` shorthand
+    // set would inherit #canvas-wrap's line-height 0.
+    submitOverlay.style.lineHeight = compact ? '1.1' : 'normal';
+    submitOverlay.style.maxHeight = compact ? '100%' : '90%';
+    for (const input of [nameInput, handleInput]) input.style.padding = compact ? '2px 6px' : '4px 8px';
+    for (const button of [skipButton, postButton]) button.style.padding = compact ? '3px 10px' : '6px 12px';
+    for (const button of [submitRetryButton, submitTitleButton]) button.style.padding = compact ? '2px 8px' : '4px 10px';
+    submitStatus.style.minHeight = compact ? '0' : '1.2em';
   }
 
   function hideAll(): void {
@@ -1351,7 +1657,28 @@ export function initRankingUI(options: RankingUIOptions): RankingUI {
     // for it must not reopen the form (decideSubmissionOffer()'s
     // 'superseded' / 'stale-run' guards).
     activeSubmission = null;
+    checkingFor = null;
+    // ...and a panel still waiting for its time never opens.
+    deferredOffer.cancel();
   }
 
-  return { mountTitleButton, syncAvailability, syncReplayStatus, offerSubmission, hideAll };
+  return {
+    mountTitleButton,
+    syncAvailability,
+    syncReplayStatus,
+    offerSubmission,
+    hideAll,
+    hideList: () => {
+      if (listOverlay.style.display !== 'none') hideList();
+    },
+    getTitleButton: () => titleButton,
+    setSubmitPanelCompact,
+    loadRankInThreshold,
+    getRankInThreshold: () => rankInThreshold.get(),
+    getDemoCandidateIds: () => demoCandidateIds,
+    isSubmissionBlockingRetry,
+    isSubmissionCheckPending,
+    isSubmissionOfferWaiting: () => deferredOffer.isWaiting(),
+    syncSubmissionOffer: () => deferredOffer.sync(),
+  };
 }

@@ -8,6 +8,7 @@ import { Ember } from './patrol';
 import {
   INITIAL_LIVES,
   MISS_GRACE_TICKS,
+  MISS_LINE_LOCK_TICKS,
   MARKER_MOVE_TICKS_SLOW,
   IGNITER_SPAWN_STILL_TICKS,
   DEFAULT_REQUIRED_OCCUPANCY,
@@ -330,8 +331,10 @@ describe('Game — low/high speed lines and scoring (M3, docs/plan.md §3.2/§3.
     expect(game.getField().get({ x: 1, y: 2 })).toBe(CLAIMED_SLOW);
     expect(game.getOccupancy()).toBeCloseTo(18 / 24);
     expect(game.getStatus()).toBe('stageclear');
-    // 18 cells * 1.0 pt (slow) * multiplier 1 = 18, plus the (75% - 65%) * 100 = 1000 stage-clear bonus.
-    expect(game.getScore()).toBe(1018);
+    // 18 of 24 cells is a big claim: floor(18 * 1.0 pt (slow) * multiplier 1 * 1.5) = 27, plus
+    // a close call (the Wisp at x=8 runs next to the line at x=7) of 200, plus the
+    // (75% - 65%) * 100 = 1000 stage-clear bonus.
+    expect(game.getScore()).toBe(27 + 200 + 1000);
   });
 
   it('closes a mixed fast/slow line as fast (docs/plan.md §3.2) and scores it at the fast rate', () => {
@@ -349,8 +352,9 @@ describe('Game — low/high speed lines and scoring (M3, docs/plan.md §3.2/§3.
 
     expect(game.getField().get({ x: 1, y: 2 })).toBe(CLAIMED_FAST);
     expect(game.getStatus()).toBe('stageclear');
-    // 18 cells * 0.5 pt (fast, since at least one cell was fast) + 1000 stage-clear bonus.
-    expect(game.getScore()).toBe(9 + 1000);
+    // A big claim of 18 cells: floor(18 * 0.5 pt (fast, since at least one cell was fast) * 1.5)
+    // = 13, + 200 for the close call, + 1000 stage-clear bonus.
+    expect(game.getScore()).toBe(13 + 200 + 1000);
   });
 
   it('resets the score multiplier to 1 on a miss', () => {
@@ -466,7 +470,7 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     return { field, game };
   }
 
-  it('blocks entering an UNCLAIMED cell (starting a new line) while the grace period is active, even with drawHeld true', () => {
+  it('blocks entering an UNCLAIMED cell (starting a new line) while the line lock is active, even with drawHeld true', () => {
     const { field, game } = makeMissedGame();
 
     const attempt = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (2,1), UNCLAIMED
@@ -486,14 +490,14 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     expect(game.getMarker().getPosition()).toEqual({ x: 3, y: 0 });
   });
 
-  it('re-allows UNCLAIMED entry (starting a new line) once the grace period has fully elapsed', () => {
+  it('re-allows UNCLAIMED entry (starting a new line) once the line lock has elapsed, while the grace still runs', () => {
     // A fresh, Wisp-collision-free setup: the initial miss comes from an
     // Ember reaching the stationary marker on the border (as in the "Ember
     // collision" describe block above). The Wisp uses the same
     // vertical-heading-pinned-far-from-the-drawn-column trick as the
     // stageclear/Igniter tests above (column 8 vs. the line's column 7) so
     // its patrol trail can never cross the (7,1) cell this test later draws
-    // into during the 120-tick wait — unlike makeMissedGame's Wisp (parked
+    // into during the wait — unlike makeMissedGame's Wisp (parked
     // on the very column being drawn into), which isn't guaranteed to avoid it.
     const field = new Field(10, 5);
     const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, Math.PI / 2); // vertical heading, x pinned at 8
@@ -505,10 +509,11 @@ describe('Game — post-miss grace-period exploit fix (docs/plan.md §3.5 "案B"
     expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS);
     expect(game.getMarker().getPosition()).toEqual({ x: 7, y: 0 });
 
-    for (let tick = 0; tick < MISS_GRACE_TICKS; tick++) {
+    for (let tick = 0; tick < MISS_LINE_LOCK_TICKS; tick++) {
       game.update({ dx: 0, dy: 0, drawHeld: false });
     }
-    expect(game.getGraceTicks()).toBe(0);
+    expect(game.getLineLockTicks()).toBe(0);
+    expect(game.getGraceTicks()).toBe(MISS_GRACE_TICKS - MISS_LINE_LOCK_TICKS);
 
     const result = game.update({ dx: 0, dy: 1, drawHeld: true }); // targets (7,1), UNCLAIMED
 
@@ -1079,6 +1084,73 @@ describe('Game — Ember Blaze generation threshold (docs/plan.md §14 M6-1 (1))
       expect(thisGenerationsPair.every((e) => e.isBlaze())).toBe(isEntryGeneration);
       expect(game.drainEvents()).toEqual([isEntryGeneration ? 'ember-blaze-spawned' : 'ember-spawned']);
     }
+  });
+
+  it('with room under the cap, the first natural cycle brings plain Embers and the second brings Blazes', () => {
+    const field = new Field(10, 6);
+    const wisp = new Wisp({ x: 5, y: 3 }, () => 0.5, 0);
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      emberSpawnIntervalTicks: 1,
+      maxConcurrentEmbers: 10,
+    });
+
+    // Cycle 1 (ticks 1-2): a plain pair.
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    expect(game.getEmbers().length).toBe(2);
+    expect(game.getEmbers().every((e) => !e.isBlaze())).toBe(true);
+    expect(game.drainEvents()).toEqual(['ember-spawned']);
+
+    // Cycle 2 (ticks 3-4): a Blaze pair.
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    game.update({ dx: 0, dy: 0, drawHeld: false });
+    expect(game.getEmbers().length).toBe(4);
+    expect(game.getEmbers().slice(-2).every((e) => e.isBlaze())).toBe(true);
+    expect(game.drainEvents()).toEqual(['ember-blaze-spawned']);
+  });
+
+  it('counts a cycle skipped at the cap: the first natural Ember of a stage, spawned in cycle 2, is a Blaze', () => {
+    // The interior-wall fixture of the cap tests above: the stage starts at
+    // its cap of 2 with two preset (plain) Embers, so cycle 1 (tick 3) is
+    // skipped. The line closed on tick 4 prunes the x=3 wall, despawning
+    // trappedEmber, so cycle 2 (tick 6) has room for one Ember.
+    const field = parseField(`
+      ###########
+      #ff#..#...#
+      #ff#..#...#
+      #ff#..#...#
+      ###########
+    `).field;
+    const wisp = new Wisp({ x: 8, y: 2 }, () => 0.5, 0);
+    const trappedEmber = new Ember({ x: 3, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+    const survivingEmber = new Ember({ x: 6, y: 2 }, { dx: 0, dy: -1 }, () => 1, 100, 0);
+    const game = new Game(field, { x: 5, y: 0 }, wisp, undefined, {
+      embers: [trappedEmber, survivingEmber],
+      emberSpawnIntervalTicks: 2,
+      maxConcurrentEmbers: 2,
+    });
+
+    for (let tick = 1; tick <= 3; tick++) {
+      game.update({ dx: 0, dy: 1, drawHeld: true });
+    }
+    // Cycle 1 came at tick 3 and was skipped at the cap.
+    expect(game.getEmbers()).toEqual([trappedEmber, survivingEmber]);
+    const eventsBeforeRoom = game.drainEvents();
+    expect(eventsBeforeRoom).not.toContain('ember-spawned');
+    expect(eventsBeforeRoom).not.toContain('ember-blaze-spawned');
+
+    game.update({ dx: 0, dy: 1, drawHeld: true }); // tick 4: the claim despawns trappedEmber
+    expect(game.getEmbers()).toEqual([survivingEmber]);
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // tick 5
+    expect(game.getEmbers().length).toBe(1);
+    game.drainEvents();
+
+    game.update({ dx: 0, dy: 0, drawHeld: false }); // tick 6: cycle 2
+    expect(game.getEmbers().length).toBe(2);
+    const spawned = game.getEmbers()[1];
+    expect(spawned).not.toBe(survivingEmber);
+    expect(spawned.isBlaze()).toBe(true);
+    expect(game.drainEvents()).toContain('ember-blaze-spawned');
   });
 
   it('debug emberCount overrides and the GameOptions.embers test hook still produce plain (non-Blaze) Embers', () => {

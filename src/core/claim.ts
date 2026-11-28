@@ -4,9 +4,22 @@ import { Field, Point, UNCLAIMED, BORDER, LINE, CLAIMED_FAST, CLAIMED_SLOW } fro
 
 export type LineSpeed = 'fast' | 'slow';
 
+/**
+ * `anchorSideEnemies` / `otherSideEnemies`: how many valid enemy positions
+ * ended up on each side of the closed line — the side connected to the first
+ * valid position (the flood fill's anchor, itself included) and every other
+ * side together. `otherSideEnemies` > 0 exactly when `split` is true.
+ */
 export type ClaimResult =
-  | { accepted: false; claimedCells: 0; occupancy: number; split: false }
-  | { accepted: true; claimedCells: number; occupancy: number; split: boolean };
+  | { accepted: false; claimedCells: 0; occupancy: number; split: false; anchorSideEnemies: 0; otherSideEnemies: 0 }
+  | {
+      accepted: true;
+      claimedCells: number;
+      occupancy: number;
+      split: boolean;
+      anchorSideEnemies: number;
+      otherSideEnemies: number;
+    };
 
 const FOUR_NEIGHBOR_DELTAS: ReadonlyArray<{ dx: number; dy: number }> = [
   { dx: 1, dy: 0 },
@@ -162,7 +175,14 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[]
         field.set(p, UNCLAIMED);
       }
     }
-    return { accepted: false, claimedCells: 0, occupancy: field.getOccupancy(), split: false };
+    return {
+      accepted: false,
+      claimedCells: 0,
+      occupancy: field.getOccupancy(),
+      split: false,
+      anchorSideEnemies: 0,
+      otherSideEnemies: 0,
+    };
   }
 
   for (const p of line) {
@@ -174,11 +194,16 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[]
   const reachable = floodFillUnclaimed(field, validPositions[0]);
 
   let split = false;
+  let anchorSideEnemies = 1;
+  let otherSideEnemies = 0;
   for (let i = 1; i < validPositions.length; i++) {
     const other = validPositions[i];
     const idx = other.y * width + other.x;
     if (!reachable.has(idx)) {
       split = true;
+      otherSideEnemies++;
+    } else {
+      anchorSideEnemies++;
     }
   }
 
@@ -193,5 +218,5 @@ export function claimArea(field: Field, line: Point[], enemyPos: Point | Point[]
 
   pruneDeadBorders(field, claimState);
 
-  return { accepted: true, claimedCells, occupancy: field.getOccupancy(), split };
+  return { accepted: true, claimedCells, occupancy: field.getOccupancy(), split, anchorSideEnemies, otherSideEnemies };
 }

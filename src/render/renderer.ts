@@ -1,5 +1,35 @@
 import { Field, Point, BORDER, CLAIMED_FAST, CLAIMED_SLOW, LINE, UNCLAIMED, CellState } from '../core/field';
 import type { Ember } from '../core/patrol';
+import type { FxClaimTags, FxFrame, FxFillReveal, FxPopup } from '../fx/director';
+import {
+  drawClaimTags,
+  drawFlash,
+  drawLineGlows,
+  drawMissReason,
+  drawPopups,
+  drawShards,
+  drawSparks,
+  drawSplitBanner,
+  drawStageTitle,
+  type FxAvoidBand,
+  type FxTextBox,
+} from './fxLayer';
+import { drawHintMarks, type HintMarkShapes } from './hintLayer';
+import { drawStartCue, startCueLineWidth, startCueRing, type StartCueRing } from './startCueLayer';
+import { wispHeadColor, wispTrailAlpha, wispTrailColor, wispTrailFillCells, wispTrailGlowAlpha } from './wispShape';
+import { drawSurgeRings, surgeCueLineWidth, surgeCueRings, type SurgeCueRing } from './surgeCueLayer';
+import type { WispSurgeLevel } from '../core/wispSurge';
+
+/**
+ * One Wisp to draw: its trail (Wisp.getTrailRef()), speed multiplier
+ * (Wisp.getSpeedMultiplier()) and the stage's surge level
+ * (Game.getWispSurgeLevel(); 0 when omitted), which colors the head.
+ */
+export interface WispDraw {
+  trail: ReadonlyArray<Readonly<Point>>;
+  speedMultiplier: number;
+  surgeLevel?: WispSurgeLevel;
+}
 import {
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
@@ -11,15 +41,13 @@ import {
   COLOR_GRID_LINE,
   COLOR_LINE,
   COLOR_MARKER,
-  COLOR_WISP_HEAD,
   COLOR_EMBER,
   COLOR_EMBER_BLAZE,
   COLOR_IGNITER,
   GLOW_BLUR_ENTITY,
   GLOW_BLUR_LINE,
   GLOW_BLUR_FIELD_EDGE,
-  WISP_TRAIL_ALPHA_NEAR,
-  WISP_TRAIL_ALPHA_FAR,
+  WISP_TRAIL_GLOW_CELLS,
   MARKER_DIAMOND_RADIUS_CELLS,
   MARKER_GLOW_BLUR,
   MARKER_PULSE_AMPLITUDE,
@@ -62,6 +90,14 @@ interface DespawnEffect {
   startFrame: number;
 }
 
+// Fill reveal bookkeeping: -1 marks a cell that is not part of the reveal,
+// UNREACHED a newly claimed cell whose distance is not known yet.
+const UNREACHED = -2;
+
+function isClaimed(state: CellState): boolean {
+  return state === CLAIMED_FAST || state === CLAIMED_SLOW;
+}
+
 export class Renderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -82,6 +118,32 @@ export class Renderer {
   // call Math.round() in their per-cell hot loops (see buildCellBoundaries()
   // below for why this exists and how it's indexed at each call site).
   private readonly cellBoundaries: Float64Array;
+  // Fill reveal (only while an FxFrame is passed to render()): every cell's
+  // state as drawn on the previous frame, so the frame a claim arrives on can
+  // tell which cells just became claimed. `revealDistance` holds, for those
+  // cells, how far (4-neighbor steps) each one is from the closed line, and
+  // -1 for every other cell; a revealing cell is held back until the
+  // reveal's progress reaches it.
+  private prevCells: Uint8Array | null = null;
+  private revealId = -1;
+  private revealDistance: Int32Array | null = null;
+  private revealMaxDistance = 0;
+  private revealThreshold = Number.POSITIVE_INFINITY;
+  // Center (in cells) of each reveal's new cells, for its "+score" popup.
+  private revealCentroids = new Map<number, { x: number; y: number }>();
+
+  private fxTextMinFontPx = 0;
+  private missReasonMinFontPx = 0;
+  private fxAvoidBand: FxAvoidBand | null = null;
+  private lastFxTextBoxes: { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } = { stageTitle: null, claimTags: [] };
+  private lastStartCue: StartCueRing | null = null;
+  private startCueMinLineWidthPx = 0;
+  private lastSurgeRings: SurgeCueRing[] = [];
+  private lastHeadColors: string[] = [];
+  private hintMarks: HintMarkShapes | null = null;
+  private veilAlpha = 0;
+  private lastVeilAlpha = 0;
+  private readonly wispTrailColors = new Map<number, string>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -148,35 +210,79 @@ export class Renderer {
     this.emberDespawnEffects.push({ position: { ...position }, startFrame: this.frameCount });
   }
 
+  /**
+   * The smallest canvas font size for the effects' text (+score, x2, the
+   * praise word, CHAIN xN): main.ts sets FX_TEXT_MIN_DISPLAY_PX divided by
+   * the field's display scale (on-screen width / CANVAS_WIDTH), so on a
+   * phone, where the field is drawn at ~0.6x, the text never shows smaller
+   * than that many CSS px. Drawing only — see fxLayer.ts's popupFontSizes().
+   */
+  setFxTextMinFontPx(px: number): void {
+    this.fxTextMinFontPx = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /** The same for the miss reason (FX_MISS_REASON_MIN_DISPLAY_PX / the display scale) — see fxLayer.ts's missReasonFontPx(). */
+  setMissReasonMinFontPx(px: number): void {
+    this.missReasonMinFontPx = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /**
+   * Forgets the board-bound fill-reveal state. Call whenever the board is
+   * replaced (the next stage starts, back to Title, entering or leaving a
+   * replay) so the next frame is not compared against an unrelated board.
+   */
+  resetBoard(): void {
+    this.prevCells = null;
+    this.clearReveal();
+    this.revealCentroids.clear();
+  }
+
+  /**
+   * Draws one frame. `fx` (live play only) adds the impact feedback: the
+   * whole field shakes by `fx.shake`, newly claimed cells are revealed
+   * outward from the closed line, and fxLayer.ts's glows, shards, sparks,
+   * popups, SPLIT! and flash are drawn in their place in the order. Without `fx`
+   * (replay viewing) the frame is drawn exactly as before.
+   */
   render(
     field: Field,
     markerPosition?: Point,
-    wispTrails?: ReadonlyArray<ReadonlyArray<Readonly<Point>>>,
+    wisps?: ReadonlyArray<WispDraw>,
     embers?: ReadonlyArray<Ember>,
     igniterPosition?: Point | null,
-    markerVisible = true
+    markerVisible = true,
+    fx?: FxFrame
   ): void {
     this.frameCount++;
 
     // Static background (fill + grid pattern) in a single draw call
     this.ctx.drawImage(this.backgroundLayer, 0, 0);
+    // The shake moves the board and everything on it, not the background, so
+    // the background shows along whichever edge the board moved away from.
+    const shaking = fx !== undefined && (fx.shake.x !== 0 || fx.shake.y !== 0);
+    if (shaking) {
+      this.ctx.save();
+      this.ctx.translate(fx.shake.x, fx.shake.y);
+    }
+    if (fx) this.updateReveal(field, fx.fillReveal);
     // hasLineCells doubles as "is the marker currently drawing a line"
     // (docs/plan.md §12.3 marker idle pulse): only Marker.tryMove ever writes
     // the LINE cell state (src/core/marker.ts), and it's present on the field
     // for exactly as long as Marker.isDrawing() is true, so this reuses the
     // full-field scan drawField() already does rather than adding a new
     // render() parameter.
-    const hasLineCells = this.drawField(field);
+    const hasLineCells = this.drawField(field, fx !== undefined);
     this.drawFieldEdgeGlow();
-    if (wispTrails) {
+    if (wisps) {
       // docs/plan.md §12.7/§4.2: stage n has n Wisps (2+ from stage 2); each
       // gets its own afterimage trail + head, drawn independently.
-      for (const trail of wispTrails) {
-        if (trail.length > 0) {
-          this.drawWisp(trail);
+      for (const wisp of wisps) {
+        if (wisp.trail.length > 0) {
+          this.drawWisp(wisp.trail, wisp.speedMultiplier, wisp.surgeLevel ?? 0);
         }
       }
     }
+    this.lastHeadColors = wisps ? wisps.filter((w) => w.trail.length > 0).map((w) => wispHeadColor(w.surgeLevel ?? 0)) : [];
     if (embers && embers.length > 0) {
       this.drawEmbers(embers);
     }
@@ -184,6 +290,19 @@ export class Renderer {
       this.drawIgniter(igniterPosition);
     }
     this.drawEmberDespawnEffects();
+    if (fx) {
+      drawLineGlows(this.ctx, fx.lineGlows);
+      drawShards(this.ctx, fx.shards);
+      drawSparks(this.ctx, fx.sparks);
+    }
+    // The Wisp surge cue: on the board (it shakes with it), under the marker
+    // and every text. The hint's ring drawn later around the same Wisps is
+    // smaller (WISP_SURGE_CUE_*_RADIUS_CELLS), so it never covers this one.
+    this.lastSurgeRings = surgeCueRings(
+      fx?.surgeRings ?? [],
+      (wisps ?? []).map((w) => w.trail[0])
+    );
+    if (this.lastSurgeRings.length > 0) drawSurgeRings(this.ctx, this.lastSurgeRings, this.startCueMinLineWidthPx);
     // Post-miss grace feedback (docs/plan.md §6 M5): the caller blinks the
     // marker by toggling `markerVisible` off every few ticks; omitting the
     // draw call entirely (rather than e.g. changing color) makes it a true
@@ -191,6 +310,210 @@ export class Renderer {
     if (markerPosition && markerVisible) {
       this.drawMarker(markerPosition, !hasLineCells);
     }
+    if (fx) {
+      drawPopups(this.ctx, fx.popups, (popup) => this.popupPosition(popup), this.fxTextMinFontPx);
+      if (fx.splitBanner) drawSplitBanner(this.ctx, fx.splitBanner);
+      // Over SPLIT!, so a split's BIG CLAIM / CLOSE CALL under it stay readable.
+      this.lastFxTextBoxes.claimTags = drawClaimTags(
+        this.ctx,
+        fx.claimTags,
+        (item) => this.popupPosition(item),
+        this.fxTextMinFontPx,
+        this.fxAvoidBand
+      );
+      this.pruneCentroids(fx.popups, fx.claimTags);
+      drawFlash(this.ctx, fx.flash);
+    }
+    if (shaking) {
+      this.ctx.restore();
+    }
+    if (!fx) this.lastFxTextBoxes.claimTags = [];
+    // The stage's title: outside the shake, like the miss reason, since it is
+    // there to be read.
+    this.lastFxTextBoxes.stageTitle = fx?.stageTitle
+      ? drawStageTitle(this.ctx, fx.stageTitle, this.fxTextMinFontPx, this.fxAvoidBand)
+      : null;
+    // The start cue: on the marker wherever it is now (even on a blinked-off
+    // frame), over the stage title shown at the same time so a start near
+    // the title is never hidden by it, and moved with the board when it
+    // shakes, so it stays on the marker.
+    this.lastStartCue = startCueRing(fx?.startCue ?? null, markerPosition);
+    if (this.lastStartCue) {
+      this.ctx.save();
+      if (shaking) this.ctx.translate(fx.shake.x, fx.shake.y);
+      drawStartCue(this.ctx, this.lastStartCue, this.startCueMinLineWidthPx);
+      this.ctx.restore();
+    }
+    // The miss reason: over the flash so the burst never washes it out, and
+    // outside the shake, since it is there to be read.
+    if (fx?.missReason) drawMissReason(this.ctx, fx.missReason, this.missReasonMinFontPx);
+    // The in-play hint's mark (live play only — main.ts never sets one for a
+    // replay): on top, and outside the shake like the miss reason.
+    if (this.hintMarks) drawHintMarks(this.ctx, this.hintMarks);
+    // The Title demo's veil (setVeil()): last, over the board and its frame,
+    // so the title text and the buttons above the canvas stay readable.
+    this.lastVeilAlpha = this.veilAlpha;
+    if (this.veilAlpha > 0) {
+      this.ctx.save();
+      this.ctx.globalAlpha = this.veilAlpha;
+      this.ctx.fillStyle = COLOR_BACKGROUND;
+      this.ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      this.ctx.restore();
+    }
+  }
+
+  /** A veil of the background color over the whole frame at `alpha` (0 for none), from the next render() on. */
+  setVeil(alpha: number): void {
+    this.veilAlpha = Number.isFinite(alpha) && alpha > 0 ? Math.min(alpha, 1) : 0;
+  }
+
+  /** The veil's opacity on the last frame drawn (0 for none). */
+  getLastVeilAlpha(): number {
+    return this.lastVeilAlpha;
+  }
+
+  /** The in-play hint's ring or arrow for the next frames (src/render/hintLayer.ts), or null for none. */
+  setHintMarks(shapes: HintMarkShapes | null): void {
+    this.hintMarks = shapes;
+  }
+
+  /**
+   * The band of the field (logical canvas px) the stage title and the claim
+   * tags keep out of — the hint line while it is shown — or null.
+   */
+  setFxAvoidBand(band: FxAvoidBand | null): void {
+    this.fxAvoidBand = band;
+  }
+
+  /**
+   * The thinnest line the start cue is drawn with (logical px): main.ts sets
+   * FX_START_CUE_MIN_LINE_DISPLAY_PX divided by the field's display scale, so
+   * the ring stays visible on a field shown small. Drawing only.
+   */
+  setStartCueMinLineWidthPx(px: number): void {
+    this.startCueMinLineWidthPx = Number.isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /** The start cue's ring the last frame drew (logical canvas px, with its line width), or null, for tests. */
+  getLastStartCue(): (StartCueRing & { lineWidth: number }) | null {
+    return this.lastStartCue ? { ...this.lastStartCue, lineWidth: startCueLineWidth(this.startCueMinLineWidthPx) } : null;
+  }
+
+  /** The Wisp surge cue's rings the last frame drew (logical canvas px, with their line width), for tests. */
+  getLastSurgeRings(): Array<SurgeCueRing & { lineWidth: number }> {
+    const lineWidth = surgeCueLineWidth(this.startCueMinLineWidthPx);
+    return this.lastSurgeRings.map((ring) => ({ ...ring, lineWidth }));
+  }
+
+  /** The head color of every Wisp the last frame drew, in order, for tests. */
+  getLastWispHeadColors(): string[] {
+    return [...this.lastHeadColors];
+  }
+
+  /** Where the last frame drew the stage title and the claim tags (logical canvas px), for tests. */
+  getLastFxTextBoxes(): { stageTitle: FxTextBox | null; claimTags: FxTextBox[] } {
+    return { stageTitle: this.lastFxTextBoxes.stageTitle, claimTags: [...this.lastFxTextBoxes.claimTags] };
+  }
+
+  private popupPosition(popup: { revealId: number; anchor: Point }): { x: number; y: number } {
+    return this.revealCentroids.get(popup.revealId) ?? popup.anchor;
+  }
+
+  private pruneCentroids(popups: readonly FxPopup[], claimTags: readonly FxClaimTags[]): void {
+    if (this.revealCentroids.size === 0) return;
+    for (const id of this.revealCentroids.keys()) {
+      if (!popups.some((p) => p.revealId === id) && !claimTags.some((c) => c.revealId === id)) {
+        this.revealCentroids.delete(id);
+      }
+    }
+  }
+
+  private clearReveal(): void {
+    this.revealId = -1;
+    this.revealDistance = null;
+    this.revealMaxDistance = 0;
+    this.revealThreshold = Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Starts a new reveal on the first frame a claim's reveal id appears —
+   * the new cells are those claimed now but not on the previous frame (a
+   * reveal still running is thereby finished: its cells were already
+   * claimed last frame) — and updates how far out the reveal has reached.
+   */
+  private updateReveal(field: Field, reveal: FxFillReveal | null): void {
+    if (!reveal) {
+      if (this.revealId !== -1) this.clearReveal();
+      return;
+    }
+    if (reveal.id !== this.revealId) {
+      this.startReveal(field, reveal);
+    }
+    this.revealThreshold =
+      this.revealDistance === null ? Number.POSITIVE_INFINITY : reveal.progress * (this.revealMaxDistance + 1);
+  }
+
+  private startReveal(field: Field, reveal: FxFillReveal): void {
+    this.clearReveal();
+    this.revealId = reveal.id;
+    const prev = this.prevCells;
+    const width = field.getWidth();
+    const height = field.getHeight();
+    if (!prev || prev.length !== width * height) return;
+
+    const distance = new Int32Array(width * height).fill(-1);
+    let count = 0;
+    let sumX = 0;
+    let sumY = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (isClaimed(field.getAt(x, y)) && !isClaimed(prev[i] as CellState)) {
+          distance[i] = UNREACHED; // new, distance not known yet
+          count++;
+          sumX += x;
+          sumY += y;
+        }
+      }
+    }
+    if (count === 0) return;
+    this.revealCentroids.set(reveal.id, { x: sumX / count, y: sumY / count });
+
+    // Breadth-first from the closed line through the new cells (4 neighbors).
+    const queue = new Int32Array(count);
+    let head = 0;
+    let tail = 0;
+    const visit = (x: number, y: number, d: number): void => {
+      if (x < 0 || y < 0 || x >= width || y >= height) return;
+      const i = y * width + x;
+      if (distance[i] !== UNREACHED) return;
+      distance[i] = d;
+      queue[tail++] = i;
+    };
+    for (const c of reveal.line) {
+      visit(c.x + 1, c.y, 0);
+      visit(c.x - 1, c.y, 0);
+      visit(c.x, c.y + 1, 0);
+      visit(c.x, c.y - 1, 0);
+    }
+    let maxDistance = 0;
+    while (head < tail) {
+      const i = queue[head++];
+      const d = distance[i];
+      if (d > maxDistance) maxDistance = d;
+      const x = i % width;
+      const y = (i - x) / width;
+      visit(x + 1, y, d + 1);
+      visit(x - 1, y, d + 1);
+      visit(x, y + 1, d + 1);
+      visit(x, y - 1, d + 1);
+    }
+    // New cells the line does not reach (should not happen) appear last.
+    for (let i = 0; i < distance.length; i++) {
+      if (distance[i] === UNREACHED) distance[i] = maxDistance;
+    }
+    this.revealDistance = distance;
+    this.revealMaxDistance = maxDistance;
   }
 
   // A single cheap (O(1), not O(cells)) neon glow stroke around the whole
@@ -217,10 +540,24 @@ export class Renderer {
   // Returns true iff at least one LINE cell was drawn (docs/plan.md §12.3:
   // the marker idle-pulse's "is currently drawing" signal piggybacks on this
   // scan — see the render() call site's comment).
-  private drawField(field: Field): boolean {
+  //
+  // With `trackCells` (live play), also records every cell's state for the
+  // next frame's fill reveal, and holds back the newly claimed cells the
+  // running reveal has not reached yet (they show the background, as they
+  // did a frame ago).
+  private drawField(field: Field, trackCells = false): boolean {
     const width = field.getWidth();
     const height = field.getHeight();
     let hasLineCells = false;
+    let snapshot: Uint8Array | null = null;
+    if (trackCells) {
+      if (!this.prevCells || this.prevCells.length !== width * height) {
+        this.prevCells = new Uint8Array(width * height);
+      }
+      snapshot = this.prevCells;
+    }
+    const revealDistance = trackCells ? this.revealDistance : null;
+    const revealThreshold = this.revealThreshold;
 
     // Direct double loop - no intermediate array allocation per frame.
     // UNCLAIMED cells show the pre-rendered background, so only other states need fillRect.
@@ -239,7 +576,9 @@ export class Renderer {
       const ch = this.cellBoundaries[y + 1] - py;
       for (let x = 0; x < width; x++) {
         const state: CellState = field.getAt(x, y);
+        if (snapshot) snapshot[y * width + x] = state;
         if (state === UNCLAIMED) continue;
+        if (revealDistance && revealDistance[y * width + x] >= revealThreshold) continue;
 
         switch (state) {
           case BORDER:
@@ -271,51 +610,82 @@ export class Renderer {
     return hasLineCells;
   }
 
+  // The trail color for a speed multiplier (wispTrailColor()), built once per
+  // multiplier rather than every frame.
+  private wispTrailColorFor(speedMultiplier: number): string {
+    let color = this.wispTrailColors.get(speedMultiplier);
+    if (color === undefined) {
+      color = wispTrailColor(speedMultiplier);
+      this.wispTrailColors.set(speedMultiplier, color);
+    }
+    return color;
+  }
+
   // Draws the Wisp's afterimage trail (older history first, more transparent
   // — docs/plan.md §6 M5 "Wispの残像表現の強化") followed by a glowing head,
-  // so the head is always painted on top and brightest.
-  private drawWisp(trail: ReadonlyArray<Readonly<Point>>): void {
-    // COLOR_WISP_HEAD is already an opaque color string, so painting it
-    // through ctx.globalAlpha reproduces exactly the same composite as the
-    // old per-segment `rgba(r, g, b, alpha)` fillStyle would have — without
-    // building a new string every segment, every frame (docs/plan.md §13.3
-    // P3). Reset to 1 once the (variable-alpha) trail segments are done so
-    // it doesn't leak into the (opaque, save/restore-scoped) head below.
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
-    for (let i = trail.length - 1; i >= 1; i--) {
-      const p = trail[i];
-      // Older (higher index) segments fade toward WISP_TRAIL_ALPHA_FAR;
-      // the segment right behind the head sits near WISP_TRAIL_ALPHA_NEAR.
-      const t = trail.length > 2 ? (i - 1) / (trail.length - 2) : 0;
-      const alpha = WISP_TRAIL_ALPHA_NEAR + (WISP_TRAIL_ALPHA_FAR - WISP_TRAIL_ALPHA_NEAR) * t;
-      this.ctx.globalAlpha = alpha;
-      // Physical-pixel-snapped span, same as drawField()'s cell fills and
-      // for the same reason (fractional devicePixelRatio seams) — this is
-      // also a grid of adjacent single-cell fillRect() calls.
-      const px = this.cellBoundaries[p.x];
-      const py = this.cellBoundaries[p.y];
-      const cw = this.cellBoundaries[p.x + 1] - px;
-      const ch = this.cellBoundaries[p.y + 1] - py;
+  // so the head is always painted on top and brightest. The trail covers
+  // every cell it can hit (src/render/wispShape.ts) — the cells between two
+  // trail points too, which a fast Wisp leaves — in a color that follows the
+  // Wisp's speed, over a fainter glow that makes it read thicker than a line.
+  private drawWisp(trail: ReadonlyArray<Readonly<Point>>, speedMultiplier: number, surgeLevel: WispSurgeLevel): void {
+    const cells = wispTrailFillCells(trail);
+    const count = trail.length;
+    this.ctx.save();
+    // An opaque color string painted through ctx.globalAlpha, rather than a
+    // new `rgba(r, g, b, alpha)` string per cell, every frame (docs/plan.md
+    // §13.3 P3).
+    this.ctx.fillStyle = this.wispTrailColorFor(speedMultiplier);
+
+    // The glow: each stretch of the trail (a trail point and the cells
+    // between it and the point before) is one path of cells grown by
+    // WISP_TRAIL_GLOW_CELLS on every side, filled once, so overlapping
+    // neighbors never pile their glow up. Drawing only.
+    const grow = WISP_TRAIL_GLOW_CELLS * RENDER_SCALE;
+    const size = RENDER_SCALE + grow * 2;
+    let stretch = -1;
+    for (const cell of cells) {
+      const at = Math.ceil(cell.at);
+      if (at !== stretch) {
+        if (stretch !== -1) this.ctx.fill();
+        stretch = at;
+        this.ctx.globalAlpha = wispTrailGlowAlpha(wispTrailAlpha(at, count));
+        this.ctx.beginPath();
+      }
+      this.ctx.rect(cell.x * RENDER_SCALE - grow, cell.y * RENDER_SCALE - grow, size, size);
+    }
+    if (stretch !== -1) this.ctx.fill();
+
+    // The cells themselves, which are what hits. Physical-pixel-snapped
+    // spans, same as drawField()'s cell fills and for the same reason
+    // (fractional devicePixelRatio seams).
+    for (const cell of cells) {
+      this.ctx.globalAlpha = wispTrailAlpha(cell.at, count);
+      const px = this.cellBoundaries[cell.x];
+      const py = this.cellBoundaries[cell.y];
+      const cw = this.cellBoundaries[cell.x + 1] - px;
+      const ch = this.cellBoundaries[cell.y + 1] - py;
       this.ctx.fillRect(px, py, cw, ch);
     }
-    this.ctx.globalAlpha = 1;
+    this.ctx.restore();
 
-    // Head enlarged to a ~2x2-cell halo + bright core (docs/plan.md §6 M9 /
-    // §12.3), centered on the head's grid cell so the visible footprint
-    // grows without moving the collision-relevant position.
+    // Head enlarged to a halo + bright core (docs/plan.md §6 M9 / §12.3),
+    // centered on the head's grid cell so the visible footprint grows
+    // without moving the collision-relevant position. Its color follows the
+    // stage's surge level (wispHeadColor()), not the speed.
     const head = trail[0];
     const cx = (head.x + 0.5) * RENDER_SCALE;
     const cy = (head.y + 0.5) * RENDER_SCALE;
+    const headColor = wispHeadColor(surgeLevel);
     this.ctx.save();
-    this.ctx.shadowColor = COLOR_WISP_HEAD;
+    this.ctx.shadowColor = headColor;
     this.ctx.shadowBlur = GLOW_BLUR_ENTITY;
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    this.ctx.fillStyle = headColor;
     this.ctx.globalAlpha = WISP_HEAD_HALO_ALPHA;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_HALO_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();
     this.ctx.globalAlpha = 1;
-    this.ctx.fillStyle = COLOR_WISP_HEAD;
+    this.ctx.fillStyle = headColor;
     this.ctx.beginPath();
     this.ctx.arc(cx, cy, WISP_HEAD_CORE_RADIUS_CELLS * RENDER_SCALE, 0, Math.PI * 2);
     this.ctx.fill();

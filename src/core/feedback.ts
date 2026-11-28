@@ -1,0 +1,72 @@
+// Read-only notices of what a tick's claim or miss looked like, for the
+// presentation layer (hit stop, fill reveal, score popup, shards, sounds).
+// Pure data — no DOM/Canvas dependencies. Only produced when a Game/
+// GameSession is constructed with `captureFeedback: true`; the server-side
+// replay verification, replay viewing and every other caller leave it off and
+// pay nothing for it. Producing a notice never touches the rng, the board,
+// the score or the order of GameEvents, so a run plays out identically
+// whether or not it is captured.
+import type { Point } from './field';
+import type { LineSpeed } from './claim';
+
+/** What a life was lost to. */
+export type MissCause = 'wisp' | 'ember' | 'igniter';
+
+export interface ClaimFeedback {
+  /** claimArea()'s claimedCells for this claim. */
+  claimedCells: number;
+  /** Occupancy (0-1) right before this claim. */
+  occupancyBefore: number;
+  /** Occupancy (0-1) right after this claim. */
+  occupancyAfter: number;
+  lineSpeed: LineSpeed;
+  /** Area points this claim scored (the stage-clear excess bonus is not included; a big claim's x1.5 is). */
+  areaScore: number;
+  /** True when this claim filled at least BIG_CLAIM_SHARE of the field, so its area points were multiplied. */
+  bigClaim: boolean;
+  /**
+   * The close-call bonus this claim added on top of `areaScore`
+   * (NEAR_MISS_BONUS x the multiplier when a Wisp came within the near-miss
+   * distance of the line while it was drawn), 0 otherwise.
+   */
+  nearMissBonus: number;
+  /**
+   * The excess-occupancy bonus this claim scored: scoreStageClearBonus()'s
+   * value when it cleared the stage by occupancy, 0 for a split clear and for
+   * a claim that did not clear the stage.
+   */
+  stageClearBonus: number;
+  /** The score multiplier applied to `areaScore`. */
+  multiplier: number;
+  /** True when this claim split the Wisps apart. */
+  split: boolean;
+  /**
+   * How much this split raises the next stage's multiplier before the cap:
+   * the Wisp count of the smaller side (at least 1). 0 when not a split.
+   */
+  splitMultiplierGain: number;
+  /** True when this claim cleared the stage (by occupancy or by a split). */
+  stageCleared: boolean;
+  /** The cells of the line that closed (a copy). */
+  closedLine: Point[];
+}
+
+export interface MissFeedback {
+  cause: MissCause;
+  /** Where the contact happened: the hitting Wisp's head for 'wisp', the marker for 'ember' and 'igniter'. */
+  position: Point;
+  /** The in-progress line's cells right before it vanished (a copy; empty when no line was being drawn). */
+  line: Point[];
+}
+
+/**
+ * A claim raised the Wisp surge level (core/wispSurge.ts). Only a claim
+ * that leaves the stage still playing queues one; a debug override changing
+ * the level never does.
+ */
+export interface WispSurgeFeedback {
+  /** The new level (1 or 2). */
+  level: 1 | 2;
+  /** Every Wisp's head as the level rose (copies). */
+  positions: Point[];
+}

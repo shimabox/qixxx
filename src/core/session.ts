@@ -12,9 +12,11 @@ import { Game, GameInput, DebugOverrides, EffectiveDebugParams } from './game';
 import { Wisp, Rng } from './enemy';
 import { getStageConfig, StageConfig } from './stage';
 import { EventQueue, GameEvent } from './events';
+import type { ClaimFeedback, MissFeedback, WispSurgeFeedback } from './feedback';
 import { mulberry32, deriveStageSeed } from './rng';
+import { MarkerStart, drawMarkerStart, topCenterMarkerStart } from './markerStart';
+import { Difficulty, initialLivesFor, wispSpeedFor } from './difficulty';
 import {
-  INITIAL_LIVES,
   DEFAULT_SCORE_MULTIPLIER,
   SPLIT_MULTIPLIER_CAP,
   GRID_WIDTH,
@@ -22,7 +24,9 @@ import {
   WISP_SPAWN_MARGIN_X_RATIO,
   WISP_SPAWN_MARGIN_Y_RATIO,
   WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN,
+  WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW,
   TIME_LIMIT_TICKS,
+  WISP_SURGE_FIRST_STAGE,
 } from '../config';
 
 export type SessionStatus = 'title' | 'playing' | 'stageclear' | 'gameover';
@@ -97,6 +101,21 @@ export interface SessionOptions {
    * from this constructor-time option.
    */
   timeLimitTicks?: number;
+  /**
+   * When true, every stage's Game is built with `captureFeedback: true` and
+   * its claim/miss notices (core/feedback.ts) are forwarded through
+   * drainClaimFeedback()/drainMissFeedback(). Defaults to false, in which
+   * case nothing extra is built, copied or forwarded and both drains return
+   * an empty array. Never changes the simulation. A custom `gameFactory`
+   * builds its own Game and so decides for itself whether to capture.
+   */
+  captureFeedback?: boolean;
+  /**
+   * The difficulty (core/difficulty.ts) of the session's first run, and of
+   * every later one until setNextDifficulty() picks another. Defaults to
+   * 'normal', which plays exactly as a session built without it.
+   */
+  difficulty?: Difficulty;
 }
 
 export class GameSession {
@@ -108,8 +127,9 @@ export class GameSession {
   // itself knows about. getMultiplier() always reflects the *current*
   // Game's own multiplier instead — see below.
   private multiplier: number = DEFAULT_SCORE_MULTIPLIER;
-  // Consecutive split-stage-clears since the last miss (docs/plan.md §3.6):
-  // the *next* stage's multiplier is this + 1, capped at SPLIT_MULTIPLIER_CAP.
+  // What the split-stage-clears since the last miss have added (docs/plan.md
+  // §3.6): each adds the Wisp count of its smaller side, at least 1. The
+  // *next* stage's multiplier is this + 1, capped at SPLIT_MULTIPLIER_CAP.
   private splitSuccesses = 0;
   private highScore: number;
   private game!: Game; // assigned by resetToFreshRun() below, called from this constructor
@@ -126,6 +146,13 @@ export class GameSession {
   // `this.game` gets replaced by advanceStage() before the caller has had a
   // chance to drain).
   private despawnedEmberPositions = new EventQueue<Point>();
+  // Forwarded claim/miss notices (SessionOptions.captureFeedback), buffered
+  // here for the same stage-transition reason as `eventQueue`. Null when
+  // capture is off, so a non-capturing session allocates nothing for them.
+  private readonly claimFeedback: EventQueue<ClaimFeedback> | null;
+  private readonly missFeedback: EventQueue<MissFeedback> | null;
+  private readonly surgeFeedback: EventQueue<WispSurgeFeedback> | null;
+  private readonly captureFeedback: boolean;
   // Not readonly: a 'normal'
   // run's seed is now replaced on every retry, at the resetToFreshRun()
   // boundary — see `nextSeed`/setNextSeed() below for why that boundary
@@ -162,6 +189,9 @@ export class GameSession {
   // session-lifetime rng field, since a seeded run's rng source is itself
   // per-stage (see `seed` above).
   private currentStageRng?: Rng;
+  // Where the current stage's marker started (see chooseMarkerStart()), or
+  // null when a test's `gameFactory` built the stage.
+  private markerStart: MarkerStart | null = null;
   private readonly fieldWidth: number;
   private readonly fieldHeight: number;
   private readonly gameFactory?: SessionOptions['gameFactory'];
@@ -203,6 +233,14 @@ export class GameSession {
   // GAME OVER screen. Re-seeded at every gameover entry, never anywhere else
   // — Title/StageClear keep their instant any-key behavior.
   private gameoverReleaseSeen = false;
+  // The current run's difficulty, fixed when the run is built
+  // (resetToFreshRun()), and the one the next run will be built with
+  // (setNextDifficulty()). Changing the next one never touches a run in
+  // progress or one that has just ended on GAME OVER: it takes effect where a
+  // new run is built — GAME OVER -> Title (RETRY and TITLE alike), or the
+  // not-yet-started run on Title rebuilt by rebuildTitleRun().
+  private difficulty: Difficulty;
+  private nextDifficulty: Difficulty;
 
   /** "Hands off": no movement and no draw key engaged — the condition that arms the GameOver release gate. */
   private static isOperationNeutral(input: SessionInput): boolean {
@@ -217,6 +255,12 @@ export class GameSession {
     this.highScore = options.highScore ?? 0;
     this.gameFactory = options.gameFactory;
     this.baseTimeLimitTicks = options.timeLimitTicks ?? TIME_LIMIT_TICKS;
+    this.captureFeedback = options.captureFeedback ?? false;
+    this.claimFeedback = this.captureFeedback ? new EventQueue<ClaimFeedback>() : null;
+    this.missFeedback = this.captureFeedback ? new EventQueue<MissFeedback>() : null;
+    this.surgeFeedback = this.captureFeedback ? new EventQueue<WispSurgeFeedback>() : null;
+    this.nextDifficulty = options.difficulty ?? 'normal';
+    this.difficulty = this.nextDifficulty;
     this.resetToFreshRun();
   }
 
@@ -249,9 +293,25 @@ export class GameSession {
     return this.multiplier;
   }
 
-  /** The best of the seeded high score and the current run's score. */
+  /**
+   * The best of the seeded high score and the current run's score — the
+   * current run's only when it counts toward the high score
+   * (countsTowardHighScore()). An EASY run leaves the high score as it was,
+   * during the run and after it, so its score can never reach the stored
+   * high score later either. A run a debug override has touched keeps only
+   * what it had scored before the first override (see markTainted()).
+   */
   getHighScore(): number {
-    return Math.max(this.highScore, this.game.getScore());
+    return this.countsTowardHighScore() ? Math.max(this.highScore, this.game.getScore()) : this.highScore;
+  }
+
+  /**
+   * True when the current run's score may become the high score: a NORMAL
+   * run that no debug override has ever touched (isRunTainted() is sticky
+   * for the run, so a RESET mid-run does not clear it).
+   */
+  countsTowardHighScore(): boolean {
+    return this.difficulty === 'normal' && !this.tainted;
   }
 
   /**
@@ -272,6 +332,38 @@ export class GameSession {
    */
   setNextSeed(seed: number): void {
     this.nextSeed = seed;
+  }
+
+  /** The current run's difficulty — fixed for the whole run, through its GAME OVER. */
+  getDifficulty(): Difficulty {
+    return this.difficulty;
+  }
+
+  /** The difficulty the next run will be built with (see `nextDifficulty`). */
+  getNextDifficulty(): Difficulty {
+    return this.nextDifficulty;
+  }
+
+  /**
+   * Picks the difficulty of the next run built — and of every later one,
+   * until picked again. No effect on the current run, whether it is being
+   * played or has just ended on GAME OVER; on Title, rebuildTitleRun() applies
+   * it to the run waiting to start.
+   */
+  setNextDifficulty(difficulty: Difficulty): void {
+    this.nextDifficulty = difficulty;
+  }
+
+  /**
+   * On Title only (a no-op anywhere else): builds the run waiting to start
+   * again, on the same seed, with the next difficulty — its lives, its
+   * Wisps' speed and everything shown for it follow at once, and starting
+   * from Title then plays exactly what is shown. Debug overrides carry over
+   * as they do into any new run.
+   */
+  rebuildTitleRun(): void {
+    if (this.status !== 'title') return;
+    this.resetToFreshRun({ keepSeed: true });
   }
 
   /**
@@ -353,6 +445,17 @@ export class GameSession {
    */
   setDebugTimeLimitTicks(ticks: number): void {
     this.debugTimeLimitTicks = ticks;
+    this.markTainted();
+  }
+
+  /**
+   * Marks the run as debug-tuned. The score it reached before that, under
+   * the standard parameters, is a genuine high score — main.ts has already
+   * saved it — so it is kept in the high score first; only what the run
+   * scores from here on stays out.
+   */
+  private markTainted(): void {
+    if (this.countsTowardHighScore()) this.highScore = this.getHighScore();
     this.tainted = true;
   }
 
@@ -364,6 +467,14 @@ export class GameSession {
    */
   getGame(): Game {
     return this.game;
+  }
+
+  /**
+   * Where the current stage's marker started: its edge and cell. Null when
+   * the stage was built by a test's `gameFactory`.
+   */
+  getMarkerStart(): MarkerStart | null {
+    return this.markerStart ? { edge: this.markerStart.edge, point: { ...this.markerStart.point } } : null;
   }
 
   /**
@@ -450,22 +561,29 @@ export class GameSession {
    * (so Title has something valid to preview/render) and on GameOver ->
    * Title (docs/plan.md §6 M4's "full reset" requirement).
    */
-  private resetToFreshRun(): void {
+  private resetToFreshRun(options: { keepSeed?: boolean } = {}): void {
     // Consume any queued seed
     // *before* buildStageGame() below reads `this.seed` to build stage 1.
     // This — not Title->Playing — is the boundary a queued seed takes
     // effect at, because stage 1's board is already fully built by the time
     // Title is ever shown (see this class's own module doc comment).
-    if (this.nextSeed !== undefined) {
+    // rebuildTitleRun() keeps the run's seed: it rebuilds the same board.
+    if (this.nextSeed !== undefined && !options.keepSeed) {
       this.seed = this.nextSeed;
       this.nextSeed = undefined;
     }
+    // The same boundary fixes the new run's difficulty.
+    this.difficulty = this.nextDifficulty;
     this.stage = 1;
     this.multiplier = DEFAULT_SCORE_MULTIPLIER;
     this.splitSuccesses = 0;
     this.totalTicks = 0;
     this.gameOverReason = null;
-    this.game = this.buildStageGame(this.stage, { score: 0, lives: INITIAL_LIVES, multiplier: this.multiplier });
+    this.game = this.buildStageGame(this.stage, {
+      score: 0,
+      lives: initialLivesFor(this.difficulty),
+      multiplier: this.multiplier,
+    });
     // NOT an unconditional `false`: debug overrides (`debugOverrides` /
     // `debugTimeLimitTicks`) deliberately *persist* across a retry — they're
     // session-level tuning state, and buildStageGame() above has already
@@ -502,6 +620,36 @@ export class GameSession {
   }
 
   /**
+   * Drains (returns and clears) every claim notice (core/feedback.ts) the
+   * currently- and previously-playing stages queued since the last call.
+   * Always empty unless built with `captureFeedback: true`.
+   */
+  drainClaimFeedback(): ClaimFeedback[] {
+    return this.claimFeedback ? this.claimFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every miss notice (core/feedback.ts) the
+   * currently- and previously-playing stages queued since the last call.
+   * Always empty unless built with `captureFeedback: true`.
+   */
+  drainMissFeedback(): MissFeedback[] {
+    return this.missFeedback ? this.missFeedback.drain() : [];
+  }
+
+  /**
+   * Drains (returns and clears) every Wisp surge notice (core/feedback.ts)
+   * the currently- and previously-playing stages queued since the last call.
+   * A notice says a claim raised the level with the stage still playing; the
+   * caller still checks getStatus(), since a TIME UP on the same tick ends
+   * the run after the claim. Always empty unless built with
+   * `captureFeedback: true`.
+   */
+  drainWispSurgeFeedback(): WispSurgeFeedback[] {
+    return this.surgeFeedback ? this.surgeFeedback.drain() : [];
+  }
+
+  /**
    * Applies dev-only debug-panel overrides (docs/plan.md §6 M10 / §12.4) to
    * the current stage's Game, and remembers them so every subsequent stage
    * (via advanceStage() -> buildStageGame()) starts with the same overrides
@@ -509,7 +657,7 @@ export class GameSession {
    */
   applyDebugOverrides(overrides: Partial<DebugOverrides>): void {
     this.debugOverrides = { ...this.debugOverrides, ...overrides };
-    this.tainted = true;
+    this.markTainted();
     this.game.applyDebugOverrides(this.debugOverrides);
   }
 
@@ -558,6 +706,17 @@ export class GameSession {
     for (const pos of this.game.drainDespawnedEmberPositions()) {
       this.despawnedEmberPositions.push(pos);
     }
+    if (this.claimFeedback && this.missFeedback && this.surgeFeedback) {
+      for (const notice of this.game.drainClaimFeedback()) {
+        this.claimFeedback.push(notice);
+      }
+      for (const notice of this.game.drainMissFeedback()) {
+        this.missFeedback.push(notice);
+      }
+      for (const notice of this.game.drainWispSurgeFeedback()) {
+        this.surgeFeedback.push(notice);
+      }
+    }
 
     // Mirror the stage's own multiplier (it only ever moves to
     // DEFAULT_SCORE_MULTIPLIER, via Game.handleMiss on a miss — docs/plan.md
@@ -580,7 +739,9 @@ export class GameSession {
       this.highScore = this.getHighScore();
     } else if (stageStatus === 'stageclear') {
       if (this.game.getLastClearWasSplit()) {
-        this.splitSuccesses = Math.min(this.splitSuccesses + 1, SPLIT_MULTIPLIER_CAP - 1);
+        // Each split adds its smaller side's Wisp count (at least 1).
+        const gain = Math.max(1, this.game.getLastSplitMultiplierGain());
+        this.splitSuccesses = Math.min(this.splitSuccesses + gain, SPLIT_MULTIPLIER_CAP - 1);
         this.multiplier = this.splitSuccesses + 1;
       }
       this.status = 'stageclear';
@@ -607,6 +768,8 @@ export class GameSession {
     // (or undefined, i.e. Math.random downstream) for every stage, exactly
     // as before this feature existed.
     this.currentStageRng = this.seed !== undefined ? mulberry32(deriveStageSeed(this.seed, stage)) : this.baseRng;
+    // Set again by buildDefaultStageGame(); a test's gameFactory picks its own start.
+    this.markerStart = null;
     const game = this.gameFactory ? this.gameFactory(stage, carry) : this.buildDefaultStageGame(stage, carry);
 
     // Debug overrides persist across stages (docs/plan.md §6 M10): a fresh
@@ -618,15 +781,32 @@ export class GameSession {
     return game;
   }
 
+  /**
+   * Where the marker starts `stage` — the one place that decides it. Stage 1
+   * always starts at the middle of the top edge and draws nothing from the
+   * rng; every later stage draws one of the candidates (core/markerStart.ts)
+   * from the stage's own rng, with exactly one call. buildDefaultStageGame()
+   * calls this before anything else draws from that rng (the Wisps come
+   * after), and that order is part of what a replay reproduces. An EASY run
+   * starts every stage like stage 1: at the middle of the top edge, drawing
+   * nothing.
+   */
+  private chooseMarkerStart(stage: number, field: Field): MarkerStart {
+    if (stage === 1 || this.difficulty === 'easy') return topCenterMarkerStart(field.getWidth());
+    return drawMarkerStart(field.getWidth(), field.getHeight(), this.currentStageRng ?? Math.random);
+  }
+
   private buildDefaultStageGame(stage: number, carry: { score: number; lives: number; multiplier: number }): Game {
     const config = getStageConfig(stage);
     const field = new Field(this.fieldWidth, this.fieldHeight);
-    const markerStart: Point = { x: Math.floor(field.getWidth() / 2), y: 0 };
-    const wisps = this.buildWisps(field, config);
+    const markerStart = this.chooseMarkerStart(stage, field);
+    this.markerStart = markerStart;
+    const wisps = this.buildWisps(field, config, markerStart);
 
-    return new Game(field, markerStart, undefined, this.currentStageRng, {
+    return new Game(field, markerStart.point, undefined, this.currentStageRng, {
       wisps,
       emberSpawnIntervalTicks: config.emberSpawnIntervalTicks,
+      firstEmberSpawnTicks: config.firstEmberSpawnTicks,
       emberMoveTicks: config.emberMoveTicks,
       emberBranchChaseProbability: config.emberBranchChaseProbability,
       maxConcurrentEmbers: config.maxConcurrentEmbers,
@@ -637,6 +817,11 @@ export class GameSession {
       score: carry.score,
       lives: carry.lives,
       multiplier: carry.multiplier,
+      captureFeedback: this.captureFeedback,
+      // The Wisps speed up toward the goal on NORMAL from
+      // WISP_SURGE_FIRST_STAGE on (core/wispSurge.ts); the earlier NORMAL
+      // stages and every EASY stage play without it.
+      wispSurge: this.difficulty === 'normal' && stage >= WISP_SURGE_FIRST_STAGE,
     });
   }
 
@@ -647,19 +832,18 @@ export class GameSession {
    * old fixed-center spawn, a single straight line down the marker's own
    * start column reliably split the whole formation and instant-cleared
    * stages 2-6 with little risk. The randomized center is pushed away from
-   * the marker's start column by at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
-   * cells (best effort on fields too small to fit the full offset) so that
-   * exploit no longer works reliably.
+   * the line straight in from the marker's start — on a top/bottom start, by
+   * at least WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN columns from the start
+   * column; on a left/right start, by at least
+   * WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW rows from the start row (best
+   * effort on fields too small to fit the full offset) — so that exploit no
+   * longer works reliably from any start.
    */
-  private buildWisps(field: Field, config: StageConfig): Wisp[] {
+  private buildWisps(field: Field, config: StageConfig, markerStart: MarkerStart): Wisp[] {
     const width = field.getWidth();
     const height = field.getHeight();
     const rng = this.currentStageRng ?? Math.random;
     const spacing = 3;
-
-    // Marker always starts at { x: floor(width/2), y: 0 } — see
-    // buildDefaultStageGame() above.
-    const markerColumn = Math.floor(width / 2);
 
     // Draw the cluster center from the field's interior, kept off the
     // walls by WISP_SPAWN_MARGIN_X_RATIO/_Y_RATIO on every side.
@@ -669,15 +853,15 @@ export class GameSession {
     let cy = Math.round(marginY + rng() * (height - 2 * marginY));
 
     // The actual anti-exploit guarantee: push the center away from the
-    // marker's start column if it landed too close. On a field too narrow
-    // for the full offset to fit inside the interior, this is necessarily
-    // best-effort — the clamp below still keeps every spawned Wisp safely
-    // inside the field regardless.
-    if (Math.abs(cx - markerColumn) < WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN) {
-      cx =
-        cx >= markerColumn
-          ? markerColumn + WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN
-          : markerColumn - WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN;
+    // marker's start column (top/bottom start) or start row (left/right
+    // start) if it landed too close, toward the side it is already on. On a
+    // field too small for the full offset to fit inside the interior, this
+    // is necessarily best-effort — the clamp below still keeps every spawned
+    // Wisp safely inside the field regardless.
+    if (markerStart.edge === 'top' || markerStart.edge === 'bottom') {
+      cx = pushAway(cx, markerStart.point.x, WISP_SPAWN_MIN_OFFSET_FROM_MARKER_COLUMN);
+    } else {
+      cy = pushAway(cy, markerStart.point.y, WISP_SPAWN_MIN_OFFSET_FROM_MARKER_ROW);
     }
 
     // Safety clamp for small fields (e.g. tests): keeps the center itself
@@ -686,16 +870,30 @@ export class GameSession {
     cx = Math.min(width - 2, Math.max(1, cx));
     cy = Math.min(height - 2, Math.max(1, cy));
 
+    // The one place a run's difficulty touches the Wisps' speed: EASY scales
+    // the stage table's value (core/difficulty.ts). Game takes the built
+    // Wisps' speed as the stage's own, so the debug panel's RESET returns to
+    // this value.
+    const speed = wispSpeedFor(this.difficulty, config.wispSpeedMultiplier);
     const wisps: Wisp[] = [];
     for (let i = 0; i < config.wispCount; i++) {
       // Spread multiple Wisps symmetrically around the cluster center so a
-      // multi-Wisp stage (docs/plan.md §12.7, stage 2+) doesn't spawn them
-      // on top of each other; clamped to stay within the interior even on
-      // the small fields used by tests.
+      // multi-Wisp stage (STAGE_TABLE's wispCount, two or more from stage 3)
+      // doesn't spawn them on top of each other; clamped to stay within the
+      // interior even on the small fields used by tests.
       const rawX = cx + (i - (config.wispCount - 1) / 2) * spacing;
       const x = Math.min(width - 2, Math.max(1, Math.round(rawX)));
-      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, config.wispSpeedMultiplier));
+      wisps.push(new Wisp({ x, y: cy }, this.currentStageRng, undefined, speed));
     }
     return wisps;
   }
+}
+
+/**
+ * `value` moved to exactly `minOffset` from `from` when it is closer than
+ * that — to the larger side when it is at or past `from`, else the smaller.
+ */
+function pushAway(value: number, from: number, minOffset: number): number {
+  if (Math.abs(value - from) >= minOffset) return value;
+  return value >= from ? from + minOffset : from - minOffset;
 }

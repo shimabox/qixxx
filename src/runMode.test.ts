@@ -16,4 +16,11 @@ describe('resolveHudModePrefix', () => {
   it('shows SEED <n> for seeded', () => {
     expect(resolveHudModePrefix('seeded', { seededRunSeed: 42 })).toBe('SEED 42  ');
   });
+
+  it('leads with EASY for an EASY run, before SEED <n> when both apply', () => {
+    expect(resolveHudModePrefix('normal', { seededRunSeed: undefined, difficulty: 'easy' })).toBe('EASY  ');
+    expect(resolveHudModePrefix('seeded', { seededRunSeed: 42, difficulty: 'easy' })).toBe('EASY  SEED 42  ');
+    expect(resolveHudModePrefix('normal', { seededRunSeed: undefined, difficulty: 'normal' })).toBe('');
+    expect(resolveHudModePrefix('seeded', { seededRunSeed: 42, difficulty: 'normal' })).toBe('SEED 42  ');
+  });
 });

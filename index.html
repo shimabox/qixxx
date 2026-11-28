@@ -15,6 +15,16 @@
     <meta property="og:image" content="https://qixxx.orukubami.sh/og-image.png?v=040" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
+      /* The impact feedback's display face, bundled with the game
+         (public/fonts/, SIL Open Font License 1.1 — see Orbitron-OFL.txt).
+         Text falls back to monospace until it has loaded. */
+      @font-face {
+        font-family: "Orbitron";
+        src: url('/fonts/Orbitron-wght.ttf') format('truetype');
+        font-weight: 400 900;
+        font-display: swap;
+      }
+
       * {
         margin: 0;
         padding: 0;
@@ -80,6 +90,19 @@
         display: none;
       }
 
+      /* Bottom mode: the extras hold only the PAUSE button, pinned to the
+         control row's bottom-right corner below FAST / SLOW and out of the
+         flow, so showing or hiding it never moves the other controls. */
+      body:not([data-touch-layout='side']) #touch-controls {
+        position: relative;
+      }
+
+      body:not([data-touch-layout='side']) #touch-actions-extra {
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+      }
+
       #touch-dpad {
         position: relative;
       }
@@ -137,11 +160,22 @@
       body[data-touch-layout='side'] #mute-button {
         font-size: 11px !important;
         padding: 2px 8px !important;
+        /* Not the HUD row's height (src/main.ts's getMuteButtonElement()). */
+        min-height: 0 !important;
         line-height: 1.4;
       }
 
       body[data-touch-layout='side'] #credit-link {
         font-size: 10px !important;
+      }
+
+      /* Side mode: the PAUSE button sits left of the credit, top-aligned and
+         out of the row's flow, so the taller button never moves the credit
+         and MUTE. */
+      body[data-touch-layout='side'] #pause-button {
+        position: absolute;
+        top: 0;
+        right: calc(100% + 8px);
       }
 
       /* A side layout with a narrow center column (main.ts sets the
@@ -164,6 +198,57 @@
         border: 2px solid #00ff41;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
+      }
+
+      /* While the sound is off on the live Title screen, the sound toggle
+         glows slowly in the HUD accent color (--sound-glow, set by
+         src/main.ts). A box-shadow only: the button's box never moves. */
+      @keyframes sound-attention {
+        0%,
+        100% {
+          box-shadow: 0 0 2px 0 var(--sound-glow);
+        }
+        50% {
+          box-shadow: 0 0 10px 3px var(--sound-glow);
+        }
+      }
+
+      #mute-button[data-attention='true'] {
+        box-shadow: 0 0 8px 2px var(--sound-glow);
+        animation: sound-attention 1.6s ease-in-out infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #mute-button[data-attention='true'] {
+          animation: none;
+        }
+      }
+
+      /* After the GAME OVER screen suggested EASY, the Title screen's MODE
+         button (src/ui/difficultyToggle.ts) keeps its text lit (set there)
+         and a glow around it, pulsing --difficulty-pulse-count times — lit
+         and still under prefers-reduced-motion: reduce. A text-shadow only:
+         the button's box never moves. Its numbers come from src/config.ts
+         (EASY_PROMPT_TOGGLE_*), set on the button. */
+      @keyframes difficulty-attention {
+        0%,
+        100% {
+          text-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow);
+        }
+        50% {
+          text-shadow: 0 0 var(--difficulty-glow-peak-blur) var(--difficulty-glow);
+        }
+      }
+
+      #difficulty-button[data-attention='true'] {
+        text-shadow: 0 0 var(--difficulty-glow-rest-blur) var(--difficulty-glow);
+        animation: difficulty-attention var(--difficulty-pulse-sec) ease-in-out var(--difficulty-pulse-count);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #difficulty-button[data-attention='true'] {
+          animation: none;
+        }
       }
 
     </style>

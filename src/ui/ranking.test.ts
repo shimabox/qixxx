@@ -8,17 +8,23 @@
 import { describe, it, expect } from 'vitest';
 import {
   acceptedSubmissionText,
-  BOARD_NOTICE,
+  boardNotice,
   decideSubmissionOffer,
+  DeferredSubmissionOffer,
+  demoCandidateIdsFrom,
   isSnapshotEligible,
   isReplayPayloadPlayable,
   formatRankingDate,
   limitRankingName,
+  rankInThresholdFrom,
+  RankInThresholdTracker,
+  scheduleSubmissionPanel,
   stopKeyPropagation,
   type RankingEntry,
   type RunSubmissionSnapshot,
 } from './ranking';
-import { MAX_VERIFIED_CLAIMS } from '../config';
+import { GAMEOVER_RECORD_DELAY_TICKS, MAX_VERIFIED_CLAIMS, RANKING_OFFER_DELAY_TICKS } from '../config';
+import { GameOverResult, type GameOverResultInput } from '../gameOverResult';
 
 describe('acceptedSubmissionText', () => {
   it('says plainly SUBMITTED for a row the server stored as verified (no audit)', () => {
@@ -36,11 +42,11 @@ describe('acceptedSubmissionText', () => {
   });
 });
 
-describe('BOARD_NOTICE', () => {
+describe('boardNotice', () => {
   it('discloses both board rules without claiming every score is verified', () => {
-    expect(BOARD_NOTICE).toContain('X handles are self-reported');
-    expect(BOARD_NOTICE).toContain('may be removed');
-    expect(BOARD_NOTICE).not.toMatch(/scores are verified/i);
+    expect(boardNotice()).toContain('X handles are self-reported');
+    expect(boardNotice()).toContain('may be removed');
+    expect(boardNotice()).not.toMatch(/scores are verified/i);
   });
 });
 
@@ -92,6 +98,7 @@ function snapshot(overrides: Partial<RunSubmissionSnapshot> = {}): RunSubmission
     stage: 2,
     runMode: 'normal',
     tainted: false,
+    difficulty: 'normal',
     claims: 3,
     ...overrides,
   };
@@ -141,6 +148,10 @@ describe('isSnapshotEligible', () => {
   it('rejects a run with no seed', () => {
     expect(isSnapshotEligible(snapshot({ seed: undefined }))).toBe(false);
   });
+
+  it('rejects an EASY run, however clean otherwise', () => {
+    expect(isSnapshotEligible(snapshot({ difficulty: 'easy' }))).toBe(false);
+  });
 });
 
 describe('decideSubmissionOffer: provisional in-range boundary', () => {
@@ -165,6 +176,74 @@ describe('decideSubmissionOffer: provisional in-range boundary', () => {
 
   it('does not guess when the ranking fetch failed', () => {
     expect(decide({ entries: null })).toBe('fetch-failed');
+  });
+});
+
+describe('rankInThresholdFrom', () => {
+  it('is 0 while the board has a free row, so any score gets in', () => {
+    expect(rankInThresholdFrom([])).toBe(0);
+    expect(rankInThresholdFrom(board([9999, 9998]))).toBe(0);
+  });
+
+  it('is the lowest row on a full board, agreeing with the offer boundary', () => {
+    expect(rankInThresholdFrom(fullBoard(500))).toBe(500);
+    expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) }), entries: fullBoard(500) })).toBe('out-of-range');
+    expect(decide({ snapshot: snapshot({ score: rankInThresholdFrom(fullBoard(500)) + 1 }), entries: fullBoard(500) })).toBe('show');
+  });
+});
+
+describe('demoCandidateIdsFrom', () => {
+  const row = (id: string, replayAvailable: boolean) => ({ id, replayAvailable });
+
+  it('takes the replayable rows from the top of the board, in board order, up to the limit', () => {
+    const entries = [row('a', true), row('b', false), row('c', true), row('d', true), row('e', true)];
+    expect(demoCandidateIdsFrom(entries, 3)).toEqual(['a', 'c', 'd']);
+  });
+
+  it('returns fewer when fewer rows are replayable, and none for an empty board or no replays', () => {
+    expect(demoCandidateIdsFrom([row('a', false), row('b', true)], 3)).toEqual(['b']);
+    expect(demoCandidateIdsFrom([], 3)).toEqual([]);
+    expect(demoCandidateIdsFrom([row('a', false), row('b', false)], 3)).toEqual([]);
+  });
+});
+
+describe('RankInThresholdTracker', () => {
+  it('is null until a request succeeds', () => {
+    const tracker = new RankInThresholdTracker();
+    expect(tracker.get()).toBeNull();
+    tracker.settle(tracker.begin(), null);
+    expect(tracker.get()).toBeNull();
+  });
+
+  it('keeps the newer value when the earlier request answers last', () => {
+    const tracker = new RankInThresholdTracker();
+    const pageLoad = tracker.begin();
+    const gameOver = tracker.begin();
+    tracker.settle(gameOver, fullBoard(700));
+    tracker.settle(pageLoad, fullBoard(500));
+    expect(tracker.get()).toBe(700);
+  });
+
+  it('takes the newer value when the replies land in order', () => {
+    const tracker = new RankInThresholdTracker();
+    const first = tracker.begin();
+    const second = tracker.begin();
+    tracker.settle(first, fullBoard(500));
+    expect(tracker.get()).toBe(500);
+    tracker.settle(second, fullBoard(700));
+    expect(tracker.get()).toBe(700);
+  });
+
+  it('never clears a known value on a failed reply, older or newer', () => {
+    const tracker = new RankInThresholdTracker();
+    const first = tracker.begin();
+    const second = tracker.begin();
+    tracker.settle(first, fullBoard(500));
+    tracker.settle(second, null);
+    expect(tracker.get()).toBe(500);
+    // A later success still writes after a failed newer request.
+    tracker.settle(tracker.begin(), []);
+    expect(tracker.get()).toBe(0);
   });
 });
 
@@ -213,7 +292,7 @@ describe('decideSubmissionOffer: races against the response', () => {
   });
 
   it('never shows the form for an ineligible run, whatever the board says', () => {
-    for (const bad of [snapshot({ runMode: 'seeded' }), snapshot({ tainted: true }), snapshot({ seed: undefined })]) {
+    for (const bad of [snapshot({ runMode: 'seeded' }), snapshot({ tainted: true }), snapshot({ seed: undefined }), snapshot({ difficulty: 'easy' })]) {
       expect(decide({ snapshot: bad, entries: [] })).toBe('ineligible-run');
     }
   });
@@ -286,5 +365,150 @@ describe('formatRankingDate', () => {
   it('degrades to an empty string rather than "Invalid Date"/"NaN-NaN-NaN"', () => {
     expect(formatRankingDate('not-a-date')).toBe('');
     expect(formatRankingDate('')).toBe('');
+  });
+});
+
+describe('DeferredSubmissionOffer: the panel opens once the GAME OVER result has been read', () => {
+  const TIMING = { countTicks: 42, popTicks: 8, sparkTicks: 30 };
+  const resultInput = (over: Partial<GameOverResultInput> = {}): GameOverResultInput => ({
+    score: 12345,
+    stage: 1,
+    bestAtStart: 100,
+    recordsHighScore: true,
+    tally: { splits: 0, claims: 1, bestShare: 0.04 },
+    reducedMotion: false,
+    timing: TIMING,
+    ...over,
+  });
+
+  /**
+   * A GAME OVER screen one tick per frame: the reply decides on frame
+   * `replyAge` (before that frame's sync, as an async reply lands between
+   * frames). Returns the age the panel opened at, and the ages it was waiting.
+   */
+  function play(given: GameOverResultInput, replyAge: number, frames = 400) {
+    const result = new GameOverResult();
+    result.start(given);
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let openedAt: number | null = null;
+    const waitingAges: number[] = [];
+    for (let age = 0; age <= frames && openedAt === null; age++) {
+      if (age > 0) result.step();
+      if (age === replyAge) offer.decide(() => (openedAt = result.getAge()));
+      offer.sync();
+      if (offer.isWaiting()) waitingAges.push(age);
+    }
+    return { openedAt, waitingAges, offerAge: result.submissionOfferAge(), lastLineAge: result.lastLineAge() };
+  }
+
+  it('a reply in time: opens RANKING_OFFER_DELAY_TICKS after the last line is due, waiting from the reply until then', () => {
+    const { openedAt, waitingAges, lastLineAge } = play(resultInput(), 3);
+    expect(openedAt).toBe(lastLineAge + RANKING_OFFER_DELAY_TICKS);
+    expect(waitingAges[0]).toBe(3);
+    expect(waitingAges[waitingAges.length - 1]).toBe(lastLineAge + RANKING_OFFER_DELAY_TICKS - 1);
+    expect(waitingAges).toHaveLength(lastLineAge + RANKING_OFFER_DELAY_TICKS - 3);
+  });
+
+  it('a reply after that time: opens as it lands, with no wait', () => {
+    const offerAge = play(resultInput(), 0).offerAge;
+    const { openedAt, waitingAges } = play(resultInput(), offerAge + 25);
+    expect(openedAt).toBe(offerAge + 25);
+    expect(waitingAges).toEqual([]);
+  });
+
+  it('a score of 0 (an empty board) and reduced motion: from their own last-line time', () => {
+    const zero = play(resultInput({ score: 0, bestAtStart: 0, tally: { splits: 0, claims: 0, bestShare: 0 } }), 1);
+    expect(zero.lastLineAge).toBe(GAMEOVER_RECORD_DELAY_TICKS);
+    expect(zero.openedAt).toBe(GAMEOVER_RECORD_DELAY_TICKS + RANKING_OFFER_DELAY_TICKS);
+    const still = play(resultInput({ reducedMotion: true }), 1);
+    expect(still.lastLineAge).toBe(0);
+    expect(still.openedAt).toBe(RANKING_OFFER_DELAY_TICKS);
+  });
+
+  it('several ticks per frame: opens on the first frame past the time, not later', () => {
+    const result = new GameOverResult();
+    result.start(resultInput());
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let openedAt: number | null = null;
+    offer.decide(() => (openedAt = result.getAge()));
+    const due = result.submissionOfferAge();
+    while (openedAt === null && result.getAge() < 400) {
+      for (let i = 0; i < 5; i++) result.step();
+      offer.sync();
+      if (openedAt === null) expect(result.getAge()).toBeLessThan(due);
+    }
+    expect(openedAt).toBe(Math.ceil(due / 5) * 5);
+  });
+
+  it('cancel() — the run left GAME OVER, or a new offer took over — means it never opens', () => {
+    const result = new GameOverResult();
+    result.start(resultInput());
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let opened = 0;
+    offer.decide(() => opened++);
+    expect(offer.isWaiting()).toBe(true);
+    offer.cancel();
+    expect(offer.isWaiting()).toBe(false);
+    for (let i = 0; i < 400; i++) {
+      result.step();
+      offer.sync();
+    }
+    expect(opened).toBe(0);
+  });
+
+  it('a stopped result (TITLE, a retry) is never due: a reply landing after it opens nothing', () => {
+    const result = new GameOverResult();
+    result.start(resultInput({ timing: { ...TIMING, offerDelayTicks: 0 } }));
+    for (let i = 0; i < 200; i++) result.step();
+    result.stop();
+    const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+    let opened = 0;
+    offer.decide(() => opened++);
+    offer.sync();
+    expect(opened).toBe(0);
+  });
+
+  it('the over-the-cap notice waits for the same time as the form; any other decision opens nothing and holds nothing', () => {
+    const openedAt = (decision: Parameters<typeof scheduleSubmissionPanel>[0]) => {
+      const result = new GameOverResult();
+      result.start(resultInput());
+      const offer = new DeferredSubmissionOffer(() => result.isSubmissionOfferDue());
+      const opened: Array<{ panel: string; age: number }> = [];
+      const scheduled = scheduleSubmissionPanel(decision, offer, {
+        form: () => opened.push({ panel: 'form', age: result.getAge() }),
+        overClaimCap: () => opened.push({ panel: 'notice', age: result.getAge() }),
+      });
+      const waiting = offer.isWaiting();
+      for (let i = 0; i < 400; i++) {
+        result.step();
+        offer.sync();
+      }
+      return { scheduled, waiting, opened };
+    };
+    const due = (() => {
+      const r = new GameOverResult();
+      r.start(resultInput());
+      return r.submissionOfferAge();
+    })();
+    expect(openedAt('show')).toEqual({ scheduled: true, waiting: true, opened: [{ panel: 'form', age: due }] });
+    expect(openedAt('over-claim-cap')).toEqual({ scheduled: true, waiting: true, opened: [{ panel: 'notice', age: due }] });
+    for (const decision of ['out-of-range', 'fetch-failed', 'superseded', 'stale-run', 'run-no-longer-over', 'ineligible-run'] as const) {
+      expect(openedAt(decision), decision).toEqual({ scheduled: false, waiting: false, opened: [] });
+    }
+  });
+
+  it('a newer decision replaces a waiting one; each opens at most once', () => {
+    let due = false;
+    const offer = new DeferredSubmissionOffer(() => due);
+    const opened: string[] = [];
+    offer.decide(() => opened.push('a'));
+    offer.decide(() => opened.push('b'));
+    offer.sync();
+    expect(opened).toEqual([]);
+    due = true;
+    offer.sync();
+    offer.sync();
+    expect(opened).toEqual(['b']);
+    expect(offer.isWaiting()).toBe(false);
   });
 });
